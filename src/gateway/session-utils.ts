@@ -74,6 +74,7 @@ import { listSessionEntries as listAccessorSessionEntries } from "../config/sess
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { projectPluginSessionExtensionsSync } from "../plugins/host-hook-state.js";
+import { withPinnedActivePluginRegistryWorkspaceDir } from "../plugins/runtime-workspace-state.js";
 import {
   DEFAULT_AGENT_ID,
   normalizeAgentId,
@@ -98,10 +99,10 @@ import {
   resolveStoredSessionKeyForAgentStore,
 } from "./session-store-key.js";
 import {
-  readRecentSessionUsageFromTranscript,
-  readSessionTitleFieldsFromTranscriptAsync,
-  readSessionTitleFieldsFromTranscript,
-} from "./session-utils.fs.js";
+  readRecentSessionUsageFromTranscript as readScopedRecentSessionUsageFromTranscript,
+  readSessionTitleFieldsFromTranscriptAsync as readScopedSessionTitleFieldsFromTranscriptAsync,
+  readSessionTitleFieldsFromTranscript as readScopedSessionTitleFieldsFromTranscript,
+} from "./session-transcript-readers.js";
 import type {
   GatewayAgentRow,
   GatewaySessionRow,
@@ -113,6 +114,10 @@ import type {
 export {
   archiveFileOnDisk,
   archiveSessionTranscripts,
+  resolveSessionHistoryTranscriptPathAsync,
+  resolveSessionTranscriptCandidates,
+} from "./session-utils.fs.js";
+export {
   attachOpenClawTranscriptMeta,
   capArrayByJsonBytes,
   readFirstUserMessageFromTranscript,
@@ -130,11 +135,12 @@ export {
   readSessionPreviewItemsFromTranscript,
   readSessionMessagesAsync,
   readSessionMessagesWithSourceAsync,
-  resolveSessionHistoryTranscriptPathAsync,
   visitSessionMessagesAsync,
-  resolveSessionTranscriptCandidates,
-} from "./session-utils.fs.js";
-export type { ReadSessionMessagesAsyncOptions } from "./session-utils.fs.js";
+} from "./session-transcript-readers.js";
+export type {
+  ReadSessionMessagesAsyncOptions,
+  SessionTranscriptReadScope,
+} from "./session-transcript-readers.js";
 export { canonicalizeSpawnedByForAgent, resolveSessionStoreKey } from "./session-store-key.js";
 export type {
   GatewayAgentRow,
@@ -877,11 +883,13 @@ function resolveTranscriptUsageFallback(params: {
   const agentId = parsed?.agentId
     ? normalizeAgentId(parsed.agentId)
     : normalizeAgentId(params.agentId ?? resolveDefaultAgentId(params.cfg));
-  const snapshot = readRecentSessionUsageFromTranscript(
-    entry.sessionId,
-    params.storePath,
-    entry.sessionFile,
-    agentId,
+  const snapshot = readScopedRecentSessionUsageFromTranscript(
+    {
+      agentId,
+      sessionFile: entry.sessionFile,
+      sessionId: entry.sessionId,
+      storePath: params.storePath,
+    },
     typeof params.maxTranscriptBytes === "number" ? params.maxTranscriptBytes : 256 * 1024,
   );
   if (!snapshot) {
@@ -2188,12 +2196,12 @@ export function buildGatewaySessionRow(params: {
   let derivedTitle: string | undefined;
   let lastMessagePreview: string | undefined;
   if (entry?.sessionId && (params.includeDerivedTitles || params.includeLastMessage)) {
-    const fields = readSessionTitleFieldsFromTranscript(
-      entry.sessionId,
+    const fields = readScopedSessionTitleFieldsFromTranscript({
+      agentId: sessionAgentId,
+      sessionFile: entry.sessionFile,
+      sessionId: entry.sessionId,
       storePath,
-      entry.sessionFile,
-      sessionAgentId,
-    );
+    });
     if (params.includeDerivedTitles) {
       derivedTitle = deriveSessionTitle(entry, fields.firstUserMessage);
     }
@@ -2817,6 +2825,12 @@ export async function listSessionsFromStoreAsync(params: {
   modelCatalog?: ModelCatalogEntry[];
   opts: SessionsListParams;
 }): Promise<SessionsListResult> {
+  // Pin the active plugin-registry workspace dir for the duration of this
+  // call so per-row metadata lookups use a stable memo key. Without this pin,
+  // concurrent agent turns / crons mutate the process-global workspace dir
+  // between rows, the memo never hits, and each row triggers a full
+  // loadPluginMetadataSnapshot scan (~100 ms).
+  return withPinnedActivePluginRegistryWorkspaceDir(async () => {
   const { cfg, storePath, store, opts } = params;
   const now = Date.now();
   const sessionListTranscriptUsageMaxBytes = 64 * 1024;
@@ -2887,12 +2901,12 @@ export async function listSessionsFromStoreAsync(params: {
       const sessionAgentId =
         rowAgentId ??
         (parsed?.agentId ? normalizeAgentId(parsed.agentId) : resolveDefaultAgentId(cfg));
-      const fields = await readSessionTitleFieldsFromTranscriptAsync(
-        entry.sessionId,
+      const fields = await readScopedSessionTitleFieldsFromTranscriptAsync({
+        agentId: sessionAgentId,
+        sessionFile: entry.sessionFile,
+        sessionId: entry.sessionId,
         storePath,
-        entry.sessionFile,
-        sessionAgentId,
-      );
+      });
       if (includeDerivedTitles) {
         row.derivedTitle = deriveSessionTitle(entry, fields.firstUserMessage);
       }
@@ -2922,4 +2936,5 @@ export async function listSessionsFromStoreAsync(params: {
     defaults: getSessionDefaults(cfg, params.modelCatalog, { allowPluginNormalization: false }),
     sessions,
   };
+  });
 }

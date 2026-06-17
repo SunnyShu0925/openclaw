@@ -61,13 +61,14 @@ import {
 import { findDirectChildSessionsForParent } from "./session-child-sessions.js";
 import {
   archiveSessionTranscriptsDetailed,
+  extractGeneratedTranscriptSessionId,
   resolveStableSessionEndTranscript,
   type ArchivedSessionTranscript,
 } from "./session-transcript-files.fs.js";
+import { readSessionMessagesAsync } from "./session-transcript-readers.js";
 import {
   loadSessionEntry,
   migrateAndPruneGatewaySessionStoreKey,
-  readSessionMessagesAsync,
   resolveGatewaySessionStoreTarget,
   resolveSessionStoreKey,
   resolveSessionModelRef,
@@ -82,12 +83,16 @@ function resolveResetSessionFile(params: {
   agentId: string;
 }): string {
   const currentEntry = params.currentEntry;
-  // Preserve explicit session-file placement across reset while swapping the
-  // embedded session id, so linked runtimes keep writing beside old transcripts.
-  const rewrittenSessionFile = currentEntry?.sessionId
+  // Rotate generated transcript names by the file's *embedded* id, not the logical
+  // session id: a post-upgrade sessionFile can embed a stale id, so keying off
+  // currentEntry.sessionId would orphan the reset session on the old file. Explicit
+  // custom placements have no embedded id and stay preserved.
+  const rotationPreviousSessionId =
+    extractGeneratedTranscriptSessionId(currentEntry?.sessionFile) ?? currentEntry?.sessionId;
+  const rewrittenSessionFile = rotationPreviousSessionId
     ? rewriteSessionFileForNewSessionId({
-        sessionFile: currentEntry.sessionFile,
-        previousSessionId: currentEntry.sessionId,
+        sessionFile: currentEntry?.sessionFile,
+        previousSessionId: rotationPreviousSessionId,
         nextSessionId: params.nextSessionId,
       })
     : undefined;
@@ -120,17 +125,6 @@ function stripRuntimeModelState(entry?: SessionEntry): SessionEntry | undefined 
     contextBudgetStatus: undefined,
     systemPromptReport: undefined,
   };
-}
-
-export function archiveSessionTranscriptsForSession(params: {
-  sessionId: string | undefined;
-  storePath: string;
-  sessionFile?: string;
-  agentId?: string;
-  reason: "reset" | "deleted";
-  onArchiveError?: (err: unknown, sourcePath: string) => void;
-}): string[] {
-  return archiveSessionTranscriptsForSessionDetailed(params).map((entry) => entry.archivedPath);
 }
 
 export function archiveSessionTranscriptsForSessionDetailed(params: {
@@ -806,10 +800,18 @@ export async function emitGatewayBeforeResetPluginHook(params: {
   let messages: unknown[] = [];
   try {
     if (typeof sessionId === "string" && sessionId.trim().length > 0) {
-      messages = await readSessionMessagesAsync(sessionId, params.storePath, sessionFile, {
-        mode: "full",
-        reason: "before_reset hook payload",
-      });
+      messages = await readSessionMessagesAsync(
+        {
+          agentId,
+          sessionFile,
+          sessionId,
+          storePath: params.storePath,
+        },
+        {
+          mode: "full",
+          reason: "before_reset hook payload",
+        },
+      );
     }
   } catch (err) {
     logVerbose(
