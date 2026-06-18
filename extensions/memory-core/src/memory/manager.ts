@@ -528,6 +528,15 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     if (!this.provider) {
       return;
     }
+    // Preserve fail-closed behavior for explicitly configured non-local providers.
+    // Only optional/default providers (auto, local, unconfigured) degrade to FTS fallback.
+    if (this.providerRequirement.mode === "required") {
+      log.warn("memory embeddings: required provider failed, preserving fail-closed", {
+        provider: this.provider.id,
+        error: formatErrorMessage(err),
+      });
+      return;
+    }
     const message = formatErrorMessage(err);
     const failedProvider = this.provider;
     this.provider = null;
