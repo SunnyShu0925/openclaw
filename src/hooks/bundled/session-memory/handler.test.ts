@@ -898,4 +898,48 @@ describe("session-memory hook", () => {
     expect(assistantLines).toEqual(["assistant: 2+2 = 4", "assistant: standalone gateway reply"]);
     expect(memoryContent).toContain("standalone gateway reply");
   });
+
+  it("preserves delivery-mirror after user turn even when mirroring older assistant text", async () => {
+    // Without the user-turn reset of `lastAssistantText`, a delivery-mirror
+    // row after a user message that echoes a *previous* turn's assistant
+    // content would be incorrectly filtered.
+    const sessionContent = [
+      JSON.stringify({
+        type: "message",
+        message: { role: "assistant", content: "Your number is 123-4567" },
+      }),
+      JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          provider: "openclaw",
+          model: "delivery-mirror",
+          content: [{ type: "text", text: "Your number is 123-4567" }],
+        },
+      }),
+      JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "I changed it to 987-6543" },
+      }),
+      // This delivery-mirror echoes the old assistant text from a previous turn.
+      // In the new turn, it must NOT be filtered — there is no other assistant
+      // reply in this turn to deduplicate against.
+      JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          provider: "openclaw",
+          model: "delivery-mirror",
+          content: [{ type: "text", text: "Your number is 123-4567" }],
+        },
+      }),
+    ].join("\n");
+
+    const memoryContent = await readSessionTranscript({ sessionContent });
+    const lines = memoryContent!.split("\n").filter((l) => l.startsWith("assistant:"));
+    expect(lines).toEqual([
+      "assistant: Your number is 123-4567",
+      "assistant: Your number is 123-4567",
+    ]);
+  });
 });

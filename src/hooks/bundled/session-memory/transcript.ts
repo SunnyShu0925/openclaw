@@ -94,6 +94,10 @@ export async function getRecentSessionContent(
               allMessages.push(`${role}: ${sanitized}`);
               if (role === "assistant") {
                 lastAssistantText = sanitized;
+              } else if (role === "user") {
+                // New turn: reset so a delivery-mirror echoing the previous
+                // turn's assistant text isn't silently filtered.
+                lastAssistantText = undefined;
               }
             }
           }
