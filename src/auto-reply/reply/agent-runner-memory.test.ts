@@ -259,7 +259,7 @@ describe("runMemoryFlushIfNeeded", () => {
     );
 
     const followupRun = createTestFollowupRun();
-    const entry = await runMemoryFlushIfNeeded({
+    await runMemoryFlushIfNeeded({
       cfg: {
         agents: {
           defaults: {
@@ -982,7 +982,7 @@ describe("runMemoryFlushIfNeeded", () => {
       agentRuntimeOverride: "claude-cli",
     };
 
-    const entry = await runMemoryFlushIfNeeded({
+    await runMemoryFlushIfNeeded({
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         provider: "anthropic",
@@ -1012,7 +1012,7 @@ describe("runMemoryFlushIfNeeded", () => {
       compactionCount: 1,
     };
 
-    const entry = await runMemoryFlushIfNeeded({
+    await runMemoryFlushIfNeeded({
       cfg: {
         agents: {
           defaults: {
