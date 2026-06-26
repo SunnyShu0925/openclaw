@@ -2616,7 +2616,9 @@ export async function auditShortTermPromotionArtifacts(params: {
 
     // Check for dangling references — entries whose source file no longer exists.
     const danglingEntryKeys = Object.keys(store.entries).filter(
-      (key) => store.entries[key]?.source === "memory",
+      (key) =>
+        store.entries[key]?.source === "memory" &&
+        isShortTermMemoryPath(store.entries[key]?.path ?? ""),
     );
     danglingRefCount = 0;
     for (const key of danglingEntryKeys) {

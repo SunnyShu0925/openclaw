@@ -3181,6 +3181,45 @@ describe("short-term promotion", () => {
     });
   });
 
+  it("does not count non-short-term source:memory entries as dangling (predicate alignment)", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const memoryDir = path.join(workspaceDir, "memory");
+      await fs.mkdir(memoryDir, { recursive: true });
+      // A source:memory entry whose path does NOT pass isShortTermMemoryPath
+      // (e.g. a dreaming deep-file) should not be reported as a dangling ref
+      // even though the file genuinely doesn't exist. Audit and repair must use
+      // the same predicate to keep --fix re-audit results consistent.
+      await testing.writeRawRecallStore(workspaceDir, {
+        version: 1,
+        updatedAt: "2026-04-04T00:00:00.000Z",
+        entries: {
+          nonShortTerm: {
+            key: "non-short-term",
+            path: "memory/dreaming/deep/2026-04-01.md",
+            startLine: 1,
+            endLine: 1,
+            source: "memory",
+            snippet: "Deep dreaming file path — not a short-term path.",
+            recallCount: 1,
+            totalScore: 0.5,
+            maxScore: 0.5,
+            firstRecalledAt: "2026-04-01T00:00:00.000Z",
+            lastRecalledAt: "2026-04-01T00:00:00.000Z",
+            queryHashes: ["nd1"],
+            recallDays: ["2026-04-01"],
+            conceptTags: [],
+          },
+        },
+      });
+
+      const audit = await auditShortTermPromotionArtifacts({ workspaceDir });
+
+      // The non-short-term-path entry must not inflate the dangling count.
+      expect(audit.danglingRefCount).toBe(0);
+      expect(audit.issues.some((issue) => issue.code === "recall-store-dangling-ref")).toBe(false);
+    });
+  });
+
   it("waits for an active short-term lock before repairing", async () => {
     await withTempWorkspace(async (workspaceDir) => {
       await testing.writeRawRecallStore(workspaceDir, {

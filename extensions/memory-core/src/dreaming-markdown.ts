@@ -75,6 +75,9 @@ export async function writeDailyDreamingPhaseBlock(params: {
   if (shouldWriteInline(params.storage)) {
     inlinePath = resolveDailyMemoryPath(params.workspaceDir, nowMs, params.timezone);
     await fs.mkdir(path.dirname(inlinePath), { recursive: true });
+    // Preserve the existing directory mode so replaceFileAtomic's internal
+    // chmod(dir, dirMode) does not overwrite workspace-relative permissions.
+    const inlineDirMode = (await fs.stat(path.dirname(inlinePath))).mode;
     const original = await fs.readFile(inlinePath, "utf-8").catch((err: unknown) => {
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
         return "";
@@ -96,6 +99,7 @@ export async function writeDailyDreamingPhaseBlock(params: {
       content: withTrailingNewline(updated),
       mode: 0o600,
       preserveExistingMode: true,
+      dirMode: inlineDirMode,
       tempPrefix: "dreaming-inline",
       throwOnCleanupError: true,
     });
@@ -109,6 +113,9 @@ export async function writeDailyDreamingPhaseBlock(params: {
       params.timezone,
     );
     await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    // Preserve the directory mode freshly created by fs.mkdir so
+    // replaceFileAtomic's chmod(dir, dirMode) is a no-op.
+    const reportDirMode = (await fs.stat(path.dirname(reportPath))).mode;
     const report = [
       `# ${params.phase === "light" ? "Light Sleep" : "REM Sleep"}`,
       "",
@@ -119,6 +126,8 @@ export async function writeDailyDreamingPhaseBlock(params: {
       filePath: reportPath,
       content: report,
       mode: 0o600,
+      preserveExistingMode: true,
+      dirMode: reportDirMode,
       tempPrefix: "dreaming-report",
       throwOnCleanupError: true,
     });
@@ -157,10 +166,15 @@ export async function writeDeepDreamingReport(params: {
   if (shouldWriteSeparate(params.storage)) {
     reportPath = resolveSeparateReportPath(params.workspaceDir, "deep", nowMs, params.timezone);
     await fs.mkdir(path.dirname(reportPath), { recursive: true });
+    // Preserve the directory mode freshly created by fs.mkdir so
+    // replaceFileAtomic's chmod(dir, dirMode) is a no-op.
+    const deepDirMode = (await fs.stat(path.dirname(reportPath))).mode;
     await replaceFileAtomic({
       filePath: reportPath,
       content: `# Deep Sleep\n\n${body}\n`,
       mode: 0o600,
+      preserveExistingMode: true,
+      dirMode: deepDirMode,
       tempPrefix: "dreaming-deep",
       throwOnCleanupError: true,
     });
