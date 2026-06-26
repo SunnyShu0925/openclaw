@@ -225,19 +225,19 @@ empties, and joins survivors with `sep`. A surface with no entry uses
 A piece reads values from the per-turn contract by dot-path. Absent values are
 empty (so a `when` guard or a `|fallback` keeps the piece clean).
 
-| Path                                                                                | Meaning                                |
-| ----------------------------------------------------------------------------------- | -------------------------------------- |
-| `surface`                                                                           | channel id (`discord`/`telegram`/etc.) |
-| `model.provider` / `model.display_name`                                             | provider id / model id                 |
-| `model.reasoning`                                                                   | effort (`off` through `xhigh`)         |
-| `model.is_fallback` / `model.is_override`                                           | bool: fallback used / model pinned     |
-| `state.fast_mode`                                                                   | bool: fast vs slow                     |
-| `context.max_tokens` / `context.pct_used`                                           | window budget / 0-100 used             |
-| `usage.input_tokens` / `usage.output_tokens` / `usage.total_tokens`                 | turn aggregate                         |
-| `usage.has_split_tokens` / `usage.has_total_only_tokens` / `usage.cache_hit_pct`    | token display guards and cache percent |
-| `usage.last.input_tokens` / `usage.last.output_tokens` / `usage.last.cache_hit_pct` | final model call only                  |
-| `cost.turn_usd`                                                                     | estimated turn cost                    |
-| `identity.name` / `identity.emoji`                                                  | agent name / chosen emoji              |
+| Path                                                                                | Meaning                                          |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `surface`                                                                           | channel id (`discord`/`telegram`/etc.)           |
+| `model.provider` / `model.display_name`                                             | provider id / model id                           |
+| `model.reasoning`                                                                   | effort (`off` through `xhigh`)                   |
+| `model.is_fallback` / `model.is_override`                                           | bool: fallback used / model pinned               |
+| `state.fast_mode`                                                                   | bool: fast vs slow                               |
+| `context.max_tokens` / `context.pct_used` / `context.managed_by_backend`            | window budget / 0-100 used / backend owns window |
+| `usage.input_tokens` / `usage.output_tokens` / `usage.total_tokens`                 | turn aggregate                                   |
+| `usage.has_split_tokens` / `usage.has_total_only_tokens` / `usage.cache_hit_pct`    | token display guards and cache percent           |
+| `usage.last.input_tokens` / `usage.last.output_tokens` / `usage.last.cache_hit_pct` | final model call only                            |
+| `cost.turn_usd`                                                                     | estimated turn cost                              |
+| `identity.name` / `identity.emoji`                                                  | agent name / chosen emoji                        |
 
 (Provider rate-limit windows are **not** in this contract.)
 
@@ -259,6 +259,7 @@ Pipe a value through verbs left to right; a non-verb segment is the fallback.
 
 - `{ "text": "📚 {context.max_tokens|num}" }`: literal + interpolation.
 - `{ "when": "<path>", "text": "..." }`: render only if the path is truthy.
+- `{ "unless": "<path>", "text": "..." }`: render only if the path is falsy or missing.
 - `{ "map": "<path>", "cases": { "true": "⚡", "false": "🐌" } }`: value to glyph.
 - `{ "each": "limits.windows", "item": "{label}" }`: iterate an array.
 
@@ -277,6 +278,7 @@ Pipe a value through verbs left to right; a non-verb segment is the fallback.
         { "map": "state.fast_mode", "cases": { "true": " ⚡", "false": " 🐌" } },
         {
           "when": "context.max_tokens",
+          "unless": "context.managed_by_backend",
           "text": " | 📚 [{context.pct_used|meter:5:braille}]{context.max_tokens|num}",
         },
       ],

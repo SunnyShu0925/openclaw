@@ -455,7 +455,7 @@ Notes:
   active session fallback chain, so local-only housekeeping does not silently
   fall back to a paid conversation model.
 - The flush runs once per compaction cycle (tracked in `sessions.json`).
-- The flush runs only for embedded OpenClaw sessions (CLI backends skip it).
+- The flush runs for embedded OpenClaw sessions and for CLI-backed sessions (handoff/dreaming files are written before native compaction).
 - The flush is skipped when the session workspace is read-only (`workspaceAccess: "ro"` or `"none"`).
 - See [Memory](/concepts/memory) for the workspace file layout and write patterns.
 
