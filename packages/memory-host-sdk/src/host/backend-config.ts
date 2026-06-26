@@ -78,6 +78,7 @@ export type ResolvedQmdUpdateConfig = {
   startupDelayMs: number;
   waitForBootSync: boolean;
   embedIntervalMs: number;
+  embedIntervalConfigured: boolean;
   commandTimeoutMs: number;
   updateTimeoutMs: number;
   embedTimeoutMs: number;
@@ -485,6 +486,7 @@ export function resolveMemoryBackendConfig(params: {
       startupDelayMs: resolveStartupDelayMs(qmdCfg?.update?.startupDelayMs),
       waitForBootSync: qmdCfg?.update?.waitForBootSync === true,
       embedIntervalMs: resolveEmbedIntervalMs(qmdCfg?.update?.embedInterval),
+      embedIntervalConfigured: Boolean(qmdCfg?.update?.embedInterval?.trim()),
       commandTimeoutMs: resolveTimeoutMs(
         qmdCfg?.update?.commandTimeoutMs,
         DEFAULT_QMD_COMMAND_TIMEOUT_MS,

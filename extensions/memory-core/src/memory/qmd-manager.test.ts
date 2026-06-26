@@ -4819,7 +4819,7 @@ describe("QmdMemoryManager", () => {
     await manager.close();
   });
 
-  it("skips periodic embed maintenance in lexical search mode", async () => {
+  it("runs periodic embed maintenance in lexical search mode when embedInterval is explicitly configured", async () => {
     vi.useFakeTimers();
     cfg = {
       ...cfg,
@@ -4846,7 +4846,9 @@ describe("QmdMemoryManager", () => {
     const commandCalls = spawnMock.mock.calls
       .map((call: unknown[]) => call[1] as string[])
       .filter((args: string[]) => args[0] === "update" || args[0] === "embed");
-    expect(commandCalls).toStrictEqual([]);
+    // embedInterval is explicitly configured, so embed should fire even in lexical search mode
+    expect(commandCalls).not.toStrictEqual([]);
+    expect(commandCalls).toEqual(expect.arrayContaining([["embed"]]));
 
     await manager.close();
   });

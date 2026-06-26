@@ -125,11 +125,47 @@ describe("resolveMemoryBackendConfig", () => {
     expect(qmd.update.startupDelayMs).toBe(120_000);
     expect(qmd.update.waitForBootSync).toBe(false);
     expect(qmd.update.embedIntervalMs).toBe(3_600_000);
+    expect(qmd.update.embedIntervalConfigured).toBe(false);
     expect(qmd.update.commandTimeoutMs).toBe(30_000);
     expect(qmd.update.updateTimeoutMs).toBe(120_000);
     expect(qmd.update.embedTimeoutMs).toBe(120_000);
     expect(collectionNames(resolved)).toStrictEqual(["memory-dir-main", "memory-root-main"]);
     expect(requireQmdCollection(resolved, "memory-root-main").pattern).toBe("MEMORY.md");
+  });
+
+  it("does not mark embedIntervalConfigured for blank or whitespace values", () => {
+    const rDefault = resolveMemoryBackendConfig({
+      cfg: {
+        agents: { defaults: { workspace: "/tmp/test" } },
+        memory: { backend: "qmd", qmd: {} },
+      } as OpenClawConfig,
+      agentId: "main",
+    });
+    expect(rDefault.qmd?.update.embedIntervalConfigured).toBe(false);
+    const rEmpty = resolveMemoryBackendConfig({
+      cfg: {
+        agents: { defaults: { workspace: "/tmp/test" } },
+        memory: { backend: "qmd", qmd: { update: { embedInterval: "" } } },
+      } as OpenClawConfig,
+      agentId: "main",
+    });
+    expect(rEmpty.qmd?.update.embedIntervalConfigured).toBe(false);
+    const rWS = resolveMemoryBackendConfig({
+      cfg: {
+        agents: { defaults: { workspace: "/tmp/test" } },
+        memory: { backend: "qmd", qmd: { update: { embedInterval: "   " } } },
+      } as OpenClawConfig,
+      agentId: "main",
+    });
+    expect(rWS.qmd?.update.embedIntervalConfigured).toBe(false);
+    const rValid = resolveMemoryBackendConfig({
+      cfg: {
+        agents: { defaults: { workspace: "/tmp/test" } },
+        memory: { backend: "qmd", qmd: { update: { embedInterval: "5m" } } },
+      } as OpenClawConfig,
+      agentId: "main",
+    });
+    expect(rValid.qmd?.update.embedIntervalConfigured).toBe(true);
   });
 
   it("keeps uppercase MEMORY.md as the root pattern when only lowercase memory.md exists", () => {

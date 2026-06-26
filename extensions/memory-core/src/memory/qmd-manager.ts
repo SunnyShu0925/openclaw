@@ -1955,7 +1955,7 @@ export class QmdMemoryManager implements MemorySearchManager {
   }
 
   private shouldRunEmbed(force?: boolean): boolean {
-    if (!qmdUsesVectors(this.qmd.searchMode)) {
+    if (!qmdUsesVectors(this.qmd.searchMode) && !this.qmd.update.embedIntervalConfigured) {
       return false;
     }
     const now = Date.now();
@@ -1971,7 +1971,7 @@ export class QmdMemoryManager implements MemorySearchManager {
   }
 
   private shouldScheduleEmbedTimer(): boolean {
-    if (!qmdUsesVectors(this.qmd.searchMode)) {
+    if (!qmdUsesVectors(this.qmd.searchMode) && !this.qmd.update.embedIntervalConfigured) {
       return false;
     }
     const embedIntervalMs = this.qmd.update.embedIntervalMs;
