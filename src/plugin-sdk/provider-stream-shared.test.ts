@@ -189,6 +189,45 @@ describe("createDeepSeekV4OpenAICompatibleThinkingWrapper", () => {
     expect(payload.messages[3]).toHaveProperty("reasoning_content", "");
     expect(payload.messages[4]).toHaveProperty("reasoning_content", "native reasoning");
   });
+
+  it("removes pre-existing OpenRouter reasoning envelopes when enabled thinking sets native effort", () => {
+    const payload: Record<string, unknown> = {
+      reasoning: { effort: "high" },
+    };
+    const baseStreamFn: StreamFn = (_model, _context, options) => {
+      options?.onPayload?.(payload as never, _model as never);
+      return {} as ReturnType<StreamFn>;
+    };
+
+    const wrapped = createDeepSeekV4OpenAICompatibleThinkingWrapper({
+      baseStreamFn,
+      thinkingLevel: "high",
+      shouldPatchModel: () => true,
+    });
+    void wrapped?.({} as never, { messages: [] } as never, {});
+
+    expect(payload).toEqual({
+      thinking: { type: "enabled" },
+      reasoning_effort: "high",
+    });
+  });
+
+  it("does not add unexpected keys when payload has no pre-existing reasoning", () => {
+    const payload: Record<string, unknown> = {};
+    const baseStreamFn: StreamFn = (_model, _context, options) => {
+      options?.onPayload?.(payload as never, _model as never);
+      return {} as ReturnType<StreamFn>;
+    };
+
+    const wrapped = createDeepSeekV4OpenAICompatibleThinkingWrapper({
+      baseStreamFn,
+      thinkingLevel: "high",
+      shouldPatchModel: () => true,
+    });
+    void wrapped?.({} as never, { messages: [] } as never, {});
+
+    expect(Object.keys(payload).toSorted()).toEqual(["reasoning_effort", "thinking"]);
+  });
 });
 
 describe("createPayloadPatchStreamWrapper", () => {

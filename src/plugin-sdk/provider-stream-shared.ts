@@ -494,6 +494,11 @@ export function createDeepSeekV4OpenAICompatibleThinkingWrapper(params: {
 
       payload.thinking = { type: "enabled" };
       payload.reasoning_effort = resolveReasoningEffort(params.thinkingLevel);
+      // OpenRouter or other non-native reasoning-format providers may have
+      // already placed a nested `reasoning.effort` on the payload; sending
+      // both field shapes causes providers to reject the request (HTTP 400).
+      // The disabled-think branch below already does the same cleanup.
+      delete payload.reasoning;
       ensureDeepSeekV4AssistantReasoningContent(payload, {
         shouldBackfillAssistantMessage: params.shouldBackfillAssistantReasoningContent,
       });
