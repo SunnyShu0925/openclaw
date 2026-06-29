@@ -38,6 +38,11 @@ vi.mock("./session-utils.js", () => ({
   })),
 }));
 
+const { mockLogError } = vi.hoisted(() => ({ mockLogError: vi.fn() }));
+vi.mock("../logging/subsystem.js", () => ({
+  createSubsystemLogger: vi.fn(() => ({ error: mockLogError })),
+}));
+
 import { getRuntimeConfig } from "../config/io.js";
 import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
 import {
@@ -69,6 +74,7 @@ describe("agent event handler", () => {
     });
     vi.mocked(loadGatewaySessionRow).mockReset().mockReturnValue(null);
     persistGatewaySessionLifecycleEventMock.mockReset().mockResolvedValue(undefined);
+    mockLogError.mockReset();
     resetAgentRunContextForTest();
   });
 
@@ -2521,6 +2527,11 @@ describe("agent event handler", () => {
       abortedLastRun: false,
     });
     expect(markTrackedRunTerminalPersisted).not.toHaveBeenCalled();
+    expect(mockLogError).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "gateway: failed to persist terminal session lifecycle event for run run-failed-write",
+      ),
+    );
   });
 
   it("does not clear a same-id retry when an old restart terminal arrives", () => {

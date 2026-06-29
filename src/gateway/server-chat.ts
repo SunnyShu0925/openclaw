@@ -7,9 +7,12 @@ import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../auto-re
 import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { type AgentEventPayload, getAgentRunContext } from "../infra/agent-events.js";
-import { detectErrorKind, type ErrorKind } from "../infra/errors.js";
+import { detectErrorKind, formatErrorMessage, type ErrorKind } from "../infra/errors.js";
 import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { isAcpSessionKey, isSubagentSessionKey } from "../sessions/session-key-utils.js";
+
+const log = createSubsystemLogger("gateway/server-chat");
 import { resolveAssistantEventPhase } from "../shared/chat-message-content.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
 import {
@@ -708,7 +711,10 @@ export function createAgentEventHandler({
             markPersisted();
             broadcastSessionChange();
           })
-          .catch(() => {
+          .catch((err: unknown) => {
+            log.error(
+              `gateway: failed to persist terminal session lifecycle event for run ${evt.runId}: ${formatErrorMessage(err)}`,
+            );
             // Persistence recovery remains tracked by the controller entry, but
             // subscribers still need a terminal projection instead of hanging.
             broadcastSessionChange(evt);
