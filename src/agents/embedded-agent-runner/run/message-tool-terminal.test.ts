@@ -7,8 +7,8 @@ import type {
   AfterToolCallContext,
   AgentEvent,
   AgentLoopConfig,
-  AgentMessage,
   AgentTool,
+  AgentToolResult,
   StreamFn,
 } from "openclaw/plugin-sdk/agent-core";
 import { createAssistantMessageEventStream } from "@openclaw/llm-core";
@@ -403,7 +403,7 @@ describe("message-tool-only source replies", () => {
       },
       execute: async (_id: string, raw: unknown) => {
         const args = (raw ?? {}) as Record<string, unknown>;
-        executed.push(String(args.action ?? "unknown"));
+        executed.push(typeof args.action === "string" ? args.action : "unknown");
         return {
           content: [
             {
@@ -492,7 +492,9 @@ describe("message-tool-only source replies", () => {
     );
 
     const events: AgentEvent[] = [];
-    for await (const ev of stream) events.push(ev);
+    for await (const ev of stream) {
+      events.push(ev);
+    }
 
     // Cascade stops at 2 turns — not 7+.
     expect(turn).toBe(2);
@@ -505,9 +507,13 @@ describe("message-tool-only source replies", () => {
       (e): e is Extract<AgentEvent, { type: "tool_execution_end" }> =>
         e.type === "tool_execution_end",
     );
-    expect(toolEnds[0]?.result?.terminate).toBeUndefined();
+    expect(
+      (toolEnds[0]?.result as AgentToolResult<unknown> | undefined)?.terminate,
+    ).toBeUndefined();
     // Turn 2: terminate: true (cascade broken)
-    expect(toolEnds[1]?.result?.terminate).toBe(true);
+    expect(
+      (toolEnds[1]?.result as AgentToolResult<unknown> | undefined)?.terminate,
+    ).toBe(true);
   });
 
   it("full embedded-run proof: first message.send allows Slack follow-up exec tool", async () => {
@@ -579,7 +585,7 @@ describe("message-tool-only source replies", () => {
             input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
           },
-          stopReason: (turn <= 2 ? "toolUse" : "stop") as "toolUse" | "stop",
+          stopReason: turn <= 2 ? "toolUse" : "stop",
           timestamp: Date.now(),
         };
         stream.push({
@@ -610,7 +616,9 @@ describe("message-tool-only source replies", () => {
     );
 
     const events: AgentEvent[] = [];
-    for await (const ev of stream) events.push(ev);
+    for await (const ev of stream) {
+      events.push(ev);
+    }
 
     // All 3 turns: message → exec → text (#92343 preserved)
     expect(turn).toBe(3);

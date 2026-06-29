@@ -935,7 +935,7 @@ describe("agentLoop tool termination", () => {
                   type: "toolCall",
                   id: "call-msg-1",
                   name: "message",
-                  arguments: { action: "send", message: "reply" },
+                  arguments: {},
                 },
               ])
             : turn === 2
@@ -944,7 +944,7 @@ describe("agentLoop tool termination", () => {
                     type: "toolCall",
                     id: "call-msg-2",
                     name: "message",
-                    arguments: { action: "send", message: "reply again" },
+                    arguments: {},
                   },
                 ])
               : makeAssistantMessage([{ type: "text", text: "should not reach this" }]);
@@ -1007,7 +1007,7 @@ describe("agentLoop tool termination", () => {
                   type: "toolCall",
                   id: "call-msg",
                   name: "message",
-                  arguments: { action: "send", message: "reply" },
+                  arguments: {},
                 },
               ])
             : turn === 2
@@ -1016,7 +1016,7 @@ describe("agentLoop tool termination", () => {
                     type: "toolCall",
                     id: "call-exec",
                     name: "exec",
-                    arguments: { cmd: "echo done" },
+                    arguments: {},
                   },
                 ])
               : makeAssistantMessage([{ type: "text", text: "all done" }]);
