@@ -365,6 +365,12 @@ function annotateToolTurnOutcome(
     } else if (role === "assistant") {
       if (assistantGroupHasReplyText(item)) {
         sawAssistantReply = true;
+      } else {
+        // Agent-initiated turns (cron/scheduled/autonomous) have no user
+        // message separating them. An assistant group without reply text
+        // marks a failed turn boundary — reset the flag so the reply from
+        // a later turn does not leak backward onto this turn's tool errors.
+        sawAssistantReply = false;
       }
     } else if (role === "tool") {
       item.turnSucceeded = sawAssistantReply;

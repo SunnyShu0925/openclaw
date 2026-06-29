@@ -1194,4 +1194,16 @@ describe("tool turn outcome annotation (#89683)", () => {
     ]);
     expect(tools.map((group) => group.turnSucceeded)).toEqual([true, false]);
   });
+
+  it("scopes the outcome across adjacent agent-initiated turns with no user message between them (#97849)", () => {
+    // Turn 1: failed tool, assistant with no reply text — genuinely failed.
+    // Turn 2: failed tool + assistant reply text — succeeded.
+    const tools = toolGroups([
+      failedTool(1),
+      { role: "assistant", senderLabel: "turn-1", content: [{ type: "text", text: "" }], timestamp: 2 },
+      failedTool(3),
+      { role: "assistant", senderLabel: "turn-2", content: [{ type: "text", text: "done" }], timestamp: 4 },
+    ]);
+    expect(tools.map((group) => group.turnSucceeded)).toEqual([false, true]);
+  });
 });
