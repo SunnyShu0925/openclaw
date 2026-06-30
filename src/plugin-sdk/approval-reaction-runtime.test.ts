@@ -145,7 +145,7 @@ describe("plugin-sdk/approval-reaction-runtime", () => {
         request: {
           ...execRequest.request,
           ask: "on-miss",
-          allowedDecisions: ["allow-once", "deny"],
+          unavailableDecisions: ["allow-always"],
         },
       },
       nowMs: 1_000,
