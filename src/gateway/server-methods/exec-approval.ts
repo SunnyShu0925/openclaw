@@ -22,6 +22,7 @@ import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.
 import {
   DEFAULT_EXEC_APPROVAL_TIMEOUT_MS,
   normalizeExecApprovalUnavailableDecisions,
+  normalizeExecAsk,
   resolveExecApprovalRequestAllowedDecisions,
   type ExecApprovalRequest,
   type ExecApprovalResolved,
@@ -458,7 +459,8 @@ export function createExecApprovalHandlers(
           if (allowedDecisions.includes(decision)) {
             return null;
           }
-          const isPolicyAlways = !snapshot.request.ask || snapshot.request.ask === "always";
+          const normalizedAsk = normalizeExecAsk(snapshot.request.ask);
+          const isPolicyAlways = !normalizedAsk || normalizedAsk === "always";
           return {
             message: isPolicyAlways
               ? "allow-always is unavailable because the effective policy requires approval every time"

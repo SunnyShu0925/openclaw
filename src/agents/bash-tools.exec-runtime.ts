@@ -402,7 +402,8 @@ export function buildApprovalPendingMessage(params: {
   );
   lines.push(`Reply with: /approve ${params.approvalSlug} ${decisionText}`);
   if (!allowedDecisions.includes("allow-always")) {
-    const isPolicyAlways = !params.ask || params.ask === "always";
+    const normalizedAsk = (params.ask ?? "").trim().toLowerCase();
+    const isPolicyAlways = !normalizedAsk || normalizedAsk === "always";
     lines.push(
       isPolicyAlways
         ? "The effective approval policy requires approval every time, so Allow Always is unavailable."

@@ -18,6 +18,7 @@ import {
   supportsNativeExecApprovalClient,
 } from "./exec-approval-surface.js";
 import {
+  normalizeExecAsk,
   resolveExecApprovalAllowedDecisions,
   type ExecApprovalDecision,
   type ExecHost,
@@ -376,7 +377,8 @@ export function buildExecApprovalPendingReplyPayload(
     lines.push(secondaryFence);
   }
   if (!allowedDecisions.includes("allow-always")) {
-    const isPolicyAlways = !params.ask || params.ask === "always";
+    const normalizedAsk = normalizeExecAsk(params.ask);
+    const isPolicyAlways = !normalizedAsk || normalizedAsk === "always";
     lines.push(
       isPolicyAlways
         ? "The effective approval policy requires approval every time, so Allow Always is unavailable."

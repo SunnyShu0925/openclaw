@@ -32,6 +32,7 @@ import {
 } from "./exec-approval-command-display.js";
 import { formatExecApprovalExpiresIn } from "./exec-approval-reply.js";
 import {
+  normalizeExecAsk,
   resolveExecApprovalRequestAllowedDecisions,
   type ExecApprovalRequest,
   type ExecApprovalResolved,
@@ -293,7 +294,8 @@ export function buildExecApprovalRequestMessage(request: ExecApprovalRequest, no
   );
   lines.push(`Reply with: /approve ${request.id} ${decisionText}`);
   if (!allowedDecisions.includes("allow-always")) {
-    const isPolicyAlways = !request.request.ask || request.request.ask === "always";
+    const normalizedAsk = normalizeExecAsk(request.request.ask);
+    const isPolicyAlways = !normalizedAsk || normalizedAsk === "always";
     lines.push(
       isPolicyAlways
         ? "Allow Always is unavailable because the effective policy requires approval every time."

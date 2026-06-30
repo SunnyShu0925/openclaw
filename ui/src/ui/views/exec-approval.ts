@@ -143,7 +143,8 @@ function resolveApprovalDecisions(active: ExecApprovalRequest): readonly ExecApp
   if (active.request.allowedDecisions?.length) {
     return active.request.allowedDecisions;
   }
-  if (active.kind === "exec" && active.request.ask === "always") {
+  const normalizedAsk = (active.request.ask ?? "").trim().toLowerCase();
+  if (active.kind === "exec" && normalizedAsk === "always") {
     return ["allow-once", "deny"];
   }
   return DEFAULT_EXEC_APPROVAL_DECISIONS;
@@ -156,7 +157,8 @@ function renderUnavailableDecisionWarning(
   if (active.kind !== "exec" || decisions.includes("allow-always")) {
     return nothing;
   }
-  const isPolicyAlways = !active.request.ask || active.request.ask === "always";
+  const normalizedAskPolicy = (active.request.ask ?? "").trim().toLowerCase();
+  const isPolicyAlways = !normalizedAskPolicy || normalizedAskPolicy === "always";
   const key = isPolicyAlways
     ? "execApproval.allowAlwaysUnavailable"
     : "execApproval.allowAlwaysNonPersistable";
