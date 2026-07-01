@@ -880,6 +880,31 @@ describe("buildCliSessionHistoryPrompt", () => {
     expect(prompt).not.toContain("NotAlice: reply");
   });
 
+  it("falls through empty or non-string senderLabel to senderName", () => {
+    // Empty string and non-string values must be sanitized and fall
+    // through to the next field instead of producing an empty label.
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "hi", senderLabel: "", senderName: "Bob" },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("Bob: hi");
+  });
+
+  it("falls through senderLabel empty string to default User", () => {
+    // Empty senderLabel with no fallback fields must produce "User:".
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "hi", senderLabel: "" },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("User: hi");
+  });
+
   it("honors the cap when the summary block plus marker crosses it", () => {
     // Edge case: `summaryRendered.length < maxHistoryChars` (the gate that
     // routes to the oversize-summary branch is not taken) BUT

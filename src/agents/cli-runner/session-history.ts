@@ -148,6 +148,11 @@ function loadContextEngineMessagesFromEntries(entries: unknown[]): AgentMessage[
   });
 }
 
+/** Coerces a sender identity field to a non-empty trimmed string or undefined. */
+function coerceSenderLabel(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function renderHistoryMessage(message: unknown): string | undefined {
   if (!message || typeof message !== "object") {
     return undefined;
@@ -157,10 +162,10 @@ function renderHistoryMessage(message: unknown): string | undefined {
     entry.role === "assistant"
       ? "Assistant"
       : entry.role === "user"
-        ? (entry.senderLabel as string | undefined) ??
-          (entry.senderName as string | undefined) ??
-          (entry.senderUsername as string | undefined) ??
-          (entry.senderId as string | undefined) ??
+        ? coerceSenderLabel(entry.senderLabel) ??
+          coerceSenderLabel(entry.senderName) ??
+          coerceSenderLabel(entry.senderUsername) ??
+          coerceSenderLabel(entry.senderId) ??
           "User"
         : entry.role === "compactionSummary"
           ? "Compaction summary"
