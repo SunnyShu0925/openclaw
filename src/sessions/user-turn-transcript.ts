@@ -312,6 +312,19 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
   const provenance = normalizeInputProvenance(
     (message as unknown as { provenance?: unknown }).provenance,
   );
+  // Preserve sender fields from the original message so they survive
+  // before_message_write hook replacements (e.g. redaction hooks).
+  const originalSender = message as unknown as {
+    senderId?: unknown;
+    senderName?: unknown;
+    senderUsername?: unknown;
+  };
+  const senderId =
+    typeof originalSender.senderId === "string" ? originalSender.senderId : undefined;
+  const senderName =
+    typeof originalSender.senderName === "string" ? originalSender.senderName : undefined;
+  const senderUsername =
+    typeof originalSender.senderUsername === "string" ? originalSender.senderUsername : undefined;
   const nextMessage = params.beforeMessageWrite({
     message,
     ...(params.agentId ? { agentId: params.agentId } : {}),
@@ -328,7 +341,13 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
     originalOpenClaw && typeof originalOpenClaw === "object"
       ? (originalOpenClaw as { senderIsOwner?: unknown }).senderIsOwner
       : undefined;
-  if (!idempotencyKey && typeof senderIsOwner !== "boolean") {
+  if (
+    !idempotencyKey &&
+    typeof senderIsOwner !== "boolean" &&
+    !senderId &&
+    !senderName &&
+    !senderUsername
+  ) {
     return nextUserMessage;
   }
   const nextRecord = nextUserMessage as unknown as Record<string, unknown>;
@@ -339,6 +358,9 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
   return {
     ...nextRecord,
     ...(idempotencyKey ? { idempotencyKey } : {}),
+    ...(senderId ? { senderId } : {}),
+    ...(senderName ? { senderName } : {}),
+    ...(senderUsername ? { senderUsername } : {}),
     ...(typeof senderIsOwner === "boolean"
       ? { __openclaw: { ...nextOpenClaw, senderIsOwner } }
       : {}),

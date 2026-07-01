@@ -449,7 +449,8 @@ describe("user turn transcript persistence", () => {
         updateMode: "none",
       });
 
-      expect(appended.message).toMatchObject({
+      expect(appended).toBeDefined();
+      expect(appended!.message).toMatchObject({
         role: "user",
         content: "hello from alice",
         senderId: "U100",
@@ -471,13 +472,16 @@ describe("user turn transcript persistence", () => {
         updateMode: "none",
       });
 
-      expect(appended.message).toMatchObject({
+      expect(appended).toBeDefined();
+      expect(appended!.message).toMatchObject({
         role: "user",
         content: "plain message",
       });
-      expect((appended.message as Record<string, unknown>).senderId).toBeUndefined();
-      expect((appended.message as Record<string, unknown>).senderName).toBeUndefined();
-      expect((appended.message as Record<string, unknown>).senderUsername).toBeUndefined();
+      expect((appended!.message as unknown as Record<string, unknown>).senderId).toBeUndefined();
+      expect((appended!.message as unknown as Record<string, unknown>).senderName).toBeUndefined();
+      expect(
+        (appended!.message as unknown as Record<string, unknown>).senderUsername,
+      ).toBeUndefined();
     });
   });
 

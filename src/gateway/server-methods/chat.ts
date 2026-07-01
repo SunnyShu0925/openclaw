@@ -3887,9 +3887,6 @@ export const chatHandlers: GatewayRequestHandlers = {
         idempotencyKey: `${clientRunId}:user`,
         ...(hasGatewayAdminScope(client) ? { senderIsOwner: true } : {}),
         ...(systemInputProvenance ? { provenance: systemInputProvenance } : {}),
-        ...(clientInfo?.id ? { senderId: clientInfo.id } : {}),
-        ...(clientInfo?.displayName ? { senderName: clientInfo.displayName } : {}),
-        ...(clientInfo?.displayName ? { senderUsername: clientInfo.displayName } : {}),
       };
       const userTurnInputPromise: Promise<UserTurnInput> = userTurnMediaPromise.then((media) => ({
         ...baseUserTurnInput,
