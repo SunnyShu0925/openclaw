@@ -1248,6 +1248,9 @@ export async function runPreparedReply(
       ? {
           text: userTurnTranscriptText,
           senderIsOwner: command.senderIsOwner,
+          senderId: normalizeOptionalString(sessionCtx.SenderId),
+          senderName: normalizeOptionalString(sessionCtx.SenderName),
+          senderUsername: normalizeOptionalString(sessionCtx.SenderUsername),
           ...(inputProvenance ? { provenance: inputProvenance } : {}),
           ...(userTurnMediaForPersistence.length > 0
             ? {

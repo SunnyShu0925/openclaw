@@ -246,6 +246,9 @@ function buildPersistedUserTurnMessage(params: UserTurnInput): PersistedUserTurn
     ...(params.senderIsOwner === undefined
       ? {}
       : { __openclaw: { senderIsOwner: params.senderIsOwner } }),
+    ...(params.senderId ? { senderId: params.senderId } : {}),
+    ...(params.senderName ? { senderName: params.senderName } : {}),
+    ...(params.senderUsername ? { senderUsername: params.senderUsername } : {}),
     ...mediaFields,
   } as PersistedUserTurnMessage;
   return applyInputProvenanceToUserMessage(message, params.provenance) as PersistedUserTurnMessage;

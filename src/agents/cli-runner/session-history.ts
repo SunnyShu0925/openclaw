@@ -150,7 +150,14 @@ function loadContextEngineMessagesFromEntries(entries: unknown[]): AgentMessage[
 
 /** Coerces a sender identity field to a non-empty trimmed string or undefined. */
 function coerceSenderLabel(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  if (typeof value === "string" && value.trim()) {
+    const label = value.trim();
+    // Constrain to a single prompt line — newlines in channel/user names
+    // could inject spoofed transcript lines into model-visible history.
+    const firstLine = label.split("\n")[0].trim();
+    return firstLine || undefined;
+  }
+  return undefined;
 }
 
 function renderHistoryMessage(message: unknown): string | undefined {

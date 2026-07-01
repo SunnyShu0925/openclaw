@@ -429,6 +429,58 @@ describe("user turn transcript persistence", () => {
     });
   });
 
+  describe("sender field persistence", () => {
+    it("persists senderId, senderName, and senderUsername on recordUserTurn message", async () => {
+      const dir = createTempDir("openclaw-user-turn-sender-");
+      const transcriptPath = path.join(dir, "session.jsonl");
+
+      const appended = await appendUserTurnTranscriptMessage({
+        transcriptPath,
+        sessionId: "session-1",
+        sessionKey: "main",
+        cwd: dir,
+        input: {
+          text: "hello from alice",
+          timestamp: 123,
+          senderId: "U100",
+          senderName: "Alice",
+          senderUsername: "alice_dev",
+        },
+        updateMode: "none",
+      });
+
+      expect(appended.message).toMatchObject({
+        role: "user",
+        content: "hello from alice",
+        senderId: "U100",
+        senderName: "Alice",
+        senderUsername: "alice_dev",
+      });
+    });
+
+    it("omits sender fields when not provided in UserTurnInput", async () => {
+      const dir = createTempDir("openclaw-user-turn-no-sender-");
+      const transcriptPath = path.join(dir, "session.jsonl");
+
+      const appended = await appendUserTurnTranscriptMessage({
+        transcriptPath,
+        sessionId: "session-1",
+        sessionKey: "main",
+        cwd: dir,
+        input: { text: "plain message", timestamp: 456 },
+        updateMode: "none",
+      });
+
+      expect(appended.message).toMatchObject({
+        role: "user",
+        content: "plain message",
+      });
+      expect((appended.message as Record<string, unknown>).senderId).toBeUndefined();
+      expect((appended.message as Record<string, unknown>).senderName).toBeUndefined();
+      expect((appended.message as Record<string, unknown>).senderUsername).toBeUndefined();
+    });
+  });
+
   describe("persistUserTurnTranscript", () => {
     it("resolves the session file and persists the user turn", async () => {
       const dir = createTempDir("openclaw-user-turn-persist-");

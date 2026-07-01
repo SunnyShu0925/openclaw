@@ -24,6 +24,9 @@ export type UserTurnInput = {
   timestamp?: number;
   idempotencyKey?: string;
   senderIsOwner?: boolean;
+  senderId?: string;
+  senderName?: string;
+  senderUsername?: string;
   provenance?: InputProvenance;
   mediaOnlyText?: string;
 };
