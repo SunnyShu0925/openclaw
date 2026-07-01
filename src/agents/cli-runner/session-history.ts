@@ -165,21 +165,28 @@ function renderHistoryMessage(message: unknown): string | undefined {
     return undefined;
   }
   const entry = message as HistoryMessage;
-  const role =
+  const baseRole =
     entry.role === "assistant"
       ? "Assistant"
       : entry.role === "user"
-        ? (coerceSenderLabel(entry.senderLabel) ??
-          coerceSenderLabel(entry.senderName) ??
-          coerceSenderLabel(entry.senderUsername) ??
-          coerceSenderLabel(entry.senderId) ??
-          "User")
+        ? "User"
         : entry.role === "compactionSummary"
           ? "Compaction summary"
           : undefined;
-  if (!role) {
+  if (!baseRole) {
     return undefined;
   }
+  // Nest sender identity under the fixed user role so sender labels never
+  // replace the role — a malicious display name cannot spoof the model's
+  // understanding of who is speaking.
+  const senderLabel =
+    entry.role === "user"
+      ? (coerceSenderLabel(entry.senderLabel) ??
+        coerceSenderLabel(entry.senderName) ??
+        coerceSenderLabel(entry.senderUsername) ??
+        coerceSenderLabel(entry.senderId))
+      : undefined;
+  const role = senderLabel ? `${baseRole} (${senderLabel})` : baseRole;
   const text =
     entry.role === "compactionSummary" && typeof entry.summary === "string"
       ? entry.summary.trim()
