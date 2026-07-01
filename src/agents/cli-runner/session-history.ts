@@ -152,9 +152,9 @@ function loadContextEngineMessagesFromEntries(entries: unknown[]): AgentMessage[
 function coerceSenderLabel(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) {
     const label = value.trim();
-    // Constrain to a single prompt line — newlines in channel/user names
-    // could inject spoofed transcript lines into model-visible history.
-    const firstLine = label.split("\n")[0].trim();
+    // Constrain to a single prompt line — line breaks (CR/LF) in channel/user
+    // names could inject spoofed transcript lines into model-visible history.
+    const firstLine = label.split(/[\r\n]/)[0].trim();
     return firstLine || undefined;
   }
   return undefined;
@@ -169,11 +169,11 @@ function renderHistoryMessage(message: unknown): string | undefined {
     entry.role === "assistant"
       ? "Assistant"
       : entry.role === "user"
-        ? coerceSenderLabel(entry.senderLabel) ??
+        ? (coerceSenderLabel(entry.senderLabel) ??
           coerceSenderLabel(entry.senderName) ??
           coerceSenderLabel(entry.senderUsername) ??
           coerceSenderLabel(entry.senderId) ??
-          "User"
+          "User")
         : entry.role === "compactionSummary"
           ? "Compaction summary"
           : undefined;
