@@ -34,6 +34,10 @@ type HistoryMessage = {
   role?: unknown;
   content?: unknown;
   summary?: unknown;
+  senderLabel?: unknown;
+  senderName?: unknown;
+  senderUsername?: unknown;
+  senderId?: unknown;
 };
 type HistoryEntry = {
   type?: unknown;
@@ -153,7 +157,11 @@ function renderHistoryMessage(message: unknown): string | undefined {
     entry.role === "assistant"
       ? "Assistant"
       : entry.role === "user"
-        ? "User"
+        ? (entry.senderLabel as string | undefined) ??
+          (entry.senderName as string | undefined) ??
+          (entry.senderUsername as string | undefined) ??
+          (entry.senderId as string | undefined) ??
+          "User"
         : entry.role === "compactionSummary"
           ? "Compaction summary"
           : undefined;

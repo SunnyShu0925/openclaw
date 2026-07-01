@@ -792,6 +792,94 @@ describe("buildCliSessionHistoryPrompt", () => {
     expect(prompt).toContain("<next_user_message>\nnext ask\n</next_user_message>");
   });
 
+  it("renders senderLabel when present on user messages", () => {
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "hello", senderLabel: "Alice" },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("Alice: hello");
+    expect(prompt).not.toContain("User: hello");
+  });
+
+  it("falls back to senderName when senderLabel is absent", () => {
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "hi", senderName: "Bob" },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("Bob: hi");
+  });
+
+  it("falls back to senderUsername when senderLabel and senderName are absent", () => {
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "hey", senderUsername: "alice_user" },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("alice_user: hey");
+  });
+
+  it("falls back to senderId when no label/name/username is present", () => {
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "yo", senderId: "U42" },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("U42: yo");
+  });
+
+  it("falls back to User when all sender fields are absent", () => {
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "old ask" },
+        { role: "assistant", content: [{ type: "text", text: "old answer" }] },
+      ],
+      prompt: "new ask",
+    });
+
+    expect(prompt).toContain("User: old ask");
+    expect(prompt).toContain("Assistant: old answer");
+  });
+
+  it("distinguishes different senders with distinct labels", () => {
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "msg from alice", senderLabel: "Alice" },
+        { role: "assistant", content: [{ type: "text", text: "reply to alice" }] },
+        { role: "user", content: "msg from bob", senderLabel: "Bob" },
+        { role: "assistant", content: [{ type: "text", text: "reply to bob" }] },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("Alice: msg from alice");
+    expect(prompt).toContain("Bob: msg from bob");
+  });
+
+  it("preserves Assistant label even when sender fields are present", () => {
+    // Assistant messages must always render as "Assistant" regardless of
+    // any sender fields they may carry.
+    const prompt = buildCliSessionHistoryPrompt({
+      messages: [
+        { role: "user", content: "hello", senderLabel: "Alice" },
+        { role: "assistant", content: [{ type: "text", text: "reply" }], senderLabel: "NotAlice" },
+      ],
+      prompt: "next ask",
+    });
+
+    expect(prompt).toContain("Assistant: reply");
+    expect(prompt).not.toContain("NotAlice: reply");
+  });
+
   it("honors the cap when the summary block plus marker crosses it", () => {
     // Edge case: `summaryRendered.length < maxHistoryChars` (the gate that
     // routes to the oversize-summary branch is not taken) BUT
