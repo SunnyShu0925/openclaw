@@ -1238,6 +1238,8 @@ export const nl: TranslationMap = {
     allowOnce: "Eenmalig toestaan",
     alwaysAllow: "Altijd toestaan",
     allowAlwaysUnavailable: "Altijd toestaan is niet beschikbaar voor deze opdracht.",
+    allowAlwaysNonPersistable:
+      "Allow Always is unavailable because this command cannot be persisted (e.g., shell redirection or dynamic content).",
     deny: "Weigeren",
     labels: {
       host: "Host",
