@@ -341,6 +341,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       allowExistingModelSelection,
       parentSessionKey: p.parentSessionKey,
       spawnDepth: p.spawnDepth,
+      pluginRuntimeOwnerId: client?.internal?.pluginRuntimeOwnerId,
       spawnedCwd: sessionCwd,
       worktree: sessionWorktree
         ? {

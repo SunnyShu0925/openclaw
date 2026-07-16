@@ -1405,6 +1405,7 @@ export async function performGatewaySessionReset(params: {
             ...creationStamp,
             forkSource: currentEntry?.forkSource,
             forkedFromParent: sessionEntryForkedFromParent(currentEntry) ? true : undefined,
+            pluginOwnerId: currentEntry?.pluginOwnerId,
             spawnDepth: currentEntry?.spawnDepth,
             subagentRole: currentEntry?.subagentRole,
             subagentControlScope: currentEntry?.subagentControlScope,
