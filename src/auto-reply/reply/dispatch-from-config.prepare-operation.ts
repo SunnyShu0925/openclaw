@@ -90,7 +90,10 @@ export async function prepareDispatchOperation(state: PrepareDispatchOperationCo
       } satisfies ReplyPayload;
       // Routed delivery owns its destination-scoped prefix. Direct dispatchers already own
       // their prefix, so seed that live context only when no cross-channel route is used.
-      const result = await routeReplyToOriginating(payload, { responsePrefixContext });
+      const result = await routeReplyToOriginating(payload, {
+        abortSignal: params.replyOptions?.abortSignal,
+        responsePrefixContext,
+      });
       if (result) {
         queuedFinal = result.ok;
         if (isRoutedReplyDelivered(result)) {
@@ -104,7 +107,9 @@ export async function prepareDispatchOperation(state: PrepareDispatchOperationCo
       } else {
         markInboundDedupeReplayUnsafe();
         params.replyOptions?.onModelSelected?.(modelSelection);
-        queuedFinal = dispatcher.sendFinalReply(payload);
+        if (!params.replyOptions?.abortSignal?.aborted) {
+          queuedFinal = dispatcher.sendFinalReply(payload);
+        }
       }
     } else {
       logVerbose(

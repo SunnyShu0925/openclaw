@@ -245,7 +245,11 @@ export async function prepareDispatchDelivery(state: GatherDispatchRequestReadyS
           : undefined,
       },
     );
+    if (params.replyOptions?.abortSignal?.aborted) {
+      return false;
+    }
     const result = await routeReplyToOriginating(bindingPayload, {
+      abortSignal: params.replyOptions?.abortSignal,
       kind: mode === "terminal" ? "final" : "tool",
       sessionKey: transcriptOwner?.sessionKey,
     });
@@ -256,6 +260,9 @@ export async function prepareDispatchDelivery(state: GatherDispatchRequestReadyS
         );
       }
       return result.ok;
+    }
+    if (params.replyOptions?.abortSignal?.aborted) {
+      return false;
     }
     markInboundDedupeReplayUnsafe();
     return mode === "additive"
