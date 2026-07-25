@@ -683,9 +683,7 @@ export function createProcessTool(
             // No supervisor record — we own the full lifecycle.
             const terminated = terminateSessionFallback(scopedSession);
             if (!terminated) {
-              return failText(
-                `Unable to terminate session ${params.sessionId}: no process id.`,
-              );
+              return failText(`Unable to terminate session ${params.sessionId}: no process id.`);
             }
             markExited(scopedSession, null, "SIGKILL", "failed");
           }
@@ -741,9 +739,7 @@ export function createProcessTool(
               // No supervisor record — we own the full lifecycle.
               const terminated = terminateSessionFallback(scopedSession);
               if (!terminated) {
-                return failText(
-                  `Unable to remove session ${params.sessionId}: no process id.`,
-                );
+                return failText(`Unable to remove session ${params.sessionId}: no process id.`);
               }
               markExited(scopedSession, null, "SIGKILL", "failed");
               scopedSession.backgrounded = false;

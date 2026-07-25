@@ -196,9 +196,6 @@ describe("process tool supervisor cancellation", () => {
     expect(killProcessTreeMock).not.toHaveBeenCalled();
     expectSessionState("sess-no-pid", { exited: false });
     expect(requireRecord(result.details, "result details").status).toBe("failed");
-    expectTextContent(
-      result.content[0],
-      "Unable to remove session sess-no-pid: no process id.",
-    );
+    expectTextContent(result.content[0], "Unable to remove session sess-no-pid: no process id.");
   });
 });
