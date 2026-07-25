@@ -107,7 +107,7 @@ describe("process tool supervisor cancellation", () => {
       runId: "sess",
       state: "running",
     });
-    addSession(createBackgroundSession("sess"));
+    addSession(createBackgroundSession("sess", 4242));
     const processTool = createProcessTool();
 
     const result = await processTool.execute("toolcall", {
@@ -116,8 +116,10 @@ describe("process tool supervisor cancellation", () => {
     });
 
     expect(supervisorMock.cancel).toHaveBeenCalledWith("sess", "manual-cancel");
-    expectSessionState("sess", { exited: false });
-    expectTextContent(result.content[0], "Termination requested for session sess.");
+    expect(killProcessTreeMock).toHaveBeenCalledWith(4242);
+    expect(getSession("sess")).toBeUndefined();
+    expectFinishedSessionState("sess", { status: "failed", exitSignal: "SIGKILL" });
+    expectTextContent(result.content[0], "Killed session sess.");
   });
 
   it("remove drops running session immediately when cancellation is requested", async () => {
@@ -125,7 +127,7 @@ describe("process tool supervisor cancellation", () => {
       runId: "sess",
       state: "running",
     });
-    addSession(createBackgroundSession("sess"));
+    addSession(createBackgroundSession("sess", 4242));
     const processTool = createProcessTool();
 
     const result = await processTool.execute("toolcall", {
@@ -134,9 +136,10 @@ describe("process tool supervisor cancellation", () => {
     });
 
     expect(supervisorMock.cancel).toHaveBeenCalledWith("sess", "manual-cancel");
+    expect(killProcessTreeMock).toHaveBeenCalledWith(4242);
     expect(getSession("sess")).toBeUndefined();
     expect(getFinishedSession("sess")).toBeUndefined();
-    expectTextContent(result.content[0], "Removed session sess (termination requested).");
+    expectTextContent(result.content[0], "Removed session sess.");
   });
 
   it("falls back to process-tree kill when supervisor record is missing", async () => {
@@ -193,7 +196,7 @@ describe("process tool supervisor cancellation", () => {
     expect(requireRecord(result.details, "result details").status).toBe("failed");
     expectTextContent(
       result.content[0],
-      "Unable to remove session sess-no-pid: no active supervisor run or process id.",
+      "Unable to remove session sess-no-pid: no process id.",
     );
   });
 });
