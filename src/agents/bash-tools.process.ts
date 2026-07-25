@@ -671,16 +671,24 @@ export function createProcessTool(
           if (scopedSession.finalizing) {
             return failText(`Session ${params.sessionId} is finalizing.`);
           }
-          // Supervisor cancel is async graceful notification — always follow up
-          // with synchronous killProcessTree to guarantee the process tree dies.
-          cancelManagedSession(scopedSession.id);
-          const terminated = terminateSessionFallback(scopedSession);
-          if (!terminated) {
-            return failText(
-              `Unable to terminate session ${params.sessionId}: no process id.`,
-            );
+          const canceled = cancelManagedSession(scopedSession.id);
+          if (canceled) {
+            // Supervisor manages this session. The supervisor's cancel path
+            // sends async SIGTERM then SIGKILL. We additionally send synchronous
+            // killProcessTree as a physical guarantee. Do NOT markExited — let
+            // the supervisor's observed-exit path finalize the session state so
+            // we don't report a finished session before the child actually exits.
+            terminateSessionFallback(scopedSession);
+          } else {
+            // No supervisor record — we own the full lifecycle.
+            const terminated = terminateSessionFallback(scopedSession);
+            if (!terminated) {
+              return failText(
+                `Unable to terminate session ${params.sessionId}: no process id.`,
+              );
+            }
+            markExited(scopedSession, null, "SIGKILL", "failed");
           }
-          markExited(scopedSession, null, "SIGKILL", "failed");
           resetPollRetrySuggestion(params.sessionId);
           return {
             content: [
@@ -721,18 +729,26 @@ export function createProcessTool(
             if (scopedSession.finalizing) {
               return failText(`Session ${params.sessionId} is finalizing.`);
             }
-            // Supervisor cancel is async — always follow up with synchronous
-            // killProcessTree to guarantee the process tree dies before removal.
-            cancelManagedSession(scopedSession.id);
-            const terminated = terminateSessionFallback(scopedSession);
-            if (!terminated) {
-              return failText(
-                `Unable to remove session ${params.sessionId}: no process id.`,
-              );
+            const canceled = cancelManagedSession(scopedSession.id);
+            if (canceled) {
+              // Supervisor manages this session. Send killProcessTree as
+              // insurance, then drop from registry. Do not markExited — let
+              // the supervisor's exit path handle final state.
+              terminateSessionFallback(scopedSession);
+              scopedSession.backgrounded = false;
+              deleteSession(params.sessionId);
+            } else {
+              // No supervisor record — we own the full lifecycle.
+              const terminated = terminateSessionFallback(scopedSession);
+              if (!terminated) {
+                return failText(
+                  `Unable to remove session ${params.sessionId}: no process id.`,
+                );
+              }
+              markExited(scopedSession, null, "SIGKILL", "failed");
+              scopedSession.backgrounded = false;
+              deleteSession(params.sessionId);
             }
-            markExited(scopedSession, null, "SIGKILL", "failed");
-            scopedSession.backgrounded = false;
-            deleteSession(params.sessionId);
             resetPollRetrySuggestion(params.sessionId);
             return {
               content: [

@@ -117,8 +117,10 @@ describe("process tool supervisor cancellation", () => {
 
     expect(supervisorMock.cancel).toHaveBeenCalledWith("sess", "manual-cancel");
     expect(killProcessTreeMock).toHaveBeenCalledWith(4242);
-    expect(getSession("sess")).toBeUndefined();
-    expectFinishedSessionState("sess", { status: "failed", exitSignal: "SIGKILL" });
+    // Supervisor-managed session: not markExited, so the session stays active
+    // until the supervisor observes the real process exit.
+    expect(getSession("sess")).toBeDefined();
+    expect(getFinishedSession("sess")).toBeUndefined();
     expectTextContent(result.content[0], "Killed session sess.");
   });
 
