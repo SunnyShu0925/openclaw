@@ -5,6 +5,7 @@ import type { AssistantMessage } from "../../../llm/types.js";
 import type { AuthProfileFailureReason, AuthProfileStore } from "../../auth-profiles.js";
 import type { AgentExecutionAuthBinding } from "../../execution-auth-binding.js";
 import type { ResolvedProviderAuth } from "../../model-auth.js";
+import { resolveEmbeddedRunSentinelSignal } from "../failure-signal.js";
 import { log } from "../logger.js";
 import type { EmbeddedRunReplayState } from "../replay-state.js";
 import type {
@@ -42,20 +43,38 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 const MAX_MISSING_ASSISTANT_RETRIES = 1;
 /**
  * Merges the existing failureSignal (from tool errors) with a structured cron
- * outcome report from the agent's cron_report_outcome tool call.
+ * outcome report from the agent's cron_report_outcome tool call, and also checks
+ * for a legacy ===DONE_ERR=== text sentinel in the final visible text.
  *
- * A fatal tool-derived signal takes priority. Otherwise, if the attempt carries
- * a cronOutcomeReport with status='failed', it produces an EmbeddedRunFailureSignal.
- * Returns the existing signal unchanged if no structured outcome is present.
+ * Priority order:
+ *   1. Fatal tool-derived signal (fatalForCron === true) — highest priority
+ *   2. ===DONE_ERR=== sentinel in final visible text (legacy bridge)
+ *   3. Structured cron_outcome_report with status='failed'
+ *   4. Existing nonfatal signal (fallback)
+ * Returns undefined if no failure signal is present.
  */
-function resolveEffectiveFailureSignal(
-  existing: EmbeddedRunFailureSignal | undefined,
-  attempt: EmbeddedRunAttemptResult,
-): EmbeddedRunFailureSignal | undefined {
-  if (existing?.fatalForCron === true) {
-    return existing;
+function resolveEffectiveFailureSignal(input: {
+  failureSignal?: EmbeddedRunFailureSignal;
+  attempt: EmbeddedRunAttemptResult;
+  finalAssistantVisibleText?: string;
+  runParams: { trigger?: string };
+}): EmbeddedRunFailureSignal | undefined {
+  // 1. Fatal tool-derived signal takes priority (execution_denied, etc.)
+  if (input.failureSignal?.fatalForCron === true) {
+    return input.failureSignal;
   }
-  const report = attempt.cronOutcomeReport;
+
+  // 2. Check final visible text for ===DONE_ERR=== sentinel (legacy bridge)
+  const sentinelSignal = resolveEmbeddedRunSentinelSignal({
+    trigger: input.runParams.trigger,
+    finalAssistantVisibleText: input.finalAssistantVisibleText,
+  });
+  if (sentinelSignal) {
+    return sentinelSignal;
+  }
+
+  // 3. Structured cron_report_outcome tool with status='failed'
+  const report = input.attempt.cronOutcomeReport;
   if (report?.status === "failed") {
     return {
       kind: "done_err_sentinel",
@@ -64,7 +83,9 @@ function resolveEffectiveFailureSignal(
       fatalForCron: true,
     };
   }
-  return existing;
+
+  // 4. Fall back to existing nonfatal signal
+  return input.failureSignal;
 }
 
 const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
@@ -459,7 +480,12 @@ async function surfaceIncompleteTurn(
       modelId: input.modelId,
     });
   }
-  const failureSignal = resolveEffectiveFailureSignal(input.failureSignal, input.attempt);
+  const failureSignal = resolveEffectiveFailureSignal({
+    failureSignal: input.failureSignal,
+    attempt: input.attempt,
+    finalAssistantVisibleText: input.finalAssistantVisibleText,
+    runParams: input.runParams,
+  });
   return {
     action: "complete",
     result: {
@@ -560,7 +586,12 @@ function completeEmbeddedRun(
     stopReason,
     yielded: input.attempt.yieldDetected === true,
   });
-  const failureSignal = resolveEffectiveFailureSignal(input.failureSignal, input.attempt);
+  const failureSignal = resolveEffectiveFailureSignal({
+    failureSignal: input.failureSignal,
+    attempt: input.attempt,
+    finalAssistantVisibleText: input.finalAssistantVisibleText,
+    runParams: input.runParams,
+  });
   return {
     action: "complete",
     result: {

@@ -1,7 +1,10 @@
 // Coverage for classifying embedded-run failure signals from tool metadata.
 import { describe, expect, it } from "vitest";
 import { normalizeCronOutcomeReport, CRON_REPORT_OUTCOME_TOOL_NAME } from "./cron-outcome-tool.js";
-import { resolveEmbeddedRunFailureSignal } from "./failure-signal.js";
+import {
+  resolveEmbeddedRunFailureSignal,
+  resolveEmbeddedRunSentinelSignal,
+} from "./failure-signal.js";
 
 describe("resolveEmbeddedRunFailureSignal", () => {
   it("classifies cron exec denials from tool error metadata", () => {
@@ -122,6 +125,77 @@ describe("resolveEmbeddedRunFailureSignal", () => {
       message: "SYSTEM_RUN_DENIED",
       fatalForCron: true,
     });
+  });
+});
+
+describe("resolveEmbeddedRunSentinelSignal", () => {
+  it("detects ===DONE_ERR=== in the last line of final cron text", () => {
+    expect(
+      resolveEmbeddedRunSentinelSignal({
+        trigger: "cron",
+        finalAssistantVisibleText:
+          "I have finished the task.\n===DONE_ERR=== vault delivery blocked",
+      }),
+    ).toEqual({
+      kind: "done_err_sentinel",
+      source: "agent_text",
+      message: "===DONE_ERR=== vault delivery blocked",
+      fatalForCron: true,
+    });
+  });
+
+  it("detects ===DONE_ERR=== with no reason text", () => {
+    expect(
+      resolveEmbeddedRunSentinelSignal({
+        trigger: "cron",
+        finalAssistantVisibleText: "===DONE_ERR===",
+      }),
+    ).toEqual({
+      kind: "done_err_sentinel",
+      source: "agent_text",
+      message: "===DONE_ERR===",
+      fatalForCron: true,
+    });
+  });
+
+  it("ignores non-cron triggers", () => {
+    expect(
+      resolveEmbeddedRunSentinelSignal({
+        trigger: "user",
+        finalAssistantVisibleText: "===DONE_ERR=== access denied",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for empty text", () => {
+    expect(
+      resolveEmbeddedRunSentinelSignal({ trigger: "cron", finalAssistantVisibleText: "" }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when no sentinel is present", () => {
+    expect(
+      resolveEmbeddedRunSentinelSignal({
+        trigger: "cron",
+        finalAssistantVisibleText: "Task completed successfully.",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("only checks the last line (mid-text sentinel ignored)", () => {
+    expect(
+      resolveEmbeddedRunSentinelSignal({
+        trigger: "cron",
+        finalAssistantVisibleText:
+          "===DONE_ERR=== earlier failure\nBut then I recovered and finished.",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for undefined text", () => {
+    expect(
+      resolveEmbeddedRunSentinelSignal({ trigger: "cron", finalAssistantVisibleText: undefined }),
+    ).toBeUndefined();
   });
 });
 
