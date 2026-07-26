@@ -1600,7 +1600,11 @@ export async function handleToolExecutionEnd(
     }
   }
 
-  if (!isToolError && toolName === CRON_REPORT_OUTCOME_TOOL_NAME) {
+  // Note: intentionally omits !isToolError — the cron_report_outcome tool
+  // returns the outcome status in result.details, which isToolResultError
+  // interprets as a tool error when status is "failed". The handler must
+  // process the report regardless so the failure signal is correctly latched.
+  if (toolName === CRON_REPORT_OUTCOME_TOOL_NAME) {
     const report = normalizeCronOutcomeReport(
       result && typeof result === "object" ? (result as { details?: unknown }).details : undefined,
     );

@@ -84,8 +84,8 @@ import {
 } from "./local-model-lean.js";
 import type { ModelAuthMode } from "./model-auth.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
-import { createOpenClawTools } from "./openclaw-tools.js";
 import { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
+import { createOpenClawTools } from "./openclaw-tools.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.js";
 import type { SandboxContext } from "./sandbox.js";
 import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./sandbox/constants.js";
