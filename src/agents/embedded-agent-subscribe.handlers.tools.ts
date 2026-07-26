@@ -61,10 +61,6 @@ import {
   isMessagingToolSendAction,
   isMessagingToolTargetEvidenceAction,
 } from "./embedded-agent-messaging.js";
-import {
-  CRON_REPORT_OUTCOME_TOOL_NAME,
-  normalizeCronOutcomeReport,
-} from "./embedded-agent-runner/cron-outcome-tool.js";
 import { mergeEmbeddedRunReplayState } from "./embedded-agent-runner/replay-state.js";
 import { runBestEffortCallback } from "./embedded-agent-subscribe.callback.js";
 import type {
@@ -1596,23 +1592,6 @@ export async function handleToolExecutionEnd(
           log: ctx.log,
           callback: () => ctx.params.onHeartbeatToolResponse?.(response),
         });
-      }
-    }
-  }
-
-  // Note: intentionally omits !isToolError — the cron_report_outcome tool
-  // returns the outcome status in result.details, which isToolResultError
-  // interprets as a tool error when status is "failed". The handler must
-  // process the report regardless so the failure signal is correctly latched.
-  if (toolName === CRON_REPORT_OUTCOME_TOOL_NAME) {
-    const report = normalizeCronOutcomeReport(
-      result && typeof result === "object" ? (result as { details?: unknown }).details : undefined,
-    );
-    if (report) {
-      // Latch: once a failed outcome is recorded, do not let a later report
-      // (e.g. { status: "completed" }) clear it before terminal resolution.
-      if (ctx.state.cronOutcomeReport?.status !== "failed") {
-        ctx.state.cronOutcomeReport = report;
       }
     }
   }

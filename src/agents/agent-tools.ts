@@ -427,8 +427,6 @@ type OpenClawCodingToolsOptions = {
   swarmOutputSchema?: Record<string, unknown>;
   /** Keep the message tool available even when the selected profile omits it. */
   forceMessageTool?: boolean;
-  /** Include the cron outcome report tool for structured cron failure signaling. */
-  enableCronOutcomeTool?: boolean;
   /** Include the heartbeat response tool for structured heartbeat outcomes. */
   enableHeartbeatTool?: boolean;
   /** Keep the heartbeat response tool available even when the selected profile omits it. */
@@ -533,8 +531,6 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
       scheduledToolPolicy: options?.scheduledToolPolicy,
     });
   const { agentId, runtimePluginToolGrant } = capabilityProfile.policy;
-  const enableCronOutcomeTool =
-    options?.enableCronOutcomeTool === true || options?.trigger === "cron";
 
   const enableHeartbeatTool =
     options?.enableHeartbeatTool === true ||
@@ -990,7 +986,6 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             disableMessageTool: options?.disableMessageTool || options?.swarmCollector,
             swarmCollector: options?.swarmCollector,
             swarmOutputSchema: options?.swarmOutputSchema,
-            enableCronOutcomeTool,
             enableHeartbeatTool,
             disablePluginTools: !includePluginTools,
             wrapBeforeToolCallHook: false,

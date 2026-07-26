@@ -29,7 +29,6 @@ import type { AgentMessage } from "../../runtime/index.js";
 import type { AuthStorage, ModelRegistry } from "../../sessions/index.js";
 import type { ToolErrorSummary } from "../../tool-error-summary.js";
 import type { NormalizedUsage } from "../../usage.js";
-import type { CronOutcomeReport } from "../cron-outcome-tool.js";
 import type { EmbeddedRunReplayMetadata, EmbeddedRunReplayState } from "../replay-state.js";
 import type { EmbeddedRunLivenessState } from "../types.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
@@ -279,7 +278,6 @@ export type EmbeddedRunAttemptResult = {
   messagingToolSentTargets: MessagingToolSend[];
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
   heartbeatToolResponse?: HeartbeatToolResponse;
-  cronOutcomeReport?: CronOutcomeReport;
   toolMediaUrls?: string[];
   /**
    * Native artifacts produced and owned by the harness, never model-selected

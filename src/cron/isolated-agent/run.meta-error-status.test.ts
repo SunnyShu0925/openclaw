@@ -401,7 +401,7 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
     expect(runWithModelFallbackMock).not.toHaveBeenCalled();
   });
 
-  it("marks a cron run as error when the embedded agent result carries a fatal failureSignal (cron_report_outcome tool signal path)", async () => {
+  it("marks a cron run as error when the embedded agent result carries a fatal failureSignal", async () => {
     runWithModelFallbackMock.mockResolvedValueOnce({
       result: {
         payloads: [{ text: "Vault check complete" }],
@@ -419,8 +419,9 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
 
     expect(result.status).toBe("error");
     expect(result.error).toContain("===DONE_ERR=== vault delivery blocked");
-    // The cronReportOutcome-derived failureSignal flows through resolveCronPayloadOutcome
-    // which produces hasFatalErrorPayload=true, embeddedRunError with sentinel text.
+    // The failureSignal (from sentinel bridge or tool error) flows through
+    // resolveCronPayloadOutcome which produces hasFatalErrorPayload=true,
+    // embeddedRunError with sentinel text.
     // The cron run layer then returns status: "error" with that error text.
   });
 

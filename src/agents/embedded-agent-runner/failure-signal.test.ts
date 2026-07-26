@@ -1,6 +1,5 @@
 // Coverage for classifying embedded-run failure signals from tool metadata.
 import { describe, expect, it } from "vitest";
-import { normalizeCronOutcomeReport, CRON_REPORT_OUTCOME_TOOL_NAME } from "./cron-outcome-tool.js";
 import {
   resolveEmbeddedRunFailureSignal,
   resolveEmbeddedRunSentinelSignal,
@@ -196,57 +195,5 @@ describe("resolveEmbeddedRunSentinelSignal", () => {
     expect(
       resolveEmbeddedRunSentinelSignal({ trigger: "cron", finalAssistantVisibleText: undefined }),
     ).toBeUndefined();
-  });
-});
-
-describe("normalizeCronOutcomeReport", () => {
-  it("parses a valid failed outcome", () => {
-    expect(
-      normalizeCronOutcomeReport({ status: "failed", reason: "vault delivery blocked" }),
-    ).toEqual({
-      status: "failed",
-      reason: "vault delivery blocked",
-    });
-  });
-
-  it("parses a valid completed outcome", () => {
-    expect(normalizeCronOutcomeReport({ status: "completed" })).toEqual({
-      status: "completed",
-      reason: undefined,
-    });
-  });
-
-  it("parses outcome without reason", () => {
-    expect(normalizeCronOutcomeReport({ status: "failed" })).toEqual({
-      status: "failed",
-      reason: undefined,
-    });
-  });
-
-  it("rejects missing status", () => {
-    expect(normalizeCronOutcomeReport({})).toBeUndefined();
-  });
-
-  it("rejects invalid status value", () => {
-    expect(normalizeCronOutcomeReport({ status: "unknown" })).toBeUndefined();
-  });
-
-  it("rejects null input", () => {
-    expect(normalizeCronOutcomeReport(null)).toBeUndefined();
-  });
-
-  it("rejects non-object input", () => {
-    expect(normalizeCronOutcomeReport("string")).toBeUndefined();
-  });
-
-  it("ignores extra properties", () => {
-    expect(normalizeCronOutcomeReport({ status: "failed", extra: "ignored" })).toEqual({
-      status: "failed",
-      reason: undefined,
-    });
-  });
-
-  it("validates CRON_REPORT_OUTCOME_TOOL_NAME is defined", () => {
-    expect(CRON_REPORT_OUTCOME_TOOL_NAME).toBe("cron_report_outcome");
   });
 });

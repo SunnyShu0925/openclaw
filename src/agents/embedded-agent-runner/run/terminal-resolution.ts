@@ -42,15 +42,13 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 
 const MAX_MISSING_ASSISTANT_RETRIES = 1;
 /**
- * Merges the existing failureSignal (from tool errors) with a structured cron
- * outcome report from the agent's cron_report_outcome tool call, and also checks
- * for a legacy ===DONE_ERR=== text sentinel in the final visible text.
+ * Merges the existing failureSignal (from tool errors) with a legacy
+ * ===DONE_ERR=== text sentinel check in the final visible text.
  *
  * Priority order:
  *   1. Fatal tool-derived signal (fatalForCron === true) — highest priority
  *   2. ===DONE_ERR=== sentinel in final visible text (legacy bridge)
- *   3. Structured cron_outcome_report with status='failed'
- *   4. Existing nonfatal signal (fallback)
+ *   3. Existing nonfatal signal (fallback)
  * Returns undefined if no failure signal is present.
  */
 function resolveEffectiveFailureSignal(input: {
@@ -73,18 +71,7 @@ function resolveEffectiveFailureSignal(input: {
     return sentinelSignal;
   }
 
-  // 3. Structured cron_report_outcome tool with status='failed'
-  const report = input.attempt.cronOutcomeReport;
-  if (report?.status === "failed") {
-    return {
-      kind: "done_err_sentinel",
-      source: "agent_text",
-      message: report.reason ?? "Cron task reported failure via cron_report_outcome",
-      fatalForCron: true,
-    };
-  }
-
-  // 4. Fall back to existing nonfatal signal
+  // 3. Fall back to existing nonfatal signal
   return input.failureSignal;
 }
 

@@ -17,7 +17,6 @@ import type {
   MessagingToolSourceReplyPayload,
 } from "./embedded-agent-messaging.types.js";
 import type { BlockReplyPayload } from "./embedded-agent-payloads.js";
-import type { CronOutcomeReport } from "./embedded-agent-runner/cron-outcome-tool.js";
 import type { EmbeddedRunReplayState } from "./embedded-agent-runner/replay-state.js";
 import type { EmbeddedRunLivenessState } from "./embedded-agent-runner/types.js";
 import type {
@@ -167,7 +166,6 @@ export type EmbeddedAgentSubscribeState = {
   messagingToolSentTextsNormalized: string[];
   messagingToolSentTargets: MessagingToolSend[];
   heartbeatToolResponse?: HeartbeatToolResponse;
-  cronOutcomeReport?: CronOutcomeReport;
   messagingToolSentMediaUrls: string[];
   messagingToolSourceReplyPayloads: MessagingToolSourceReplyPayload[];
   messageToolOnlySourceReplyDelivered: boolean;
@@ -337,7 +335,6 @@ type ToolHandlerState = Pick<
   | "messageToolOnlySourceReplyDelivered"
   | "messagingToolSentTargets"
   | "heartbeatToolResponse"
-  | "cronOutcomeReport"
   | "successfulCronAdds"
   | "deterministicApprovalPromptSent"
   | "toolExecutionSinceLastBlockReply"

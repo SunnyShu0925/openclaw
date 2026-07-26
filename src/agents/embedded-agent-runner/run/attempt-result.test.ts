@@ -35,7 +35,6 @@ function completeResult(params?: {
       didSendViaMessagingTool: () => false,
       getAcceptedSessionSpawns: () => [],
       getCompactionCount: () => 0,
-      getCronOutcomeReport: () => undefined,
       getHeartbeatToolResponse: () => undefined,
       getItemLifecycle: () => undefined,
       getLastAssistantTextMessageIndex: () => undefined,
