@@ -23,14 +23,14 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("./openclaw-tools.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./openclaw-tools.js")>();
+vi.mock("./openclaw-tools.js", async () => {
+  const { filterToolsByClientCaps } = await import("./openclaw-tools.client-caps.js");
   return {
     createOpenClawTools: (options: unknown) => {
       mocks.createOpenClawToolsOptions(options);
       return [mocks.stubTool("cron")];
     },
-    filterToolsByClientCaps: actual.filterToolsByClientCaps,
+    filterToolsByClientCaps,
   };
 });
 

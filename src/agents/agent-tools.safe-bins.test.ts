@@ -117,11 +117,11 @@ vi.mock("./channel-tools.js", () => ({
   listChannelAgentTools: () => [],
 }));
 
-vi.mock("./openclaw-tools.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./openclaw-tools.js")>();
+vi.mock("./openclaw-tools.js", async () => {
+  const { filterToolsByClientCaps } = await import("./openclaw-tools.client-caps.js");
   return {
     createOpenClawTools: () => [],
-    filterToolsByClientCaps: actual.filterToolsByClientCaps,
+    filterToolsByClientCaps,
   };
 });
 

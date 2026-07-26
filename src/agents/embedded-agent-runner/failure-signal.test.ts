@@ -1,5 +1,6 @@
 // Coverage for classifying embedded-run failure signals from tool metadata.
 import { describe, expect, it } from "vitest";
+import { normalizeCronOutcomeReport, CRON_REPORT_OUTCOME_TOOL_NAME } from "./cron-outcome-tool.js";
 import { resolveEmbeddedRunFailureSignal } from "./failure-signal.js";
 
 describe("resolveEmbeddedRunFailureSignal", () => {
@@ -27,14 +28,16 @@ describe("resolveEmbeddedRunFailureSignal", () => {
 
   it("classifies invalid request denials from tool error metadata", () => {
     expect(
-      resolveEmbeddedRunFailureSignal({
-        trigger: "cron",
-        lastToolError: {
-          toolName: "bash",
-          errorCode: "INVALID_REQUEST",
-          error: "INVALID_REQUEST: approval denied",
-        },
-      })?.code,
+      (
+        resolveEmbeddedRunFailureSignal({
+          trigger: "cron",
+          lastToolError: {
+            toolName: "bash",
+            errorCode: "INVALID_REQUEST",
+            error: "INVALID_REQUEST: approval denied",
+          },
+        }) as { kind: "execution_denied"; code: string } | undefined
+      )?.code,
     ).toBe("INVALID_REQUEST");
   });
 
@@ -119,5 +122,57 @@ describe("resolveEmbeddedRunFailureSignal", () => {
       message: "SYSTEM_RUN_DENIED",
       fatalForCron: true,
     });
+  });
+});
+
+describe("normalizeCronOutcomeReport", () => {
+  it("parses a valid failed outcome", () => {
+    expect(
+      normalizeCronOutcomeReport({ status: "failed", reason: "vault delivery blocked" }),
+    ).toEqual({
+      status: "failed",
+      reason: "vault delivery blocked",
+    });
+  });
+
+  it("parses a valid completed outcome", () => {
+    expect(normalizeCronOutcomeReport({ status: "completed" })).toEqual({
+      status: "completed",
+      reason: undefined,
+    });
+  });
+
+  it("parses outcome without reason", () => {
+    expect(normalizeCronOutcomeReport({ status: "failed" })).toEqual({
+      status: "failed",
+      reason: undefined,
+    });
+  });
+
+  it("rejects missing status", () => {
+    expect(normalizeCronOutcomeReport({})).toBeUndefined();
+  });
+
+  it("rejects invalid status value", () => {
+    expect(normalizeCronOutcomeReport({ status: "unknown" })).toBeUndefined();
+  });
+
+  it("rejects null input", () => {
+    expect(normalizeCronOutcomeReport(null)).toBeUndefined();
+  });
+
+  it("rejects non-object input", () => {
+    expect(normalizeCronOutcomeReport("string")).toBeUndefined();
+  });
+
+  it("ignores extra properties", () => {
+    expect(normalizeCronOutcomeReport({ status: "failed", extra: "ignored" })).toEqual({
+      status: "failed",
+      reason: undefined,
+    });
+  });
+
+  it("validates CRON_REPORT_OUTCOME_TOOL_NAME is defined", () => {
+    expect(CRON_REPORT_OUTCOME_TOOL_NAME).toBe("cron_report_outcome");
   });
 });

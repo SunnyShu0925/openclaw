@@ -40,6 +40,33 @@ import {
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 const MAX_MISSING_ASSISTANT_RETRIES = 1;
+/**
+ * Merges the existing failureSignal (from tool errors) with a structured cron
+ * outcome report from the agent's cron_report_outcome tool call.
+ *
+ * A fatal tool-derived signal takes priority. Otherwise, if the attempt carries
+ * a cronOutcomeReport with status='failed', it produces an EmbeddedRunFailureSignal.
+ * Returns the existing signal unchanged if no structured outcome is present.
+ */
+function resolveEffectiveFailureSignal(
+  existing: EmbeddedRunFailureSignal | undefined,
+  attempt: EmbeddedRunAttemptResult,
+): EmbeddedRunFailureSignal | undefined {
+  if (existing?.fatalForCron === true) {
+    return existing;
+  }
+  const report = attempt.cronOutcomeReport;
+  if (report?.status === "failed") {
+    return {
+      kind: "done_err_sentinel",
+      source: "agent_text",
+      message: report.reason ?? "Cron task reported failure via cron_report_outcome",
+      fatalForCron: true,
+    };
+  }
+  return existing;
+}
+
 const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
   "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
 const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX =
@@ -432,6 +459,7 @@ async function surfaceIncompleteTurn(
       modelId: input.modelId,
     });
   }
+  const failureSignal = resolveEffectiveFailureSignal(input.failureSignal, input.attempt);
   return {
     action: "complete",
     result: {
@@ -460,7 +488,7 @@ async function surfaceIncompleteTurn(
           terminalPresentation: input.terminalToolPresentation !== undefined,
         },
         toolSummary: input.attemptToolSummary,
-        ...(input.failureSignal ? { failureSignal: input.failureSignal } : {}),
+        ...(failureSignal ? { failureSignal } : {}),
         agentHarnessResultClassification: input.attempt.agentHarnessResultClassification,
       },
       ...copyAttemptDeliveryState(input.attempt),
@@ -532,6 +560,7 @@ function completeEmbeddedRun(
     stopReason,
     yielded: input.attempt.yieldDetected === true,
   });
+  const failureSignal = resolveEffectiveFailureSignal(input.failureSignal, input.attempt);
   return {
     action: "complete",
     result: {
@@ -590,7 +619,7 @@ function completeEmbeddedRun(
             : {}),
         },
         toolSummary: input.attemptToolSummary,
-        ...(input.failureSignal ? { failureSignal: input.failureSignal } : {}),
+        ...(failureSignal ? { failureSignal } : {}),
         completion: {
           ...(stopReason ? { stopReason } : {}),
           ...(stopReason ? { finishReason: stopReason } : {}),

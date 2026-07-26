@@ -214,6 +214,11 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
         defaultAgentId: params.defaultAgentId,
       })
     : undefined;
+  const cronOutcomePrompt =
+    attempt.trigger === "cron"
+      ? "When this cron task fails, call cron_report_outcome with status='failed' and a reason. " +
+        "Do not use ===DONE_ERR=== in visible text; use the tool instead."
+      : undefined;
   const promptContributionContext = {
     config: attempt.config,
     agentDir: attempt.agentDir,
@@ -260,7 +265,14 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       workspaceDir: params.effectiveWorkspace,
       defaultThinkLevel: attempt.thinkLevel,
       reasoningLevel: attempt.reasoningLevel ?? "off",
-      extraSystemPrompt: attempt.extraSystemPrompt,
+      extraSystemPrompt:
+        attempt.extraSystemPrompt && cronOutcomePrompt
+          ? `${attempt.extraSystemPrompt}
+
+${cronOutcomePrompt}`
+          : cronOutcomePrompt
+            ? cronOutcomePrompt
+            : attempt.extraSystemPrompt,
       ownerNumbers: attempt.ownerNumbers,
       reasoningTagHint,
       heartbeatPrompt,

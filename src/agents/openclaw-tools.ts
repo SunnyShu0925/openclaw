@@ -26,6 +26,7 @@ import {
   wrapToolWithBeforeToolCallHook,
 } from "./agent-tools.before-tool-call.js";
 import type { ConversationRecallContext } from "./conversation-recall.types.js";
+import { createCronOutcomeReportTool } from "./embedded-agent-runner/cron-outcome-tool.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
 import {
@@ -93,7 +94,6 @@ import { createUpdatePlanTool } from "./tools/update-plan-tool.js";
 import { createVideoGenerateTool } from "./tools/video-generate-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
-export { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
 export function createOpenClawTools(
   options?: {
     sandboxBrowserBridgeUrl?: string;
@@ -175,6 +175,7 @@ export function createOpenClawTools(
     swarmCollector?: boolean;
     swarmOutputSchema?: Record<string, unknown>;
     /** If true, include the heartbeat response tool for structured heartbeat outcomes. */
+    enableCronOutcomeTool?: boolean;
     enableHeartbeatTool?: boolean;
     /** If true, skip plugin tool resolution and return only shipped core tools. */
     disablePluginTools?: boolean;
@@ -411,6 +412,7 @@ export function createOpenClawTools(
         senderIsOwner: options?.senderIsOwner,
         conversationReadOrigin: options?.conversationReadOrigin,
       });
+  const cronOutcomeTool = options?.enableCronOutcomeTool ? createCronOutcomeReportTool() : null;
   const heartbeatTool = options?.enableHeartbeatTool ? createHeartbeatResponseTool() : null;
   options?.recordToolPrepStage?.("openclaw-tools:message-tool");
   const nodesToolBase = createNodesTool({
@@ -535,7 +537,7 @@ export function createOpenClawTools(
             agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
           }),
         ]),
-    ...collectPresentOpenClawTools([heartbeatTool]),
+    ...collectPresentOpenClawTools([cronOutcomeTool, heartbeatTool]),
     createTtsTool({
       agentChannel: options?.agentChannel,
       config: resolvedConfig,
@@ -729,7 +731,6 @@ export function createOpenClawTools(
         existingToolNames,
       }),
     ];
-    options?.recordToolPrepStage?.("openclaw-tools:plugin-tools");
   }
 
   allTools = filterToolsByClientCaps(allTools, options?.clientCaps);

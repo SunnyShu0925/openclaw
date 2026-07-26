@@ -12,10 +12,11 @@ import type { EmbeddedRunFailureSignal } from "./types.js";
  * a normal silent completion.
  */
 const FAILURE_SIGNAL_CODES = ["SYSTEM_RUN_DENIED", "INVALID_REQUEST"] as const;
+type FailureSignalExecutionCode = (typeof FAILURE_SIGNAL_CODES)[number];
 
 function resolveFailureSignalCode(
   value: string | undefined,
-): EmbeddedRunFailureSignal["code"] | undefined {
+): FailureSignalExecutionCode | undefined {
   for (const code of FAILURE_SIGNAL_CODES) {
     if (value === code) {
       return code;

@@ -35,6 +35,7 @@ import {
   reserveAskUserPromptDelivery,
 } from "./tools/ask-user-tool.js";
 import { resetPendingAskUserQuestionsForTest } from "./tools/ask-user-tool.test-support.js";
+import { CRON_REPORT_OUTCOME_TOOL_NAME } from "./embedded-agent-runner/cron-outcome-tool.js";
 
 type ToolExecutionStartEvent = Extract<AgentEvent, { type: "tool_execution_start" }>;
 type ToolExecutionEndEvent = Extract<AgentEvent, { type: "tool_execution_end" }>;
@@ -1386,6 +1387,81 @@ describe("handleToolExecutionEnd cron mutation tracking", () => {
     expect(ctx.state.replayState).toEqual({
       replayInvalid: true,
       hadPotentialSideEffects: true,
+    });
+  });
+});
+
+describe("handleToolExecutionEnd cron outcome report latch", () => {
+  it("preserves a failed cron outcome when a completed report follows", async () => {
+    const { ctx } = createTestContext();
+
+    // First: agent reports failure
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: CRON_REPORT_OUTCOME_TOOL_NAME,
+        toolCallId: "tool-cron-fail",
+        isError: false,
+        result: { details: { status: "failed", reason: "vault delivery blocked" } },
+      } as never,
+    );
+
+    expect(ctx.state.cronOutcomeReport).toEqual({
+      status: "failed",
+      reason: "vault delivery blocked",
+    });
+
+    // Second: agent later reports completion — must NOT clear the failure
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: CRON_REPORT_OUTCOME_TOOL_NAME,
+        toolCallId: "tool-cron-ok",
+        isError: false,
+        result: { details: { status: "completed" } },
+      } as never,
+    );
+
+    expect(ctx.state.cronOutcomeReport).toEqual({
+      status: "failed",
+      reason: "vault delivery blocked",
+    });
+  });
+
+  it("allows completed first, then overrides with failed", async () => {
+    const { ctx } = createTestContext();
+
+    // First: agent reports completion
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: CRON_REPORT_OUTCOME_TOOL_NAME,
+        toolCallId: "tool-cron-ok",
+        isError: false,
+        result: { details: { status: "completed" } },
+      } as never,
+    );
+
+    expect(ctx.state.cronOutcomeReport).toEqual({ status: "completed" });
+
+    // Second: agent later reports failure — should replace completed
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: CRON_REPORT_OUTCOME_TOOL_NAME,
+        toolCallId: "tool-cron-fail",
+        isError: false,
+        result: { details: { status: "failed", reason: "timeout" } },
+      } as never,
+    );
+
+    expect(ctx.state.cronOutcomeReport).toEqual({
+      status: "failed",
+      reason: "timeout",
     });
   });
 });

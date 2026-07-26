@@ -231,6 +231,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     messagingToolSentTextsNormalized: [],
     messagingToolSentTargets: [],
     heartbeatToolResponse: undefined,
+    cronOutcomeReport: undefined,
     messagingToolSentMediaUrls: [],
     messagingToolSourceReplyPayloads: [],
     messageToolOnlySourceReplyDelivered: false,
@@ -1511,6 +1512,8 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     getMessagingToolSourceReplyPayloads: () => messagingToolSourceReplyPayloads.slice(),
     getHeartbeatToolResponse: () =>
       state.heartbeatToolResponse ? { ...state.heartbeatToolResponse } : undefined,
+    getCronOutcomeReport: () =>
+      state.cronOutcomeReport ? { ...state.cronOutcomeReport } : undefined,
     getPendingToolMediaReply: () => readPendingToolMediaReply(state),
     hasToolMediaBlockReply: () => state.hasToolMediaBlockReply,
     getVisibleBlockReplyCount: () => state.visibleBlockReplyCount,
