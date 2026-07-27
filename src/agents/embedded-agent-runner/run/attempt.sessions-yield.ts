@@ -1,5 +1,6 @@
 import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transcript-only-openclaw-assistant.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import type { SessionManager } from "../../sessions/index.js";
 /**
  * Handles sessions-yield interruption, persistence, and artifact cleanup.
  */
@@ -176,102 +177,55 @@ export async function persistSessionsYieldContextMessage(
 export function stripSessionsYieldArtifacts(activeSession: {
   messages: AgentMessage[];
   agent: { state: { messages: AgentMessage[] } };
-  sessionManager?: unknown;
+  sessionManager: Pick<SessionManager, "removeTrailingEntries">;
 }) {
   const originalLength = activeSession.messages.length;
   const strippedMessages = activeSession.messages.slice();
 
-  // Phase 1: remove yield-specific artifacts (aborted assistant + interrupt custom message).
+  // The tool-calling assistant turn and synthetic abort artifacts form one
+  // non-continuable suffix after sessions_yield.
   while (strippedMessages.length > 0) {
-    const last = strippedMessages.at(-1) as
-      | AgentMessage
-      | { role?: string; customType?: string; stopReason?: string };
-    if (last?.role === "assistant" && "stopReason" in last && last.stopReason === "aborted") {
-      strippedMessages.pop();
-      continue;
+    const last = strippedMessages.at(-1);
+    const removable =
+      last?.role === "assistant" ||
+      (last?.role === "custom" && last.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE);
+    if (!removable) {
+      break;
     }
-    if (
-      last?.role === "custom" &&
-      "customType" in last &&
-      last.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE
-    ) {
-      strippedMessages.pop();
-      continue;
-    }
-    break;
-  }
-
-  // Phase 2: remove trailing regular assistant messages (pre-yield tool work).
-  // After sessions_yield, the transcript must not end with an assistant role
-  // so that subagent completion auto-announce can inject a continuation turn.
-  while (strippedMessages.length > 0) {
-    const last = strippedMessages.at(-1) as AgentMessage | { role?: string; stopReason?: string };
-    if (last?.role === "assistant" && last.stopReason !== "aborted") {
-      strippedMessages.pop();
-      continue;
-    }
-    break;
+    strippedMessages.pop();
   }
 
   const removedCount = originalLength - strippedMessages.length;
-  if (removedCount > 0) {
-    activeSession.agent.state.messages = strippedMessages;
-
-    const sessionManager = activeSession.sessionManager as
-      | {
-          removeTrailingEntries?: (
-            predicate: (entry: {
-              type?: string;
-              message?: {
-                role?: string;
-                stopReason?: string;
-                provider?: string;
-                model?: string;
-              };
-              customType?: string;
-            }) => boolean,
-            options?: {
-              preserveTrailing?: (entry: {
-                type?: string;
-                message?: {
-                  role?: string;
-                  provider?: string;
-                  model?: string;
-                };
-              }) => boolean;
-            },
-          ) => number;
-        }
-      | undefined;
-    if (typeof sessionManager?.removeTrailingEntries === "function") {
-      // Use a count-capped type-checking predicate: match at most
-      // `removedCount` entries of the removable types, so persisted
-      // cleanup never exceeds what was removed from the active suffix.
-      let matchCount = 0;
-      sessionManager.removeTrailingEntries(
-        (entry) => {
-          if (matchCount >= removedCount) {
-            return false;
-          }
-          const isAssistantMessage =
-            entry.type === "message" && entry.message?.role === "assistant";
-          const isYieldInterruptMessage =
-            entry.type === "custom_message" &&
-            entry.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE;
-          if (!isAssistantMessage && !isYieldInterruptMessage) {
-            return false;
-          }
-          matchCount += 1;
-          return true;
-        },
-        {
-          preserveTrailing: (entry) =>
-            entry.type === "custom" ||
-            entry.type === "label" ||
-            entry.type === "session_info" ||
-            (entry.type === "message" && isTranscriptOnlyOpenClawAssistantMessage(entry.message)),
-        },
-      );
-    }
+  if (removedCount === 0) {
+    return;
   }
+
+  activeSession.agent.state.messages = strippedMessages;
+
+  // Cap persisted removal to the active suffix so divergent state cannot lose
+  // additional assistant entries.
+  let matchCount = 0;
+  activeSession.sessionManager.removeTrailingEntries(
+    (entry) => {
+      if (matchCount >= removedCount) {
+        return false;
+      }
+      const removable =
+        (entry.type === "message" && entry.message.role === "assistant") ||
+        (entry.type === "custom_message" &&
+          entry.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE);
+      if (!removable) {
+        return false;
+      }
+      matchCount += 1;
+      return true;
+    },
+    {
+      preserveTrailing: (entry) =>
+        entry.type === "custom" ||
+        entry.type === "label" ||
+        entry.type === "session_info" ||
+        (entry.type === "message" && isTranscriptOnlyOpenClawAssistantMessage(entry.message)),
+    },
+  );
 }
