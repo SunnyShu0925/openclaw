@@ -195,29 +195,34 @@ export function stripSessionsYieldArtifacts(activeSession: {
     strippedMessages.pop();
   }
 
-  const removedCount = originalLength - strippedMessages.length;
-  if (removedCount === 0) {
+  const removedMessages = activeSession.messages.slice(strippedMessages.length);
+  if (removedMessages.length === 0) {
     return;
   }
 
   activeSession.agent.state.messages = strippedMessages;
 
-  // Cap persisted removal to the active suffix so divergent state cannot lose
-  // additional assistant entries.
-  let matchCount = 0;
+  // The interrupt marker can settle independently in live and persisted state.
+  // Only assistant removals need the live-suffix cap to prevent data loss.
+  let remainingAssistantCount = removedMessages.filter(
+    (message) => message.role === "assistant",
+  ).length;
   activeSession.sessionManager.removeTrailingEntries(
     (entry) => {
-      if (matchCount >= removedCount) {
+      if (
+        entry.type === "custom_message" &&
+        entry.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE
+      ) {
+        return true;
+      }
+      if (
+        entry.type !== "message" ||
+        entry.message.role !== "assistant" ||
+        remainingAssistantCount === 0
+      ) {
         return false;
       }
-      const removable =
-        (entry.type === "message" && entry.message.role === "assistant") ||
-        (entry.type === "custom_message" &&
-          entry.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE);
-      if (!removable) {
-        return false;
-      }
-      matchCount += 1;
+      remainingAssistantCount -= 1;
       return true;
     },
     {

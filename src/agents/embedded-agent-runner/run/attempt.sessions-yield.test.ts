@@ -99,7 +99,7 @@ describe("stripSessionsYieldArtifacts", () => {
     expect(session.agent.state.messages).toEqual([toolResult]);
   });
 
-  it("caps persisted cleanup at the active suffix length", () => {
+  it("caps persisted assistant cleanup when persistence lacks the interrupt marker", () => {
     const sessionManager = SessionManager.inMemory();
     sessionManager.appendMessage(makeToolResultMessage());
     for (let index = 0; index < 4; index += 1) {
@@ -107,12 +107,6 @@ describe("stripSessionsYieldArtifacts", () => {
         makeAssistantMessage({ content: [{ type: "text", text: `persisted ${index}` }] }),
       );
     }
-    sessionManager.appendCustomMessageEntry(
-      SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE,
-      "[sessions_yield interrupt]",
-      false,
-    );
-
     const session = buildSession(
       [
         makeToolResultMessage(),
@@ -129,6 +123,40 @@ describe("stripSessionsYieldArtifacts", () => {
     expect(
       branch.filter((entry) => entry.type === "message" && entry.message.role === "assistant"),
     ).toHaveLength(2);
+    expect(
+      branch.some(
+        (entry) =>
+          entry.type === "custom_message" &&
+          entry.customType === SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE,
+      ),
+    ).toBe(false);
+  });
+
+  it("removes a persisted interrupt marker without consuming the assistant budget", () => {
+    const sessionManager = SessionManager.inMemory();
+    sessionManager.appendMessage(makeToolResultMessage());
+    for (let index = 0; index < 3; index += 1) {
+      sessionManager.appendMessage(
+        makeAssistantMessage({ content: [{ type: "text", text: `persisted ${index}` }] }),
+      );
+    }
+    sessionManager.appendCustomMessageEntry(
+      SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE,
+      "[sessions_yield interrupt]",
+      false,
+    );
+
+    const session = buildSession(
+      [makeToolResultMessage(), makeAssistantMessage(), makeAssistantMessage()],
+      sessionManager,
+    );
+
+    stripSessionsYieldArtifacts(session);
+
+    const branch = sessionManager.getBranch();
+    expect(
+      branch.filter((entry) => entry.type === "message" && entry.message.role === "assistant"),
+    ).toHaveLength(1);
     expect(
       branch.some(
         (entry) =>
