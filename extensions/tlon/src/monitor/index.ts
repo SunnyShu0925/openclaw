@@ -1100,8 +1100,6 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
     },
   });
 
-  // Hoisted so the finally block can always clear it as a single cleanup owner.
-  let pollInterval: ReturnType<typeof setInterval> | undefined;
   try {
     runtime.log?.("[tlon] Subscribing to firehose updates...");
 
@@ -1500,7 +1498,7 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
     runtime.log?.("[tlon] Connected! Firehose subscriptions active");
 
     // Periodically refresh channel discovery
-    pollInterval = setInterval(
+    const pollInterval = setInterval(
       () => {
         void (async () => {
           if (!opts.abortSignal?.aborted) {
@@ -1522,16 +1520,13 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
       },
       2 * 60 * 1000,
     );
-    // Do not keep the process alive solely for channel-discovery polling.
-    pollInterval.unref();
 
-    // waitUntilAbort resolves on abort, immediately if already aborted (so
-    // finally cleanup runs), or stays pending forever when no signal is given.
-    await waitUntilAbort(opts.abortSignal);
-  } finally {
-    if (pollInterval !== undefined) {
+    // Startup may finish after cancellation, so replay an already-aborted signal
+    // and release the discovery timer before running the monitor cleanup.
+    await waitUntilAbort(opts.abortSignal, () => {
       clearInterval(pollInterval);
-    }
+    });
+  } finally {
     api?.stopReceiving();
     await ingress.stop();
     try {
