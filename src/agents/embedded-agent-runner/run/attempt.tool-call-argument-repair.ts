@@ -6,7 +6,10 @@ import { normalizeProviderId } from "../../model-selection.js";
 import type { StreamFn } from "../../runtime/index.js";
 import type { MutableAssistantMessageEventStream } from "../../stream-compat.js";
 import { log } from "../logger.js";
-import { createHtmlEntityToolCallArgumentDecodingWrapper } from "../tool-call-argument-decoding.js";
+import {
+  createEscapeSequenceStreamWrapper,
+  createHtmlEntityToolCallArgumentDecodingWrapper,
+} from "../tool-call-argument-decoding.js";
 import { isRunnerToolCallBlockType } from "./attempt.tool-call-block-type.js";
 import { wrapStreamObjectEvents } from "./stream-wrapper.js";
 
@@ -797,3 +800,7 @@ export function wrapStreamFnDecodeXaiToolCallArguments(baseFn: StreamFn): Stream
   return createHtmlEntityToolCallArgumentDecodingWrapper(baseFn);
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+export function wrapStreamFnDecodeEscapeSequencesToolCallArguments(baseFn: StreamFn): StreamFn {
+  return createEscapeSequenceStreamWrapper(baseFn);
+}

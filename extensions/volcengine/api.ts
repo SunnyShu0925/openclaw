@@ -23,10 +23,21 @@ function mergeUnsupportedToolSchemaKeywords(existing: string[] | undefined): str
     : merged;
 }
 
+/**
+ * Models known to exhibit the Volcengine transport-layer double-escaping issue
+ * (literal `\n` instead of newline bytes in tool-call arguments).
+ * Only Deepseek models are affected — Doubao, GLM, Kimi return correctly-encoded arguments.
+ */
+const DEEPSEEK_MODEL_ID_PREFIX = "deepseek";
+
 export function applyVolcengineToolSchemaCompat<T extends { compat?: ModelCompatConfig }>(
   model: T,
 ): T {
+  const modelId = (model as { id?: string }).id;
+  const isDeepseek = typeof modelId === "string" && modelId.startsWith(DEEPSEEK_MODEL_ID_PREFIX);
+
   return applyModelCompatPatch(model, {
+    toolCallArgumentsEncoding: isDeepseek ? "escape-sequences" : undefined,
     unsupportedToolSchemaKeywords: mergeUnsupportedToolSchemaKeywords(
       model.compat?.unsupportedToolSchemaKeywords,
     ),

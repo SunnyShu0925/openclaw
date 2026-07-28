@@ -1,5 +1,5 @@
 /**
- * Decodes HTML-entity escaped tool-call arguments in stream wrappers.
+ * Decodes HTML-entity escaped and escape-sequence encoded tool-call arguments in stream wrappers.
  */
 import { decodeHtmlEntities } from "../../shared/html-entities.js";
 import { visitObjectContentBlocks } from "../../shared/message-content-blocks.js";
@@ -99,5 +99,109 @@ export function createHtmlEntityToolCallArgumentDecodingWrapper(baseStreamFn: St
       );
     }
     return wrapStreamMessageObjects(maybeStream, decodeToolCallArgumentsHtmlEntitiesInMessage);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Escape-sequence decoding for Volcengine Deepseek models
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalizes escape sequences (\n, \t, \r) in a string value.
+ *
+ * Uses a conservative heuristic to avoid corrupting legitimate content:
+ * - Requires 2+ `\n` occurrences (single `\n` is likely a Windows path like `C:\Work\nssm`)
+ * - Skips when real newlines already exist (already-correct content preserved)
+ * - Single-pass state machine, no sentinel character (zero collision risk)
+ */
+function normalizeEscapeSequencesInLeaf(value: string): string {
+  // Heuristic gate: only convert when \n appears without real newlines,
+  // and at least twice (avoid Windows path false positives).
+  if (!value.includes("\\n") || value.includes("\n")) {
+    return value;
+  }
+  if (value.split("\\n").length < 3) {
+    return value;
+  }
+
+  // Single-pass state machine: \\ → \, \n → newline, \t → tab, \r → CR.
+  // Double-backslash case (\\n): the first \\ outputs a backslash, then n stays literal.
+  let result = "";
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === "\\" && i + 1 < value.length) {
+      if (value[i + 1] === "\\") {
+        result += "\\";
+        i++;
+      } else if (value[i + 1] === "n") {
+        result += "\n";
+        i++;
+      } else if (value[i + 1] === "t") {
+        result += "\t";
+        i++;
+      } else if (value[i + 1] === "r") {
+        result += "\r";
+        i++;
+      } else {
+        result += value[i];
+      }
+    } else {
+      result += value[i];
+    }
+  }
+  return result;
+}
+
+const normalizedWriteToolContent = new WeakSet<object>();
+
+/**
+ * Applies escape-sequence normalization only to the `content` field of `write` tool calls,
+ * preserving all other tool arguments (shell commands, search queries, regex patterns, etc.)
+ * completely unchanged.
+ */
+function normalizeWriteToolEscapeSequencesInMessage(message: unknown): void {
+  visitObjectContentBlocks(message, (block) => {
+    const typedBlock = block as {
+      type?: unknown;
+      name?: unknown;
+      arguments?: Record<string, unknown>;
+    };
+    if (
+      typedBlock.type !== "toolCall" ||
+      typedBlock.name !== "write" ||
+      typeof typedBlock.arguments !== "object" ||
+      !typedBlock.arguments
+    ) {
+      return;
+    }
+    if (normalizedWriteToolContent.has(typedBlock.arguments)) {
+      return;
+    }
+    const content = typedBlock.arguments.content;
+    if (typeof content === "string") {
+      const normalized = normalizeEscapeSequencesInLeaf(content);
+      if (normalized !== content) {
+        typedBlock.arguments.content = normalized;
+      }
+    }
+    normalizedWriteToolContent.add(typedBlock.arguments);
+  });
+}
+
+/**
+ * Wraps a stream function so escape sequences in write-tool `content` arguments
+ * are normalized for Volcengine Deepseek models.
+ *
+ * Only affects the `content` field of `write` tool calls — other tools and
+ * fields pass through unchanged.
+ */
+export function createEscapeSequenceStreamWrapper(baseStreamFn: StreamFn): StreamFn {
+  return (model, context, options) => {
+    const maybeStream = baseStreamFn(model, context, options);
+    if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
+      return Promise.resolve(maybeStream).then((stream) =>
+        wrapStreamMessageObjects(stream, normalizeWriteToolEscapeSequencesInMessage),
+      );
+    }
+    return wrapStreamMessageObjects(maybeStream, normalizeWriteToolEscapeSequencesInMessage);
   };
 }

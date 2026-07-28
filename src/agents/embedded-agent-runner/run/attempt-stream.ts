@@ -30,6 +30,7 @@ import {
 import { wrapStreamFnHandleSensitiveStopReason } from "./attempt.stop-reason-recovery.js";
 import {
   shouldRepairMalformedToolCallArguments,
+  wrapStreamFnDecodeEscapeSequencesToolCallArguments,
   wrapStreamFnDecodeXaiToolCallArguments,
   wrapStreamFnRepairMalformedToolCallArguments,
 } from "./attempt.tool-call-argument-repair.js";
@@ -230,6 +231,12 @@ export function installEmbeddedAttemptStreamGuards(input: {
 
   if (resolveToolCallArgumentsEncoding(attempt.model) === "html-entities") {
     session.agent.streamFn = wrapStreamFnDecodeXaiToolCallArguments(session.agent.streamFn);
+  }
+
+  if (resolveToolCallArgumentsEncoding(attempt.model) === "escape-sequences") {
+    session.agent.streamFn = wrapStreamFnDecodeEscapeSequencesToolCallArguments(
+      session.agent.streamFn,
+    );
   }
 
   // Tool-call repair can replace structured arguments from fragmented deltas.
