@@ -298,6 +298,39 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               },
               { maxLines },
             );
+            if (trimResult.compacted) {
+              await applySessionPatchProjection({
+                agentId: target.agentId,
+                storePath,
+                resolveTarget: () => ({ primaryKey: compactTarget.primaryKey }),
+                project: ({ existingEntry }) => {
+                  if (
+                    !existingEntry ||
+                    existingEntry.sessionId !== sessionId ||
+                    existingEntry.lifecycleRevision !== lifecycleRevision ||
+                    resolveSessionWorkStartError(target.canonicalKey, existingEntry)
+                  ) {
+                    return { ok: false };
+                  }
+                  const entryToUpdate = existingEntry;
+                  entryToUpdate.updatedAt = Date.now();
+                  entryToUpdate.compactionCount =
+                    Math.max(0, entryToUpdate.compactionCount ?? 0) + 1;
+                  delete entryToUpdate.totalTokens;
+                  delete entryToUpdate.totalTokensFresh;
+                  delete entryToUpdate.inputTokens;
+                  delete entryToUpdate.outputTokens;
+                  delete entryToUpdate.contextBudgetStatus;
+                  return { ok: true, entry: entryToUpdate };
+                },
+              });
+              recordSessionCompacted({
+                sessionKey: target.canonicalKey,
+                operationId,
+                sessionId,
+                agentId: target.agentId ?? requestedAgentId,
+              });
+            }
             respond(
               true,
               {
@@ -313,12 +346,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               undefined,
             );
             if (trimResult.compacted) {
-              recordSessionCompacted({
-                sessionKey: target.canonicalKey,
-                operationId,
-                sessionId,
-                agentId: target.agentId ?? requestedAgentId,
-              });
               emitSessionsChanged(context, {
                 sessionKey: target.canonicalKey,
                 ...(target.canonicalKey === "global" && target.agentId
