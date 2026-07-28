@@ -1565,10 +1565,35 @@ test("sessions.patch rejects archive while terminal compaction owns the session"
   ws.close();
 });
 
-test("sessions.compact maxLines trims SQLite transcript rows and archives the full pre-compaction transcript", async () => {
+test("sessions.compact maxLines trims SQLite transcript rows, archives the full pre-compaction transcript, and resets stale token metadata", async () => {
   const { dir, storePath } = await createSessionStoreDir();
   await seedSessionEntry({
-    entry: sessionStoreEntry("sess-main"),
+    entry: sessionStoreEntry("sess-main", {
+      totalTokens: 1_880_000,
+      totalTokensFresh: true,
+      inputTokens: 500_000,
+      outputTokens: 1_380_000,
+      contextBudgetStatus: {
+        schemaVersion: 1,
+        source: "pre-prompt-estimate",
+        updatedAt: Date.now() - 60_000,
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        route: "over",
+        shouldCompact: true,
+        estimatedPromptTokens: 1_880_000,
+        contextTokenBudget: 200_000,
+        promptBudgetBeforeReserve: 180_000,
+        reserveTokens: 20_000,
+        effectiveReserveTokens: 20_000,
+        remainingPromptBudgetTokens: 0,
+        overflowTokens: 1_700_000,
+        toolResultReducibleChars: 0,
+        messageCount: 500,
+        unwindowedMessageCount: 500,
+      },
+      compactionCount: 2,
+    }),
     sessionKey: "agent:main:main",
     storePath,
   });
@@ -1626,6 +1651,24 @@ test("sessions.compact maxLines trims SQLite transcript rows and archives the fu
   // No active run present, so the interrupt guard short-circuits without aborting.
   expect(embeddedRunMock.abortCalls).toEqual([]);
   expect(embeddedRunMock.waitCalls).toEqual([]);
+
+  // Stale token metadata is cleared and compactionCount is incremented.
+  const storedEntry = loadSessionEntry({ sessionKey: "agent:main:main", storePath }) as
+    | {
+        compactionCount?: number;
+        totalTokens?: number;
+        totalTokensFresh?: boolean;
+        inputTokens?: number;
+        outputTokens?: number;
+        contextBudgetStatus?: unknown;
+      }
+    | undefined;
+  expect(storedEntry?.compactionCount).toBe(3);
+  expect(storedEntry?.totalTokens).toBeUndefined();
+  expect(storedEntry?.totalTokensFresh).toBeUndefined();
+  expect(storedEntry?.inputTokens).toBeUndefined();
+  expect(storedEntry?.outputTokens).toBeUndefined();
+  expect(storedEntry?.contextBudgetStatus).toBeUndefined();
 
   ws.close();
 });
