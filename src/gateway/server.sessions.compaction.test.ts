@@ -1579,7 +1579,7 @@ test("sessions.compact maxLines trims SQLite transcript rows, archives the full 
         updatedAt: Date.now() - 60_000,
         provider: "anthropic",
         model: "claude-opus-4-6",
-        route: "over",
+        route: "compact_only",
         shouldCompact: true,
         estimatedPromptTokens: 1_880_000,
         contextTokenBudget: 200_000,
