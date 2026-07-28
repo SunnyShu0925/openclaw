@@ -126,7 +126,7 @@ async function readStoredMainSession(storePath: string): Promise<SessionEntry> {
   return requireStoredSessionEntry(storePath);
 }
 
-let modelFallbackModule: typeof import("../../agents/model-fallback.js");
+let modelFallbackModule: typeof import("../../agents/model-fallback-runner.js");
 let onAgentEvent: typeof import("../../infra/agent-events.js").onAgentEvent;
 
 let runReplyAgentPromise:
@@ -140,7 +140,7 @@ async function getRunReplyAgent() {
   return await runReplyAgentPromise;
 }
 
-vi.mock("../../agents/model-fallback.js", () => ({
+vi.mock("../../agents/model-fallback-runner.js", () => ({
   runWithModelFallback: async ({
     provider,
     model,
@@ -156,6 +156,9 @@ vi.mock("../../agents/model-fallback.js", () => ({
     model,
     attempts: [],
   }),
+}));
+
+vi.mock("../../agents/model-fallback-attempt.js", () => ({
   isFallbackSummaryError: (err: unknown) =>
     err instanceof Error &&
     err.name === "FallbackSummaryError" &&
@@ -222,7 +225,7 @@ vi.mock("./queue.js", async (importOriginal) => ({
 
 beforeAll(async () => {
   // Avoid attributing the initial agent-runner import cost to the first test case.
-  modelFallbackModule = await import("../../agents/model-fallback.js");
+  modelFallbackModule = await import("../../agents/model-fallback-runner.js");
   ({ onAgentEvent } = await import("../../infra/agent-events.js"));
   await getRunReplyAgent();
 });
