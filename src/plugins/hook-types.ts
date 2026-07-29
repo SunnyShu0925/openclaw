@@ -256,6 +256,14 @@ export type PluginHookAgentContext = {
   jobId?: string;
   trace?: DiagnosticTraceContext;
   agentId?: string;
+  /**
+   * Signal that aborts when the hook handler times out.
+   * Handlers that spawn child processes SHOULD listen for this signal and
+   * terminate owned work when it fires. The hook runner calls `abort()` on
+   * timeout **before** releasing the lane, so cooperative handlers can
+   * observe `signal.aborted === true` and clean up.
+   */
+  abortSignal?: AbortSignal;
   sessionKey?: string;
   sessionId?: string;
   workspaceDir?: string;

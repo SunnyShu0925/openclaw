@@ -498,11 +498,13 @@ export function createHookRunner(
   const withHookTimeout = async <T>(
     promise: Promise<T>,
     timeoutMs: number,
-    optionsResult: { unref?: boolean } = {},
+    optionsResult: { unref?: boolean; abortController?: AbortController } = {},
   ): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        // Notify the handler that it has timed out BEFORE releasing the lane
+        optionsResult.abortController?.abort();
         reject(new Error(`timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       if (optionsResult.unref) {
@@ -547,12 +549,20 @@ export function createHookRunner(
 
     const promises = hooks.map(async (hook) => {
       try {
+        const abortController = new AbortController();
+        const ctxWithSignal = { ...ctx, abortSignal: abortController.signal };
         const promise = Promise.resolve(
-          (hook.handler as (event: unknown, ctx: unknown) => Promise<void> | void)(event, ctx),
+          (hook.handler as (event: unknown, ctx: unknown) => Promise<void> | void)(
+            event,
+            ctxWithSignal,
+          ),
         );
         const timeoutMs = getVoidHookTimeoutMs(hookName, hook);
         if (timeoutMs) {
-          await withHookTimeout(promise, timeoutMs, { unref: optionsValue.unrefTimeout ?? true });
+          await withHookTimeout(promise, timeoutMs, {
+            unref: optionsValue.unrefTimeout ?? true,
+            abortController,
+          });
         } else {
           await promise;
         }
@@ -585,10 +595,14 @@ export function createHookRunner(
 
     for (const hook of hooks) {
       try {
+        const abortController = new AbortController();
+        const ctxWithSignal = { ...ctx, abortSignal: abortController.signal };
         const handler = hook.handler as (event: unknown, ctx: unknown) => Promise<TResult>;
-        const promise = Promise.resolve(handler(event, ctx));
+        const promise = Promise.resolve(handler(event, ctxWithSignal));
         const timeoutMs = getModifyingHookTimeoutMs(hookName, hook);
-        const handlerResult = timeoutMs ? await withHookTimeout(promise, timeoutMs) : await promise;
+        const handlerResult = timeoutMs
+          ? await withHookTimeout(promise, timeoutMs, { abortController })
+          : await promise;
 
         const shouldMergeResult =
           handlerResult !== undefined && (handlerResult !== null || policy.mergeNullResults);
@@ -666,11 +680,18 @@ export function createHookRunner(
   ): Promise<TResult | undefined> {
     for (const hook of hooks) {
       try {
+        const abortController = new AbortController();
+        const ctxWithSignal = { ...ctx, abortSignal: abortController.signal };
         const promise = Promise.resolve(
-          (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(event, ctx),
+          (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(
+            event,
+            ctxWithSignal,
+          ),
         );
         const timeoutMs = getClaimingHookTimeoutMs(hookName, hook);
-        const handlerResult = timeoutMs ? await withHookTimeout(promise, timeoutMs) : await promise;
+        const handlerResult = timeoutMs
+          ? await withHookTimeout(promise, timeoutMs, { abortController })
+          : await promise;
         if (handlerResult?.handled) {
           return handlerResult;
         }
@@ -717,11 +738,18 @@ export function createHookRunner(
     let firstError: string | null = null;
     for (const hook of hooks) {
       try {
+        const abortController = new AbortController();
+        const ctxWithSignal = { ...ctx, abortSignal: abortController.signal };
         const promise = Promise.resolve(
-          (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(event, ctx),
+          (hook.handler as (event: unknown, ctx: unknown) => Promise<TResult | void>)(
+            event,
+            ctxWithSignal,
+          ),
         );
         const timeoutMs = getClaimingHookTimeoutMs(hookName, hook);
-        const handlerResult = timeoutMs ? await withHookTimeout(promise, timeoutMs) : await promise;
+        const handlerResult = timeoutMs
+          ? await withHookTimeout(promise, timeoutMs, { abortController })
+          : await promise;
         if (handlerResult?.handled) {
           return { status: "handled", result: handlerResult };
         }

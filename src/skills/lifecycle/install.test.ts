@@ -241,11 +241,13 @@ describe("installSkill before_install hooks", () => {
       expect(payload?.skill?.installId).toBe("deps");
       expect(payload?.skill?.installSpec?.kind).toBe("node");
       expect(payload?.skill?.installSpec?.package).toBe("example-package");
-      expect(handlerCall?.[1]).toEqual({
-        origin: "openclaw-workspace",
-        targetType: "skill",
-        requestKind: "skill-install",
-      });
+      expect(handlerCall?.[1]).toEqual(
+        expect.objectContaining({
+          origin: "openclaw-workspace",
+          targetType: "skill",
+          requestKind: "skill-install",
+        }),
+      );
       expect(
         result.warnings?.some((warning) =>
           warning.includes(

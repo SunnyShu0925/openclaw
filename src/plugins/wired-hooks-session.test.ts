@@ -25,7 +25,7 @@ async function expectSessionHookCall(params: {
     await runner.runSessionEnd(params.event as PluginHookSessionEndEvent, params.sessionCtx);
   }
 
-  expect(handler).toHaveBeenCalledWith(params.event, params.sessionCtx);
+  expect(handler).toHaveBeenCalledWith(params.event, expect.objectContaining(params.sessionCtx));
 }
 
 describe("session hook runner methods", () => {

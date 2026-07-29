@@ -200,11 +200,11 @@ describe("issuePairingChallenge", () => {
         code: "HOOK1234",
         metadata: { username: "alice" },
       },
-      {
+      expect.objectContaining({
         channelId: "forum",
         accountId: "alerts",
         senderId: "123",
-      },
+      }),
     );
   });
 
