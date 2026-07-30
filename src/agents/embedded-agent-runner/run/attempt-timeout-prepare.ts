@@ -84,6 +84,17 @@ export function prepareEmbeddedAttemptTimeout(input: {
         ) {
           input.markTimedOutDuringCompaction();
         }
+        // Mark as terminal only when the timer fires at the absolute cap,
+        // so subsequent noteActivity() calls are no-ops. Normal timeouts
+        // (before the cap) leave hasAbortedAtCap false so noteActivity can
+        // still reschedule or cap-abort as appropriate.
+        {
+          const effectiveMaxRunMs = Math.max(attempt.timeoutMs, MAX_EXTENSION_TOTAL_MS);
+          const maxDeadline = runStartMs + effectiveMaxRunMs;
+          if (Date.now() >= maxDeadline) {
+            hasAbortedAtCap = true;
+          }
+        }
         input.markTimedOutByRunBudget();
         input.abortRun(true);
         if (!abortWarnTimer) {
