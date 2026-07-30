@@ -301,6 +301,26 @@ async function resolveBackendValidatedSandboxWorkdir(params: {
   return null;
 }
 
+function findContainerMountHostRoot(
+  workdir: string,
+  mounts: readonly { containerPath: string; hostPath: string }[] | undefined,
+): string | undefined {
+  if (!mounts) {
+    return undefined;
+  }
+  const normalizedWorkdir = normalizeContainerPath(workdir);
+  for (const mount of mounts) {
+    const containerRoot = normalizeContainerPath(mount.containerPath);
+    if (containerRoot === ".") {
+      continue;
+    }
+    if (normalizedWorkdir === containerRoot || normalizedWorkdir.startsWith(`${containerRoot}/`)) {
+      return path.resolve(mount.hostPath);
+    }
+  }
+  return undefined;
+}
+
 async function resolveHostValidatedSandboxWorkdir(params: {
   workdir: string;
   sandbox: BashSandboxConfig;
@@ -310,15 +330,32 @@ async function resolveHostValidatedSandboxWorkdir(params: {
     sandbox: params.sandbox,
   });
   const candidateWorkdir = mappedHostWorkdir ?? params.workdir;
+  // Determine the correct root for sandbox path validation.
+  // When a containerMount (e.g. sandbox-skills) matched, the host path is under the
+  // mount's hostPath, not under workspaceDir. Use the mount's hostPath as the root
+  // so the sandbox boundary assertion accepts the path.
+  const mountRoot = mappedHostWorkdir
+    ? findContainerMountHostRoot(params.workdir, params.sandbox.containerMounts)
+    : undefined;
   try {
     const resolved = await assertSandboxPath({
       filePath: candidateWorkdir,
       cwd: params.sandbox.workspaceDir,
-      root: params.sandbox.workspaceDir,
+      root: mountRoot ?? params.sandbox.workspaceDir,
     });
     const stats = await fs.stat(resolved.resolved);
     if (!stats.isDirectory()) {
       return null;
+    }
+    if (mountRoot) {
+      // For container-mounted paths, containerCwd is the original container path
+      // (e.g. /workspace/.openclaw/sandbox-skills/skills/X), not derived from the
+      // primary containerWorkdir + relative-to-workspaceDir.
+      return {
+        hostCwd: resolved.resolved,
+        containerCwd: normalizeContainerPath(params.workdir),
+        scriptPreflightCwd: resolved.resolved,
+      };
     }
     const relative = resolved.relative
       ? resolved.relative.split(path.sep).join(path.posix.sep)
