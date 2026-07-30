@@ -75,6 +75,24 @@ function mapContainerWorkdirToHost(params: {
   sandbox: BashSandboxConfig;
 }): string | undefined {
   const workdir = normalizeContainerPath(params.workdir);
+  // Check additional container mounts first (e.g. sandbox-skills mounts).
+  // More specific paths must take priority over the general containerWorkdir mapping.
+  for (const mount of params.sandbox.containerMounts ?? []) {
+    const containerRoot = normalizeContainerPath(mount.containerPath);
+    if (containerRoot === ".") {
+      continue;
+    }
+    if (workdir === containerRoot) {
+      return path.resolve(mount.hostPath);
+    }
+    if (workdir.startsWith(`${containerRoot}/`)) {
+      const rel = workdir
+        .slice(containerRoot.length + 1)
+        .split("/")
+        .filter(Boolean);
+      return path.resolve(mount.hostPath, ...rel);
+    }
+  }
   const containerRoot = normalizeContainerPath(params.sandbox.containerWorkdir);
   if (containerRoot === ".") {
     return undefined;

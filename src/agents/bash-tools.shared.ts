@@ -22,6 +22,8 @@ export type BashSandboxConfig = {
   validateWorkdir?: SandboxBackendWorkdirValidator;
   discardPreparedWorkdir?: (workdir: string) => void;
   workdirRoots?: readonly string[];
+  /** Additional container-to-host path mappings for exec workdir validation. */
+  containerMounts?: readonly { containerPath: string; hostPath: string }[];
   env?: Record<string, string>;
   buildExecSpec?: (params: {
     command: string;

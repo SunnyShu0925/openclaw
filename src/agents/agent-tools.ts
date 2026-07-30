@@ -789,6 +789,16 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
                 sandbox.backend,
               ),
               workdirRoots: sandbox.backend?.workdirRoots,
+              containerMounts:
+                sandbox.workspaceAccess === "rw" && sandbox.agentWorkspaceDir
+                  ? resolveReadOnlyWorkspaceSkillMounts({
+                      workspaceDir: sandbox.workspaceDir,
+                      agentWorkspaceDir: sandbox.agentWorkspaceDir,
+                      skillsWorkspaceDir: sandbox.skillsWorkspaceDir,
+                      workdir: sandbox.containerWorkdir,
+                      workspaceAccess: sandbox.workspaceAccess,
+                    })
+                  : undefined,
               env: sandbox.backend?.env ?? sandbox.docker.env,
               buildExecSpec: sandbox.backend?.buildExecSpec.bind(sandbox.backend),
               finalizeExec: sandbox.backend?.finalizeExec?.bind(sandbox.backend),
