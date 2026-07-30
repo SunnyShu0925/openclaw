@@ -45,12 +45,18 @@ describe("renderIdentitySection", () => {
     document.body.append(container);
     render(renderIdentitySection(createProps()), container);
     const avatar = container.querySelector<HTMLElement>("openclaw-viewer-avatar");
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:profile-1-avatar");
+
     await vi.waitFor(async () => {
       await (avatar as (HTMLElement & { updateComplete?: Promise<unknown> }) | null)
         ?.updateComplete;
-      expect(avatar?.querySelector("img")?.getAttribute("src")).toBe(
-        "/api/users/profile-1/avatar?v=2",
-      );
+      expect(avatar?.querySelector("img")?.getAttribute("src")).toBe("blob:profile-1-avatar");
     });
 
     expect(container.querySelector("#settings-profile-identity")).not.toBeNull();

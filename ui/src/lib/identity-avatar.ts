@@ -177,13 +177,18 @@ export function resolveAvatarImageUrl(value: string): string | Promise<string | 
   if (!trusted) {
     return null;
   }
-  // Connected same-origin routes need the loader too: it resolves a missing
-  // avatar before Lit can reconcile an <img> error back over its initials.
-  const pageOrigin = globalThis.location?.origin;
-  const crossOrigin = pageOrigin ? new URL(trusted, pageOrigin).origin !== pageOrigin : false;
-  return appGatewayOrigin || appGatewayAuthHeader || crossOrigin
-    ? loadIdentityAvatar(trusted)
-    : trusted;
+  // The gateway avatar endpoint (/api/users/<id>/avatar) always requires
+  // authentication credentials.  Instead of returning a plain URL that the
+  // browser loads as an unauthenticated <img> (which gets a 401), always go
+  // through loadIdentityAvatar() which sends available credentials and
+  // produces a same-origin blob URL.  When no credential is available the
+  // fetch itself fails with 401, and the caller shows the initials fallback
+  // instead of a broken image.
+  //
+  // A future server-side change could allow unauthenticated access to
+  // uploaded avatars whose URL already contains an unguessable UUID
+  // (Phase B of the fix — see PR #115770 for context.)
+  return loadIdentityAvatar(trusted);
 }
 
 /** A blob stays live until its image has finished loading or definitively failed. */

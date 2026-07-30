@@ -207,6 +207,31 @@ describe("authenticated profile avatar cache", () => {
     expect(createObjectURL).toHaveBeenCalledOnce();
   });
 
+  it("calls loadIdentityAvatar even without an auth header (regression: #115770)", async () => {
+    setAvatarGatewayOrigin("wss://gateway.example.test/ws"); // no auth header
+    const fetchAvatar = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:profile-ada");
+
+    const result = resolveAvatarImageUrl("/api/users/profile-ada/avatar?v=7");
+    // Must return a Promise (loadIdentityAvatar), not a plain string.
+    expect(typeof result).not.toBe("string");
+    await expect(result).resolves.toBe("blob:profile-ada");
+    expect(fetchAvatar).toHaveBeenCalledOnce();
+    expect(fetchAvatar).toHaveBeenCalledWith(
+      "https://gateway.example.test/api/users/profile-ada/avatar?v=7",
+      expect.objectContaining({
+        credentials: "include",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    // No Authorization header when none was configured.
+    expect(fetchAvatar.mock.calls[0]![1]!).not.toHaveProperty("headers.Authorization");
+  });
+
   it("refetches when the gateway publishes a newer avatar revision", async () => {
     setAvatarGatewayOrigin("https://gateway.example.test", "Bearer profile-token");
     const fetchAvatar = vi.spyOn(globalThis, "fetch").mockImplementation(

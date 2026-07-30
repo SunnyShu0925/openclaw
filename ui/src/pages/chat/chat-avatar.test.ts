@@ -350,20 +350,27 @@ describe("attributed sender avatars", () => {
     );
   });
 
-  it("renders the sender's profile avatar route for user messages", () => {
-    const avatar = renderAvatar([
-      "user",
-      undefined,
-      { name: "Viewer", avatar: null },
-      "",
-      null,
-      { id: "c3e32452-0467-47e5-aafa-233cd5dae29f", name: "steipete" },
-    ]);
-    expect(avatar?.tagName).toBe("IMG");
-    expect(avatar?.getAttribute("src")).toBe(
-      "/api/users/c3e32452-0467-47e5-aafa-233cd5dae29f/avatar",
+  it("renders the sender's profile avatar route for user messages", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
     );
-    expect(avatar?.getAttribute("alt")).toBe("steipete");
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:steipete-avatar");
+    const container = document.createElement("div");
+    render(
+      renderChatAvatar("user", undefined, undefined, "", null, {
+        id: "c3e32452-0467-47e5-aafa-233cd5dae29f",
+        name: "steipete",
+      }),
+      container,
+    );
+    await vi.waitFor(() => {
+      const avatar = container.querySelector<HTMLElement>(".chat-avatar");
+      expect(avatar?.tagName).toBe("IMG");
+      expect(avatar?.getAttribute("src")).toBe("blob:steipete-avatar");
+      expect(avatar?.getAttribute("alt")).toBe("steipete");
+    });
   });
 
   it("renders identity-colored initials when the sender has no profile route", () => {
@@ -385,7 +392,13 @@ describe("attributed sender avatars", () => {
     expect(avatar?.classList.contains("chat-avatar--sender-initials")).toBe(false);
   });
 
-  it("swaps to identity initials when the derived avatar route errors", () => {
+  it("swaps to identity initials when the derived avatar route errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:steipete-avatar");
     const container = document.createElement("div");
     render(
       renderChatAvatar("user", undefined, undefined, "", null, {
@@ -394,9 +407,17 @@ describe("attributed sender avatars", () => {
       }),
       container,
     );
-    const slot = container.querySelector<HTMLElement>(".chat-avatar-slot");
+
+    const slot = await vi.waitFor(() => {
+      const s = container.querySelector<HTMLElement>(".chat-avatar-slot");
+      const image = s?.querySelector("img");
+      expect(image).not.toBeNull();
+      expect(image?.getAttribute("src")).toBe("blob:steipete-avatar");
+      return s;
+    });
+
     const image = slot?.querySelector("img");
-    expect(image).not.toBeNull();
+    image?.dispatchEvent(new Event("load"));
     expect(slot?.classList.contains("is-fallback")).toBe(false);
 
     image?.dispatchEvent(new Event("error"));

@@ -84,9 +84,16 @@ it("renders trusted presence avatar routes directly", async () => {
   };
   document.body.append(avatar);
 
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(new Uint8Array([1, 2, 3]), {
+      headers: { "content-type": "image/png" },
+    }),
+  );
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:profile-ada");
+
   await vi.waitFor(async () => {
     await avatar.updateComplete;
-    expect(avatar.querySelector("img")?.getAttribute("src")).toBe("/api/users/profile-ada/avatar");
+    expect(avatar.querySelector("img")?.getAttribute("src")).toBe("blob:profile-ada");
   });
 });
 
@@ -101,9 +108,16 @@ it("derives a missing presence avatar from the durable profile id, not the email
   };
   document.body.append(avatar);
 
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(new Uint8Array([1, 2, 3]), {
+      headers: { "content-type": "image/png" },
+    }),
+  );
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:profile-ada");
+
   await vi.waitFor(async () => {
     await avatar.updateComplete;
-    expect(avatar.querySelector("img")?.getAttribute("src")).toBe(`/api/users/${profileId}/avatar`);
+    expect(avatar.querySelector("img")?.getAttribute("src")).toBe("blob:profile-ada");
   });
 });
 

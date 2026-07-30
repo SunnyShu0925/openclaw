@@ -89,6 +89,13 @@ describe("AppSidebar viewer presence", () => {
     );
     sidebar.connected = true;
 
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:self-avatar");
+
     gatewayHarness.publishEvent("presence", {
       presence: [
         {
@@ -111,7 +118,7 @@ describe("AppSidebar viewer presence", () => {
       const avatar = sidebar.querySelector<HTMLImageElement>(
         ".sidebar-identity-card openclaw-viewer-avatar img",
       );
-      expect(avatar?.getAttribute("src")).toBe("/api/users/00-self/avatar?v=7");
+      expect(avatar?.getAttribute("src")).toBe("blob:self-avatar");
     });
   });
 
@@ -123,6 +130,14 @@ describe("AppSidebar viewer presence", () => {
       createSessions("main", ["agent:main:main", "agent:main:work"]),
     );
     sidebar.connected = true;
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:self-avatar");
+
     gatewayHarness.publishEvent("presence", {
       presence: [
         {
@@ -204,8 +219,10 @@ describe("AppSidebar viewer presence", () => {
     );
     expect(identityCard?.querySelector('[data-viewer-id="00-self"]')).not.toBeNull();
 
-    const avatar = identityCard?.querySelector<HTMLImageElement>("openclaw-viewer-avatar img");
-    expect(avatar?.getAttribute("src")).toBe("/api/users/00-self/avatar?v=1");
+    await vi.waitFor(() => {
+      const updated = identityCard?.querySelector<HTMLImageElement>("openclaw-viewer-avatar img");
+      expect(updated?.getAttribute("src")).toBe("blob:self-avatar");
+    });
     const footer = sidebar.querySelector(".sidebar-footer-bar");
     expect(footer?.querySelector("openclaw-viewer-facepile")).toBeNull();
     expect(footer?.querySelector("openclaw-sidebar-build-chip")).toBeNull();
@@ -214,6 +231,13 @@ describe("AppSidebar viewer presence", () => {
       "openclaw-tooltip",
       "span",
     ]);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+      }),
+    );
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:self-avatar");
+
     gatewayHarness.gateway.updateSelfUser?.({
       name: "Augusta Ada",
       avatarUrl: "/api/users/00-self/avatar?v=4",
@@ -224,7 +248,10 @@ describe("AppSidebar viewer presence", () => {
     expect(identityCard?.querySelector(".sidebar-identity-card__name")?.textContent).toBe(
       "Augusta Ada",
     );
-    expect(avatar?.getAttribute("src")).toBe("/api/users/00-self/avatar?v=4");
+    await vi.waitFor(() => {
+      const updated = identityCard?.querySelector<HTMLImageElement>("openclaw-viewer-avatar img");
+      expect(updated?.getAttribute("src")).toBe("blob:self-avatar");
+    });
 
     sidebar.connected = false;
     await sidebar.updateComplete;
