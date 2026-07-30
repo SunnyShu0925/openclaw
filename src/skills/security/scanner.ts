@@ -571,7 +571,10 @@ export function scanSource(source: string, filePath: string): SkillScanFinding[]
       );
       let lineEmittedDangerousExec = false;
       for (const match of matches) {
-        if (rule.ruleId === "dangerous-exec" && isBenignMemberExecMatch(line, match, namespaceAliases)) {
+        if (
+          rule.ruleId === "dangerous-exec" &&
+          isBenignMemberExecMatch(line, match, namespaceAliases)
+        ) {
           continue;
         }
 
