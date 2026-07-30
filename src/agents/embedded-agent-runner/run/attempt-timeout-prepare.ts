@@ -35,12 +35,19 @@ export function prepareEmbeddedAttemptTimeout(input: {
   markTimedOutByRunBudget: () => void;
 }) {
   const { activeSession, attempt } = input;
+  const runStartMs = Date.now();
   let abortWarnTimer: NodeJS.Timeout | undefined;
   let abortTimer: NodeJS.Timeout | undefined;
   let runAbortDeadlineAtMs = Date.now() + attempt.timeoutMs;
   let compactionGraceUsed = false;
+  let totalExtendedMs = 0;
+  let lastActivityAtMs = Date.now();
+  const MAX_EXTENSION_TOTAL_MS = 120_000;
 
   const scheduleAbortTimer = (delayMs: number, reason: "initial" | "compaction-grace") => {
+    if (abortTimer) {
+      clearTimeout(abortTimer);
+    }
     runAbortDeadlineAtMs = Date.now() + Math.max(1, delayMs);
     abortTimer = setTimeout(
       () => {
@@ -122,8 +129,62 @@ export function prepareEmbeddedAttemptTimeout(input: {
     }
   }
 
+  /** Tracks whether the absolute cap abort has already fired, so repeated
+   * noteActivity() calls past maxDeadline are idempotent — they do not
+   * re-invoke abortRun, re-release the session lock, or re-trigger
+   * onAttemptTimeout. */
+  let hasAbortedAtCap = false;
+
+  /** Resets the run budget deadline on activity, subject to hard caps.
+   * Uses actual wall-clock elapsed time since last activity for the total
+   * extension cap, making MAX_EXTENSION_TOTAL_MS a meaningful timeout ceiling
+   * rather than a fixed multiple of the initial timeoutMs.
+   * The deadline is clamped to runStartMs + max(timeoutMs, MAX_EXTENSION_TOTAL_MS) to prevent
+   * unbounded extension from a progress event near the cap boundary.
+   * Note: there is no extension-count cutoff — only the absolute
+   * run-start deadline bounds the sliding window, so a legitimate embedded
+   * run with many progress events can keep extending until the cap. */
+  const noteActivity = () => {
+    // Once the absolute cap abort has fired, all subsequent progress events
+    // are no-ops — re-calling abortRun/markTimedOutByRunBudget is not
+    // idempotent and can trigger side-effects (onAttemptTimeout, session
+    // lock release, run-abandoned markers).
+    if (hasAbortedAtCap) {
+      return;
+    }
+
+    const now = Date.now();
+    const elapsedSinceLastActivity = Math.max(0, now - lastActivityAtMs);
+    lastActivityAtMs = now;
+    totalExtendedMs += elapsedSinceLastActivity;
+
+    // Effective max runtime: the absolute cap is at least the configured
+    // timeoutMs, so users with longer budgets (e.g. 180s) are not silently
+    // reduced by the hard-coded floor. For small timeouts the floor acts as
+    // a reasonable ceiling to prevent unbounded extension.
+    const effectiveMaxRunMs = Math.max(attempt.timeoutMs, MAX_EXTENSION_TOTAL_MS);
+    const maxDeadline = runStartMs + effectiveMaxRunMs;
+
+    if (now >= maxDeadline) {
+      // Absolute cap reached — abort once. Clear the already-armed abort
+      // timer to prevent a stale callback from firing alongside this
+      // immediate abort, then set the terminal flag so subsequent progress
+      // events become no-ops.
+      hasAbortedAtCap = true;
+      clearTimeout(abortTimer);
+      input.markTimedOutByRunBudget();
+      input.abortRun(true);
+      return;
+    }
+
+    const newDeadline = Math.min(now + attempt.timeoutMs, maxDeadline);
+    const delayMs = Math.max(1, newDeadline - now);
+    scheduleAbortTimer(delayMs, "initial");
+  };
+
   return {
     getRunAbortDeadlineAtMs: () => runAbortDeadlineAtMs,
+    noteActivity,
     clearTimers: () => {
       if (abortTimer) {
         clearTimeout(abortTimer);

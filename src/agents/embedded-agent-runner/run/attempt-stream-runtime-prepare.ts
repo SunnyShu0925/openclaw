@@ -181,6 +181,19 @@ export async function prepareEmbeddedAttemptStreamRuntime(input: {
     markTimedOutByRunBudget: input.lifecycle.markTimedOutByRunBudget,
   });
 
+  // Wire onRunProgress to reset the run budget deadline on each progress
+  // event (tool-call boundaries, model progress, etc.), converting a flat
+  // timeout into an activity-sliding window.
+  const origOnRunProgress = attempt.onRunProgress;
+  attempt.onRunProgress = origOnRunProgress
+    ? (info) => {
+        attemptTimeout.noteActivity();
+        origOnRunProgress(info);
+      }
+    : () => {
+        attemptTimeout.noteActivity();
+      };
+
   return {
     abortable,
     cache: {
