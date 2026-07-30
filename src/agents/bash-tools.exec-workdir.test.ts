@@ -291,6 +291,201 @@ describe("resolveExecWorkdir", () => {
     });
   });
 
+  it("resolves sandbox-skills workdirs via containerMounts", async () => {
+    await withTempDir(async (workspaceDir) => {
+      await withTempDir(async (skillsMountDir) => {
+        const skillDir = path.join(skillsMountDir, "test-repro-skill");
+        await mkdir(skillDir);
+
+        await expect(
+          resolveExecWorkdir({
+            host: "sandbox",
+            workdir: "/workspace/.openclaw/sandbox-skills/skills/test-repro-skill",
+            sandbox: {
+              ...sandboxConfig(workspaceDir),
+              containerMounts: [
+                {
+                  containerPath: "/workspace/.openclaw/sandbox-skills/skills",
+                  hostPath: skillsMountDir,
+                },
+              ],
+            },
+          }),
+        ).resolves.toEqual({
+          kind: "sandbox",
+          hostCwd: skillDir,
+          containerCwd: "/workspace/.openclaw/sandbox-skills/skills/test-repro-skill",
+          scriptPreflightCwd: skillDir,
+        });
+      });
+    });
+  });
+
+  it("resolves sandbox-skills subdirectory via containerMounts", async () => {
+    await withTempDir(async (workspaceDir) => {
+      await withTempDir(async (skillsMountDir) => {
+        const toolsDir = path.join(skillsMountDir, "test-repro-skill", "tools");
+        await mkdir(toolsDir, { recursive: true });
+
+        await expect(
+          resolveExecWorkdir({
+            host: "sandbox",
+            workdir: "/workspace/.openclaw/sandbox-skills/skills/test-repro-skill/tools",
+            sandbox: {
+              ...sandboxConfig(workspaceDir),
+              containerMounts: [
+                {
+                  containerPath: "/workspace/.openclaw/sandbox-skills/skills",
+                  hostPath: skillsMountDir,
+                },
+              ],
+            },
+          }),
+        ).resolves.toEqual({
+          kind: "sandbox",
+          hostCwd: toolsDir,
+          containerCwd: "/workspace/.openclaw/sandbox-skills/skills/test-repro-skill/tools",
+          scriptPreflightCwd: toolsDir,
+        });
+      });
+    });
+  });
+
+  it("rejects sandbox-skills workdirs when the mount host path is missing", async () => {
+    await withTempDir(async (workspaceDir) => {
+      await withTempDir(async (skillsMountDir) => {
+        // No subdirectory created under skillsMountDir — path doesn't exist
+
+        await expect(
+          resolveExecWorkdir({
+            host: "sandbox",
+            workdir: "/workspace/.openclaw/sandbox-skills/skills/missing-skill",
+            sandbox: {
+              ...sandboxConfig(workspaceDir),
+              containerMounts: [
+                {
+                  containerPath: "/workspace/.openclaw/sandbox-skills/skills",
+                  hostPath: skillsMountDir,
+                },
+              ],
+            },
+          }),
+        ).resolves.toEqual({
+          kind: "unavailable",
+          requestedCwd: "/workspace/.openclaw/sandbox-skills/skills/missing-skill",
+        });
+      });
+    });
+  });
+
+  it("still resolves primary workspace paths when containerMounts don't match", async () => {
+    await withTempDir(async (workspaceDir) => {
+      await withTempDir(async (skillsMountDir) => {
+        const srcDir = path.join(workspaceDir, "src");
+        await mkdir(srcDir);
+        const projectDir = path.join(workspaceDir, "project");
+        await mkdir(projectDir);
+
+        // Primary workspace subdirectory
+        await expect(
+          resolveExecWorkdir({
+            host: "sandbox",
+            workdir: "/workspace/src",
+            sandbox: {
+              ...sandboxConfig(workspaceDir),
+              containerMounts: [
+                {
+                  containerPath: "/workspace/.openclaw/sandbox-skills/skills",
+                  hostPath: skillsMountDir,
+                },
+              ],
+            },
+          }),
+        ).resolves.toEqual({
+          kind: "sandbox",
+          hostCwd: srcDir,
+          containerCwd: "/workspace/src",
+          scriptPreflightCwd: srcDir,
+        });
+
+        // Container root still works
+        await expect(
+          resolveExecWorkdir({
+            host: "sandbox",
+            workdir: "/workspace",
+            sandbox: {
+              ...sandboxConfig(workspaceDir),
+              containerMounts: [
+                {
+                  containerPath: "/workspace/.openclaw/sandbox-skills/skills",
+                  hostPath: skillsMountDir,
+                },
+              ],
+            },
+          }),
+        ).resolves.toEqual({
+          kind: "sandbox",
+          hostCwd: workspaceDir,
+          containerCwd: "/workspace",
+          scriptPreflightCwd: workspaceDir,
+        });
+      });
+    });
+  });
+
+  it("falls back to primary mapping when no containerMounts defined", async () => {
+    await withTempDir(async (workspaceDir) => {
+      await withTempDir(async (skillsMountDir) => {
+        const skillDir = path.join(skillsMountDir, "test-skill");
+        await mkdir(skillDir);
+
+        // Without containerMounts, the path maps to workspaceDir/.openclaw/... which doesn't exist
+        await expect(
+          resolveExecWorkdir({
+            host: "sandbox",
+            workdir: "/workspace/.openclaw/sandbox-skills/skills/test-skill",
+            sandbox: sandboxConfig(workspaceDir),
+          }),
+        ).resolves.toEqual({
+          kind: "unavailable",
+          requestedCwd: "/workspace/.openclaw/sandbox-skills/skills/test-skill",
+        });
+      });
+    });
+  });
+
+  it("rejects symlink escape from containerMount host root", async () => {
+    await withTempDir(async (workspaceDir) => {
+      await withTempDir(async (skillsMountDir) => {
+        await withTempDir(async (outsideDir) => {
+          const skillDir = path.join(skillsMountDir, "test-skill");
+          await mkdir(skillDir);
+          // Symlink under skills mount pointing outside
+          await symlink(outsideDir, path.join(skillsMountDir, "test-skill", "escape"), "dir");
+
+          await expect(
+            resolveExecWorkdir({
+              host: "sandbox",
+              workdir: "/workspace/.openclaw/sandbox-skills/skills/test-skill/escape",
+              sandbox: {
+                ...sandboxConfig(workspaceDir),
+                containerMounts: [
+                  {
+                    containerPath: "/workspace/.openclaw/sandbox-skills/skills",
+                    hostPath: skillsMountDir,
+                  },
+                ],
+              },
+            }),
+          ).resolves.toEqual({
+            kind: "unavailable",
+            requestedCwd: "/workspace/.openclaw/sandbox-skills/skills/test-skill/escape",
+          });
+        });
+      });
+    });
+  });
+
   it("lets backend-validated sandboxes use remote-only container workdirs", async () => {
     await withTempDir(async (workspaceDir) => {
       await expect(
