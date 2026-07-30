@@ -84,17 +84,11 @@ export function prepareEmbeddedAttemptTimeout(input: {
         ) {
           input.markTimedOutDuringCompaction();
         }
-        // Mark as terminal only when the timer fires at the absolute cap,
-        // so subsequent noteActivity() calls are no-ops. Normal timeouts
-        // (before the cap) leave hasAbortedAtCap false so noteActivity can
-        // still reschedule or cap-abort as appropriate.
-        {
-          const effectiveMaxRunMs = Math.max(attempt.timeoutMs, MAX_EXTENSION_TOTAL_MS);
-          const maxDeadline = runStartMs + effectiveMaxRunMs;
-          if (Date.now() >= maxDeadline) {
-            hasAbortedAtCap = true;
-          }
-        }
+        // Mark the timer as fired regardless of cap status. Once the timer
+        // callback executes (normal timeout or cap), all subsequent
+        // noteActivity() calls are no-ops — they must not schedule new timers
+        // and resurrect an already-aborted run.
+        abortFired = true;
         input.markTimedOutByRunBudget();
         input.abortRun(true);
         if (!abortWarnTimer) {
@@ -140,11 +134,11 @@ export function prepareEmbeddedAttemptTimeout(input: {
     }
   }
 
-  /** Tracks whether the absolute cap abort has already fired, so repeated
-   * noteActivity() calls past maxDeadline are idempotent — they do not
-   * re-invoke abortRun, re-release the session lock, or re-trigger
-   * onAttemptTimeout. */
-  let hasAbortedAtCap = false;
+  /** Tracks whether the abort timer has fired (any reason: normal timeout or
+   * absolute cap). Once set, subsequent noteActivity() calls are no-ops —
+   * they must not schedule new timers and resurrect an already-aborted run.
+   * Also set by noteActivity()'s own cap-abort path for idempotency. */
+  let abortFired = false;
 
   /** Resets the run budget deadline on activity, subject to hard caps.
    * Uses actual wall-clock elapsed time since last activity for the total
@@ -156,11 +150,12 @@ export function prepareEmbeddedAttemptTimeout(input: {
    * run-start deadline bounds the sliding window, so a legitimate embedded
    * run with many progress events can keep extending until the cap. */
   const noteActivity = () => {
-    // Once the absolute cap abort has fired, all subsequent progress events
-    // are no-ops — re-calling abortRun/markTimedOutByRunBudget is not
-    // idempotent and can trigger side-effects (onAttemptTimeout, session
-    // lock release, run-abandoned markers).
-    if (hasAbortedAtCap) {
+    // Once the timer has fired (normal timeout or cap), all subsequent
+    // progress events are no-ops — they must not schedule new timers and
+    // resurrect an already-aborted run. Re-calling abortRun or
+    // markTimedOutByRunBudget is not idempotent and can trigger side-effects
+    // (onAttemptTimeout, session lock release, run-abandoned markers).
+    if (abortFired) {
       return;
     }
 
@@ -177,11 +172,10 @@ export function prepareEmbeddedAttemptTimeout(input: {
     const maxDeadline = runStartMs + effectiveMaxRunMs;
 
     if (now >= maxDeadline) {
-      // Absolute cap reached — abort once. Clear the already-armed abort
-      // timer to prevent a stale callback from firing alongside this
-      // immediate abort, then set the terminal flag so subsequent progress
-      // events become no-ops.
-      hasAbortedAtCap = true;
+      // Absolute cap reached — abort once. Set the terminal flag first
+      // (before calling markTimedOutByRunBudget/abortRun) so re-entrant
+      // calls are no-ops, then clear the pending timer.
+      abortFired = true;
       clearTimeout(abortTimer);
       input.markTimedOutByRunBudget();
       input.abortRun(true);

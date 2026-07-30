@@ -181,16 +181,16 @@ describe("prepareEmbeddedAttemptTimeout", () => {
   });
 
   it("noteActivity clamps deadline to MAX_EXTENSION_TOTAL_MS from run start", async () => {
-    const harness = createTimeoutHarness({ timeoutMs: 30_000 }); // 30s sliding window
+    const harness = createTimeoutHarness({ timeoutMs: 120_000 }); // timer fires at cap
 
-    // runStartMs = 0, MAX_EXTENSION_TOTAL_MS = 120_000
-    // After 119s, a progress event would normally schedule deadline at 119 + 30 = 149s,
-    // but the clamp should limit it to 120s (runStartMs + MAX_EXTENSION_TOTAL_MS).
+    // runStartMs = 0, MAX_EXTENSION_TOTAL_MS = 120_000, effectiveMaxRunMs = 120_000
+    // After 119s, noteActivity extends deadline but clamps to 120s cap:
+    //   119s + 120s = 239s → clamped to 120s (runStartMs + effectiveMaxRunMs).
     await vi.advanceTimersByTimeAsync(119_000);
     harness.timeout.noteActivity();
     expect(harness.timeout.getRunAbortDeadlineAtMs()).toBe(120_000);
 
-    // The timer fires at 120s (not 149s)
+    // The new timer fires at 120s (not 239s)
     await vi.advanceTimersByTimeAsync(1_000);
     expect(harness.abortRun).toHaveBeenCalledWith(true);
     harness.timeout.clearTimers();
@@ -213,54 +213,58 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     harness.timeout.clearTimers();
   });
 
-  it("noteActivity aborts immediately when past the absolute cap (fail-closed)", async () => {
+  it("noteActivity is no-op after normal timer expiry even at absolute cap", async () => {
     const harness = createTimeoutHarness({ timeoutMs: 30_000 });
 
-    // At t=120_000ms (past the 120s absolute cap):
-    //   - The initial 30s timer already fired at t=30s, calling abortRun + markTimedOutByRunBudget
-    //   - noteActivity at cap must also abort immediately (fail-closed, not a 1ms timer)
+    // Timer fires at t=30s (normal timeout). This sets abortFired=true and
+    // calls abortRun once — making the expiry terminal.
     await vi.advanceTimersByTimeAsync(120_000);
+    expect(harness.abortRun).toHaveBeenCalledTimes(1);
 
-    // Initial timer already called this once; noteActivity calls it again
-    const beforeCount = harness.abortRun.mock.calls.length;
+    const afterTimerCount = harness.abortRun.mock.calls.length;
 
+    // noteActivity at or past the cap must NOT resurrect the run.
+    // The timer callback already terminated it.
     harness.timeout.noteActivity();
-    expect(harness.markTimedOutByRunBudget).toHaveBeenCalled();
-    expect(harness.abortRun).toHaveBeenCalledWith(true);
-    expect(harness.abortRun.mock.calls.length).toBe(beforeCount + 1);
+    expect(harness.abortRun.mock.calls.length).toBe(afterTimerCount);
+
+    // Multiple subsequent calls are also no-ops
+    harness.timeout.noteActivity();
+    expect(harness.abortRun.mock.calls.length).toBe(afterTimerCount);
 
     harness.timeout.clearTimers();
   });
 
-  it("noteActivity fires cap abort exactly once — subsequent calls are no-ops", async () => {
-    const harness = createTimeoutHarness({ timeoutMs: 30_000 });
+  it("timer-triggered cap abort makes subsequent noteActivity calls no-ops", async () => {
+    const harness = createTimeoutHarness({ timeoutMs: 120_000 });
 
+    // Timer fires at t=120s (at the absolute cap). Timer callback sets
+    // abortFired=true and calls abortRun once.
     await vi.advanceTimersByTimeAsync(120_000);
-    const beforeCount = harness.abortRun.mock.calls.length;
+    expect(harness.abortRun).toHaveBeenCalledTimes(1);
 
-    // First noteActivity past the cap fires abort once
-    harness.timeout.noteActivity();
-    expect(harness.abortRun.mock.calls.length).toBe(beforeCount + 1);
+    const afterTimerCount = harness.abortRun.mock.calls.length;
 
-    // Subsequent noteActivity calls are no-ops — re-calling abortRun is not
-    // idempotent and can trigger side-effects (onAttemptTimeout, session
-    // lock release, run-abandoned markers).
+    // Subsequent noteActivity must be no-op — abortFired is already set.
     harness.timeout.noteActivity();
-    expect(harness.abortRun.mock.calls.length).toBe(beforeCount + 1);
+    expect(harness.abortRun.mock.calls.length).toBe(afterTimerCount);
 
     harness.timeout.noteActivity();
-    expect(harness.abortRun.mock.calls.length).toBe(beforeCount + 1);
+    expect(harness.abortRun.mock.calls.length).toBe(afterTimerCount);
 
     harness.timeout.clearTimers();
   });
 
-  it("noteActivity does not clamp when below the total cap", async () => {
+  it("noteActivity is no-op after normal timer expiry", async () => {
     const harness = createTimeoutHarness({ timeoutMs: 1000 });
 
-    // At t=10_000ms, 10_000 + 1000 = 11_000 < 120_000 → unclamped
+    // Timer fires at t=1s — abortFired = true, run terminated.
     await vi.advanceTimersByTimeAsync(10_000);
+
+    // noteActivity is no-op after timer expiry: deadline unchanged.
+    const deadlineBefore = harness.timeout.getRunAbortDeadlineAtMs();
     harness.timeout.noteActivity();
-    expect(harness.timeout.getRunAbortDeadlineAtMs()).toBe(11_000);
+    expect(harness.timeout.getRunAbortDeadlineAtMs()).toBe(deadlineBefore);
 
     harness.timeout.clearTimers();
   });
@@ -287,7 +291,7 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     harness.timeout.clearTimers();
   });
 
-  it("timer-triggered cap abort sets hasAbortedAtCap so noteActivity is no-op", async () => {
+  it("timer-triggered cap abort sets abortFired so noteActivity is no-op", async () => {
     const harness = createTimeoutHarness({ timeoutMs: 120_000 });
 
     // The initial timer is set at t=0 for delay=120000ms.
