@@ -152,7 +152,7 @@ export function getSoonestCooldownExpiry(
     }
     const matchingModelScopedCooldown =
       options?.forModel &&
-      isModelScopedCooldownReason(stats.cooldownReason) &&
+      stats.cooldownReason === "rate_limit" &&
       stats.cooldownModel === options.forModel &&
       !isBlockedWindowActiveForModel(stats, ts, options.forModel) &&
       !isActiveUnusableWindow(stats.disabledUntil, ts);
