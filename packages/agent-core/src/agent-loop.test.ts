@@ -1722,6 +1722,7 @@ describe("agentLoop tool termination", () => {
     // aborted tail the dispatch loop skipped — otherwise audit/redaction hooks
     // silently miss the repaired calls (#116379).
     const afterToolOutcome = vi.fn(async () => undefined);
+    const events: AgentEvent[] = [];
     const messages = await runAgentLoop(
       [{ role: "user", content: "abort mid-batch", timestamp: 1 }],
       {
@@ -1730,7 +1731,9 @@ describe("agentLoop tool termination", () => {
         tools: [firstTool, skippedTool, thirdTool],
       },
       { ...config, toolExecution: "sequential", afterToolOutcome },
-      () => {},
+      (event) => {
+        events.push(event);
+      },
       controller.signal,
       streamFn,
     );
@@ -1768,6 +1771,29 @@ describe("agentLoop tool termination", () => {
       }),
       controller.signal,
     );
+    // Every skipped tail call emits a tool_execution_start before its
+    // tool_execution_end, preserving the lifecycle pairing every dispatched
+    // call already has — otherwise channel/client subscribers receive an end
+    // event for an unknown tool-call id (#116379).
+    for (const skippedId of ["call-second", "call-third"]) {
+      const startIdx = events.findIndex(
+        (event) =>
+          event.type === "tool_execution_start" &&
+          (event as Extract<AgentEvent, { type: "tool_execution_start" }>).toolCallId === skippedId,
+      );
+      const endIdx = events.findIndex(
+        (event) =>
+          event.type === "tool_execution_end" &&
+          (event as Extract<AgentEvent, { type: "tool_execution_end" }>).toolCallId === skippedId,
+      );
+      expect(startIdx).toBeGreaterThanOrEqual(0);
+      expect(endIdx).toBeGreaterThan(startIdx);
+      expect(
+        (events[endIdx] as Extract<AgentEvent, { type: "tool_execution_end" }>).executionStarted,
+      ).toBe(false);
+    }
+    expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(3);
+    expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(3);
   });
 
   it("emits aborted tool results for skipped tool calls on parallel abort (#116379)", async () => {
@@ -1822,6 +1848,7 @@ describe("agentLoop tool termination", () => {
     // aborted tail the dispatch loop skipped — otherwise audit/redaction hooks
     // silently miss the repaired calls (#116379).
     const afterToolOutcome = vi.fn(async () => undefined);
+    const events: AgentEvent[] = [];
     const messages = await runAgentLoop(
       [{ role: "user", content: "abort mid-batch parallel", timestamp: 1 }],
       {
@@ -1830,7 +1857,9 @@ describe("agentLoop tool termination", () => {
         tools: [firstTool, skippedTool, thirdTool],
       },
       { ...config, toolExecution: "parallel", afterToolOutcome },
-      () => {},
+      (event) => {
+        events.push(event);
+      },
       controller.signal,
       streamFn,
     );
@@ -1861,6 +1890,26 @@ describe("agentLoop tool termination", () => {
       }),
       controller.signal,
     );
+    // Every tool call — dispatched or skipped — emits a tool_execution_start
+    // before its tool_execution_end, so channel/client subscribers never see an
+    // end event for an unknown tool-call id (#116379).
+    for (const toolCallId of ["p-first", "p-second", "p-third"]) {
+      const startIdx = events.findIndex(
+        (event) =>
+          event.type === "tool_execution_start" &&
+          (event as Extract<AgentEvent, { type: "tool_execution_start" }>).toolCallId ===
+            toolCallId,
+      );
+      const endIdx = events.findIndex(
+        (event) =>
+          event.type === "tool_execution_end" &&
+          (event as Extract<AgentEvent, { type: "tool_execution_end" }>).toolCallId === toolCallId,
+      );
+      expect(startIdx).toBeGreaterThanOrEqual(0);
+      expect(endIdx).toBeGreaterThan(startIdx);
+    }
+    expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(3);
+    expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(3);
   });
 
   it("skips interrupted-turn guidance when the abort reason marks a turn handoff", async () => {

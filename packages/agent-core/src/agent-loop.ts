@@ -729,12 +729,27 @@ async function executeToolCallsSequential(
       // paired tool_result — otherwise the conversation history is left with
       // orphaned tool_use blocks that corrupt retries/continuation (#116379).
       // Route through finalizeAbortedToolCall so afterToolOutcome hooks observe
-      // these skipped calls like any other outcome.
+      // these skipped calls like any other outcome. Emit the matching
+      // tool_execution_start first so the aborted end/result keeps the same
+      // start→end lifecycle pairing every dispatched call already has —
+      // otherwise subscribers see tool_execution_end for an unknown id (#116379).
       for (let i = finalizedCalls.length; i < toolCalls.length; i++) {
         const skippedToolCall = toolCalls[i];
         if (!skippedToolCall) {
           continue;
         }
+        const skippedHideFromChannelProgress = hidesToolCallFromChannelProgress(
+          currentContext,
+          skippedToolCall,
+          resolvedToolCalls,
+        );
+        await emit({
+          type: "tool_execution_start",
+          toolCallId: skippedToolCall.id,
+          toolName: skippedToolCall.name,
+          args: skippedToolCall.arguments,
+          ...(skippedHideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
+        });
         const abortedFinalized = await finalizeAbortedToolCall(
           currentContext,
           assistantMessage,
@@ -857,12 +872,27 @@ async function executeToolCallsParallel(
   // conversation history is left with orphaned tool_use blocks that corrupt
   // retries/continuation (#116379). Route through finalizeAbortedToolCall so
   // afterToolOutcome hooks observe these skipped calls like any other outcome.
+  // Emit the matching tool_execution_start first so the aborted end/result
+  // keeps the same start→end lifecycle pairing every dispatched call already
+  // has — otherwise subscribers see tool_execution_end for an unknown id (#116379).
   if (signal?.aborted && orderedFinalizedCalls.length < toolCalls.length) {
     for (let i = orderedFinalizedCalls.length; i < toolCalls.length; i++) {
       const skippedToolCall = toolCalls[i];
       if (!skippedToolCall) {
         continue;
       }
+      const hideFromChannelProgress = hidesToolCallFromChannelProgress(
+        currentContext,
+        skippedToolCall,
+        resolvedToolCalls,
+      );
+      await emit({
+        type: "tool_execution_start",
+        toolCallId: skippedToolCall.id,
+        toolName: skippedToolCall.name,
+        args: skippedToolCall.arguments,
+        ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
+      });
       const abortedFinalized = await finalizeAbortedToolCall(
         currentContext,
         assistantMessage,
