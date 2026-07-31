@@ -1708,6 +1708,7 @@ describe("agentLoop tool termination", () => {
       description: "Should be skipped by abort",
       parameters: Type.Object({}, { additionalProperties: false }),
       executionMode: "sequential",
+      hideFromChannelProgress: true,
       execute: async () => {
         throw new Error("second_tool should never execute");
       },
@@ -1791,6 +1792,8 @@ describe("agentLoop tool termination", () => {
       expect(
         (events[endIdx] as Extract<AgentEvent, { type: "tool_execution_end" }>).executionStarted,
       ).toBe(false);
+      expect(events[startIdx]).toMatchObject({ hideFromChannelProgress: true });
+      expect(events[endIdx]).toMatchObject({ hideFromChannelProgress: true });
     }
     expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(3);
     expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(3);
@@ -1834,6 +1837,7 @@ describe("agentLoop tool termination", () => {
       label: "p_second_tool",
       description: "Should be skipped by abort",
       parameters: Type.Object({}, { additionalProperties: false }),
+      hideFromChannelProgress: true,
       execute: async () => {
         throw new Error("p_second_tool should never execute");
       },
@@ -1907,6 +1911,10 @@ describe("agentLoop tool termination", () => {
       );
       expect(startIdx).toBeGreaterThanOrEqual(0);
       expect(endIdx).toBeGreaterThan(startIdx);
+      if (toolCallId !== "p-first") {
+        expect(events[startIdx]).toMatchObject({ hideFromChannelProgress: true });
+        expect(events[endIdx]).toMatchObject({ hideFromChannelProgress: true });
+      }
     }
     expect(events.filter((event) => event.type === "tool_execution_start")).toHaveLength(3);
     expect(events.filter((event) => event.type === "tool_execution_end")).toHaveLength(3);

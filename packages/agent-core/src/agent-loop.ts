@@ -724,44 +724,24 @@ async function executeToolCallsSequential(
     messages.push(toolResultMessage);
 
     if (signal?.aborted) {
-      // The abort skipped the remaining tool calls. Emit aborted tool results
-      // for them so every tool_use in the committed assistant message keeps a
-      // paired tool_result — otherwise the conversation history is left with
-      // orphaned tool_use blocks that corrupt retries/continuation (#116379).
-      // Route through finalizeAbortedToolCall so afterToolOutcome hooks observe
-      // these skipped calls like any other outcome. Emit the matching
-      // tool_execution_start first so the aborted end/result keeps the same
-      // start→end lifecycle pairing every dispatched call already has —
-      // otherwise subscribers see tool_execution_end for an unknown id (#116379).
+      // Complete the skipped tail through the normal lifecycle and outcome hook
+      // so the committed tool-call turn stays paired and subscriber-safe.
       for (let i = finalizedCalls.length; i < toolCalls.length; i++) {
         const skippedToolCall = toolCalls[i];
         if (!skippedToolCall) {
           continue;
         }
-        const skippedHideFromChannelProgress = hidesToolCallFromChannelProgress(
-          currentContext,
-          skippedToolCall,
-          resolvedToolCalls,
-        );
-        await emit({
-          type: "tool_execution_start",
-          toolCallId: skippedToolCall.id,
-          toolName: skippedToolCall.name,
-          args: skippedToolCall.arguments,
-          ...(skippedHideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
-        });
-        const abortedFinalized = await finalizeAbortedToolCall(
+        const completed = await completeAbortedToolCall(
           currentContext,
           assistantMessage,
           skippedToolCall,
+          resolvedToolCalls,
           config,
           signal,
+          emit,
         );
-        await emitToolExecutionEnd(abortedFinalized, emit);
-        const abortedToolResultMessage = createToolResultMessage(abortedFinalized);
-        await emitToolResultMessage(abortedToolResultMessage, emit);
-        finalizedCalls.push(abortedFinalized);
-        messages.push(abortedToolResultMessage);
+        finalizedCalls.push(completed.finalized);
+        messages.push(completed.message);
       }
       break;
     }
@@ -866,45 +846,25 @@ async function executeToolCallsParallel(
     messages.push(toolResultMessage);
   }
 
-  // The abort broke out of the dispatch loop before every tool call was queued.
-  // Emit aborted tool results for the skipped tail so every tool_use in the
-  // committed assistant message keeps a paired tool_result — otherwise the
-  // conversation history is left with orphaned tool_use blocks that corrupt
-  // retries/continuation (#116379). Route through finalizeAbortedToolCall so
-  // afterToolOutcome hooks observe these skipped calls like any other outcome.
-  // Emit the matching tool_execution_start first so the aborted end/result
-  // keeps the same start→end lifecycle pairing every dispatched call already
-  // has — otherwise subscribers see tool_execution_end for an unknown id (#116379).
+  // Complete calls skipped before queueing through the same lifecycle contract
+  // as the sequential path.
   if (signal?.aborted && orderedFinalizedCalls.length < toolCalls.length) {
     for (let i = orderedFinalizedCalls.length; i < toolCalls.length; i++) {
       const skippedToolCall = toolCalls[i];
       if (!skippedToolCall) {
         continue;
       }
-      const hideFromChannelProgress = hidesToolCallFromChannelProgress(
-        currentContext,
-        skippedToolCall,
-        resolvedToolCalls,
-      );
-      await emit({
-        type: "tool_execution_start",
-        toolCallId: skippedToolCall.id,
-        toolName: skippedToolCall.name,
-        args: skippedToolCall.arguments,
-        ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
-      });
-      const abortedFinalized = await finalizeAbortedToolCall(
+      const completed = await completeAbortedToolCall(
         currentContext,
         assistantMessage,
         skippedToolCall,
+        resolvedToolCalls,
         config,
         signal,
+        emit,
       );
-      await emitToolExecutionEnd(abortedFinalized, emit);
-      const abortedToolResultMessage = createToolResultMessage(abortedFinalized);
-      await emitToolResultMessage(abortedToolResultMessage, emit);
-      orderedFinalizedCalls.push(abortedFinalized);
-      messages.push(abortedToolResultMessage);
+      orderedFinalizedCalls.push(completed.finalized);
+      messages.push(completed.message);
     }
   }
 
@@ -1302,22 +1262,28 @@ async function finalizeToolCallOutcome(
   }
 }
 
-/**
- * Finalizes a tool call that was skipped because the run aborted mid-batch.
- * Routes the synthetic aborted outcome through the standard
- * {@link finalizeToolCallOutcome} path so `config.afterToolOutcome` hooks
- * (audit, redaction, metadata, error-normalization) observe these calls just
- * like every immediate or executed outcome — otherwise the skipped tail would
- * silently bypass the outcome contract (#116379).
- */
-async function finalizeAbortedToolCall(
+async function completeAbortedToolCall(
   currentContext: AgentContext,
   assistantMessage: AssistantMessage,
   toolCall: AgentToolCall,
+  resolvedToolCalls: Map<AgentToolCall, ResolvedToolCallOutcome>,
   config: AgentLoopConfig,
   signal: AbortSignal | undefined,
-): Promise<FinalizedToolCallOutcome> {
-  return finalizeToolCallOutcome(
+  emit: AgentEventSink,
+): Promise<{ finalized: FinalizedToolCallOutcome; message: ToolResultMessage }> {
+  const hideFromChannelProgress = hidesToolCallFromChannelProgress(
+    currentContext,
+    toolCall,
+    resolvedToolCalls,
+  );
+  await emit({
+    type: "tool_execution_start",
+    toolCallId: toolCall.id,
+    toolName: toolCall.name,
+    args: toolCall.arguments,
+    ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
+  });
+  const finalized = await finalizeToolCallOutcome(
     currentContext,
     assistantMessage,
     {
@@ -1325,11 +1291,16 @@ async function finalizeAbortedToolCall(
       result: createErrorToolResult("Operation aborted"),
       isError: true,
       executionStarted: false,
+      ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
     },
     toolCall.arguments,
     config,
     signal,
   );
+  await emitToolExecutionEnd(finalized, emit);
+  const message = createToolResultMessage(finalized);
+  await emitToolResultMessage(message, emit);
+  return { finalized, message };
 }
 
 function createErrorToolResult(message: string): AgentToolResult<unknown> {
