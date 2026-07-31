@@ -724,6 +724,30 @@ async function executeToolCallsSequential(
     messages.push(toolResultMessage);
 
     if (signal?.aborted) {
+      // The abort skipped the remaining tool calls. Emit aborted tool results
+      // for them so every tool_use in the committed assistant message keeps a
+      // paired tool_result — otherwise the conversation history is left with
+      // orphaned tool_use blocks that corrupt retries/continuation (#116379).
+      // Route through finalizeAbortedToolCall so afterToolOutcome hooks observe
+      // these skipped calls like any other outcome.
+      for (let i = finalizedCalls.length; i < toolCalls.length; i++) {
+        const skippedToolCall = toolCalls[i];
+        if (!skippedToolCall) {
+          continue;
+        }
+        const abortedFinalized = await finalizeAbortedToolCall(
+          currentContext,
+          assistantMessage,
+          skippedToolCall,
+          config,
+          signal,
+        );
+        await emitToolExecutionEnd(abortedFinalized, emit);
+        const abortedToolResultMessage = createToolResultMessage(abortedFinalized);
+        await emitToolResultMessage(abortedToolResultMessage, emit);
+        finalizedCalls.push(abortedFinalized);
+        messages.push(abortedToolResultMessage);
+      }
       break;
     }
   }
@@ -825,6 +849,33 @@ async function executeToolCallsParallel(
     const toolResultMessage = createToolResultMessage(finalized);
     await emitToolResultMessage(toolResultMessage, emit);
     messages.push(toolResultMessage);
+  }
+
+  // The abort broke out of the dispatch loop before every tool call was queued.
+  // Emit aborted tool results for the skipped tail so every tool_use in the
+  // committed assistant message keeps a paired tool_result — otherwise the
+  // conversation history is left with orphaned tool_use blocks that corrupt
+  // retries/continuation (#116379). Route through finalizeAbortedToolCall so
+  // afterToolOutcome hooks observe these skipped calls like any other outcome.
+  if (signal?.aborted && orderedFinalizedCalls.length < toolCalls.length) {
+    for (let i = orderedFinalizedCalls.length; i < toolCalls.length; i++) {
+      const skippedToolCall = toolCalls[i];
+      if (!skippedToolCall) {
+        continue;
+      }
+      const abortedFinalized = await finalizeAbortedToolCall(
+        currentContext,
+        assistantMessage,
+        skippedToolCall,
+        config,
+        signal,
+      );
+      await emitToolExecutionEnd(abortedFinalized, emit);
+      const abortedToolResultMessage = createToolResultMessage(abortedFinalized);
+      await emitToolResultMessage(abortedToolResultMessage, emit);
+      orderedFinalizedCalls.push(abortedFinalized);
+      messages.push(abortedToolResultMessage);
+    }
   }
 
   return {
@@ -1219,6 +1270,36 @@ async function finalizeToolCallOutcome(
       isError: true,
     };
   }
+}
+
+/**
+ * Finalizes a tool call that was skipped because the run aborted mid-batch.
+ * Routes the synthetic aborted outcome through the standard
+ * {@link finalizeToolCallOutcome} path so `config.afterToolOutcome` hooks
+ * (audit, redaction, metadata, error-normalization) observe these calls just
+ * like every immediate or executed outcome — otherwise the skipped tail would
+ * silently bypass the outcome contract (#116379).
+ */
+async function finalizeAbortedToolCall(
+  currentContext: AgentContext,
+  assistantMessage: AssistantMessage,
+  toolCall: AgentToolCall,
+  config: AgentLoopConfig,
+  signal: AbortSignal | undefined,
+): Promise<FinalizedToolCallOutcome> {
+  return finalizeToolCallOutcome(
+    currentContext,
+    assistantMessage,
+    {
+      toolCall,
+      result: createErrorToolResult("Operation aborted"),
+      isError: true,
+      executionStarted: false,
+    },
+    toolCall.arguments,
+    config,
+    signal,
+  );
 }
 
 function createErrorToolResult(message: string): AgentToolResult<unknown> {

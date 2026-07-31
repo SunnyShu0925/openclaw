@@ -1668,6 +1668,201 @@ describe("agentLoop tool termination", () => {
     expect(events.at(-1)).toMatchObject({ type: "agent_end" });
   });
 
+  it("emits aborted tool results for skipped tool calls on sequential abort (#116379)", async () => {
+    const controller = new AbortController();
+    let streamCalls = 0;
+    const streamFn: StreamFn = () => {
+      streamCalls += 1;
+      if (streamCalls > 1) {
+        throw new Error("model was called after abort");
+      }
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const message = makeAssistantMessage([
+          { type: "toolCall", id: "call-first", name: "first_tool", arguments: {} },
+          { type: "toolCall", id: "call-second", name: "second_tool", arguments: {} },
+          { type: "toolCall", id: "call-third", name: "third_tool", arguments: {} },
+        ]);
+        stream.push({ type: "done", reason: "toolUse", message });
+        stream.end();
+      });
+      return stream;
+    };
+    const firstTool: AgentTool = {
+      name: "first_tool",
+      label: "first_tool",
+      description: "Aborts the run mid-batch",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      executionMode: "sequential",
+      execute: async () => {
+        controller.abort(new Error("user aborted"));
+        return {
+          content: [{ type: "text", text: "first ran" }],
+          details: { aborted: true },
+        };
+      },
+    };
+    const skippedTool: AgentTool = {
+      name: "second_tool",
+      label: "second_tool",
+      description: "Should be skipped by abort",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      executionMode: "sequential",
+      execute: async () => {
+        throw new Error("second_tool should never execute");
+      },
+    };
+    const thirdTool: AgentTool = {
+      ...skippedTool,
+      name: "third_tool",
+      label: "third_tool",
+    };
+
+    // afterToolOutcome must observe every committed tool call, including the
+    // aborted tail the dispatch loop skipped — otherwise audit/redaction hooks
+    // silently miss the repaired calls (#116379).
+    const afterToolOutcome = vi.fn(async () => undefined);
+    const messages = await runAgentLoop(
+      [{ role: "user", content: "abort mid-batch", timestamp: 1 }],
+      {
+        systemPrompt: "",
+        messages: [],
+        tools: [firstTool, skippedTool, thirdTool],
+      },
+      { ...config, toolExecution: "sequential", afterToolOutcome },
+      () => {},
+      controller.signal,
+      streamFn,
+    );
+
+    // The assistant turn committed three tool_use blocks; every one must have a
+    // matching tool_result so the history has no orphaned tool_use.
+    const toolResultMessages = messages.filter((message) => message.role === "toolResult");
+    const toolResultIds = toolResultMessages.map(
+      (message) => (message as Extract<AgentMessage, { role: "toolResult" }>).toolCallId,
+    );
+    expect(toolResultIds).toEqual(["call-first", "call-second", "call-third"]);
+    // The first tool produced a real result; the skipped tail got aborted results.
+    expect(toolResultMessages[0]).toMatchObject({ toolCallId: "call-first", isError: false });
+    expect(toolResultMessages[1]).toMatchObject({ toolCallId: "call-second", isError: true });
+    expect(toolResultMessages[2]).toMatchObject({ toolCallId: "call-third", isError: true });
+    expect(
+      (toolResultMessages[1] as Extract<AgentMessage, { role: "toolResult" }>).content,
+    ).toContainEqual({ type: "text", text: "Operation aborted" });
+    // The outcome hook observed all three calls, including the two skipped tail
+    // calls, with the aborted marker.
+    expect(afterToolOutcome).toHaveBeenCalledTimes(3);
+    expect(afterToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCall: expect.objectContaining({ id: "call-second" }),
+        isError: true,
+        executionStarted: false,
+      }),
+      controller.signal,
+    );
+    expect(afterToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCall: expect.objectContaining({ id: "call-third" }),
+        isError: true,
+        executionStarted: false,
+      }),
+      controller.signal,
+    );
+  });
+
+  it("emits aborted tool results for skipped tool calls on parallel abort (#116379)", async () => {
+    const controller = new AbortController();
+    let streamCalls = 0;
+    const streamFn: StreamFn = () => {
+      streamCalls += 1;
+      if (streamCalls > 1) {
+        throw new Error("model was called after abort");
+      }
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const message = makeAssistantMessage([
+          { type: "toolCall", id: "p-first", name: "p_first_tool", arguments: {} },
+          { type: "toolCall", id: "p-second", name: "p_second_tool", arguments: {} },
+          { type: "toolCall", id: "p-third", name: "p_third_tool", arguments: {} },
+        ]);
+        stream.push({ type: "done", reason: "toolUse", message });
+        stream.end();
+      });
+      return stream;
+    };
+    const firstTool: AgentTool = {
+      name: "p_first_tool",
+      label: "p_first_tool",
+      description: "Aborts the run mid-batch",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      execute: async () => {
+        controller.abort(new Error("user aborted"));
+        return {
+          content: [{ type: "text", text: "first ran" }],
+          details: { aborted: true },
+        };
+      },
+    };
+    const skippedTool: AgentTool = {
+      name: "p_second_tool",
+      label: "p_second_tool",
+      description: "Should be skipped by abort",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      execute: async () => {
+        throw new Error("p_second_tool should never execute");
+      },
+    };
+    const thirdTool: AgentTool = {
+      ...skippedTool,
+      name: "p_third_tool",
+      label: "p_third_tool",
+    };
+
+    // afterToolOutcome must observe every committed tool call, including the
+    // aborted tail the dispatch loop skipped — otherwise audit/redaction hooks
+    // silently miss the repaired calls (#116379).
+    const afterToolOutcome = vi.fn(async () => undefined);
+    const messages = await runAgentLoop(
+      [{ role: "user", content: "abort mid-batch parallel", timestamp: 1 }],
+      {
+        systemPrompt: "",
+        messages: [],
+        tools: [firstTool, skippedTool, thirdTool],
+      },
+      { ...config, toolExecution: "parallel", afterToolOutcome },
+      () => {},
+      controller.signal,
+      streamFn,
+    );
+
+    const toolResultMessages = messages.filter((message) => message.role === "toolResult");
+    const toolResultIds = toolResultMessages.map(
+      (message) => (message as Extract<AgentMessage, { role: "toolResult" }>).toolCallId,
+    );
+    expect(toolResultIds.toSorted()).toEqual(["p-first", "p-second", "p-third"]);
+    // Every tool_use is paired with a tool_result — no orphaned tool_use.
+    expect(toolResultMessages).toHaveLength(3);
+    // The outcome hook observed all three calls, including the two skipped tail
+    // calls, with the aborted marker.
+    expect(afterToolOutcome).toHaveBeenCalledTimes(3);
+    expect(afterToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCall: expect.objectContaining({ id: "p-second" }),
+        isError: true,
+        executionStarted: false,
+      }),
+      controller.signal,
+    );
+    expect(afterToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCall: expect.objectContaining({ id: "p-third" }),
+        isError: true,
+        executionStarted: false,
+      }),
+      controller.signal,
+    );
+  });
+
   it("skips interrupted-turn guidance when the abort reason marks a turn handoff", async () => {
     const controller = new AbortController();
     let streamCalls = 0;
