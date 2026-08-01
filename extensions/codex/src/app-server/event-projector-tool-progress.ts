@@ -14,6 +14,7 @@ import {
   itemStatus,
 } from "./event-projector-items.js";
 import {
+  extractFileChangeErrorText,
   itemMeta,
   itemOutputText,
   itemToolArgs,
@@ -261,12 +262,17 @@ export class CodexToolProgressProjection {
     const mutatingAction = executionStarted && isMutatingNativeToolItem(params.item);
     const actionFingerprint = mutatingAction ? nativeToolActionFingerprint(params.item) : undefined;
     const isFailure = isNonSuccessItemStatus(params.status);
-    // Never propagate an empty cause: a tool failure with no extractable error
-    // still leaves operators a target path so cron lastError stays actionable
-    // instead of masking the real run-level failure with a generic message.
+    // For native apply_patch (fileChange) the protocol carries no `error` field,
+    // so extract any concrete cause directly and fall back to a locatable
+    // "<tool> failed: <path>" message for lastToolError/cron diagnostics. This
+    // fallback is local to the diagnostics projection — the shared itemToolError
+    // helper keeps its own non-empty fallback to preserve the after_tool_call
+    // hook contract (see emitAfterToolCallObservation).
     const error = isFailure
-      ? (itemToolError(params.item, params.status, this.output.textByItem) ??
-        fallbackNativeToolErrorText(params.name, params.item))
+      ? params.item.type === "fileChange"
+        ? (extractFileChangeErrorText(params.item) ??
+          fallbackNativeToolErrorText(params.name, params.item))
+        : itemToolError(params.item, params.status, this.output.textByItem)
       : undefined;
     const terminalResolution = this.params.observeToolTerminal?.({
       toolCallId: params.item.id,

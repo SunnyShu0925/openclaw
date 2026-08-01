@@ -278,10 +278,26 @@ export function itemToolError(
   if (status !== "failed") {
     return undefined;
   }
-  // Return undefined when no concrete cause is extractable so callers can
-  // substitute a locatable fallback (e.g. target path) rather than propagating
-  // a generic "tool failed" string that masks the real run-level failure.
-  return itemOutputText(item, outputTextByItem);
+  // Keep a non-empty fallback for the after_tool_call hook contract: callers
+  // like emitAfterToolCallObservation only forward `error` when this returns a
+  // string, so returning undefined here would drop a previously delivered
+  // failure signal from hook events. Diagnostics callers that prefer a
+  // locatable fallback use extractFileChangeErrorText directly.
+  return itemOutputText(item, outputTextByItem) ?? "codex native tool failed";
+}
+
+/**
+ * Extracts a concrete cause from a native fileChange (apply_patch) error
+ * without any generic fallback. Returns undefined when the item carries no
+ * extractable error, so diagnostics callers can substitute a locatable
+ * message (e.g. target path) without affecting the shared hook error contract.
+ */
+export function extractFileChangeErrorText(item: CodexThreadItem): string | undefined {
+  if (item.type !== "fileChange") {
+    return undefined;
+  }
+  const errorText = readCodexFileChangeErrorText(item.error);
+  return errorText ? truncateToolTranscriptText(errorText) : undefined;
 }
 
 export function itemMeta(
@@ -332,8 +348,7 @@ export function itemOutputText(
     // Native apply_patch failures carry their cause in `item.error` (message /
     // additionalDetails / codexErrorInfo). Surface it so operators and agents
     // can diagnose the real failure instead of a generic "tool failed" string.
-    const errorText = readCodexFileChangeErrorText(item.error);
-    return errorText ? truncateToolTranscriptText(errorText) : undefined;
+    return extractFileChangeErrorText(item);
   }
   return undefined;
 }
