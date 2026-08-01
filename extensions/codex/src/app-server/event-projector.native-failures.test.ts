@@ -503,4 +503,30 @@ describe("CodexAppServerEventProjector native tool failure recovery", () => {
       mutatingAction: true,
     });
   });
+
+  it("preserves the blocked diagnostic for a declined native apply_patch", async () => {
+    // `declined` normalizes to the `blocked` status; the path fallback must
+    // stay limited to `failed` so a user-declined patch keeps the established
+    // "codex native tool blocked" diagnostic instead of a failure message.
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "fileChange",
+          id: "patch-declined",
+          changes: [{ path: "src/notes.ts", kind: { type: "update" } }],
+          status: "declined",
+        },
+      }),
+    );
+
+    expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toMatchObject({
+      toolName: "apply_patch",
+      error: "codex native tool blocked",
+      // A declined patch is normalized to `blocked`, so the mutation is not
+      // treated as executed (consistent with other declined native tools).
+      mutatingAction: false,
+    });
+  });
 });

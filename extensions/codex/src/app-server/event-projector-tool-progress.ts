@@ -265,11 +265,14 @@ export class CodexToolProgressProjection {
     // `changes`/`id`/`status`/`type` (verified upstream; no `error` member),
     // so a failed native apply_patch has no extractable cause. Fall back to a
     // locatable "<tool> failed: <path>" message for lastToolError/cron
-    // diagnostics. This fallback is local to the diagnostics projection — the
-    // shared itemToolError helper keeps its own non-empty fallback to preserve
-    // the after_tool_call hook contract (see emitAfterToolCallObservation).
+    // diagnostics. The fallback is limited to the normalized `failed` status:
+    // a declined patch normalizes to `blocked` and must keep the established
+    // "codex native tool blocked" diagnostic. This fallback is local to the
+    // diagnostics projection — the shared itemToolError helper keeps its own
+    // non-empty fallback to preserve the after_tool_call hook contract (see
+    // emitAfterToolCallObservation).
     const error = isFailure
-      ? params.item.type === "fileChange"
+      ? params.item.type === "fileChange" && params.status === "failed"
         ? fallbackNativeToolErrorText(params.name, params.item)
         : itemToolError(params.item, params.status, this.output.textByItem)
       : undefined;
