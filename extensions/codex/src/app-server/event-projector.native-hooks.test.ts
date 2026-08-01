@@ -289,7 +289,7 @@ describe("CodexAppServerEventProjector native tool hook projection", () => {
     // signal even when the fileChange schema carries no upstream error.
     expect(event.toolName).toBe("apply_patch");
     expect(typeof event.error).toBe("string");
-    expect(event.error.length).toBeGreaterThan(0);
+    expect((event.error as string).length).toBeGreaterThan(0);
   });
 
   it("surfaces the upstream error message in after_tool_call hooks for failed fileChange items", async () => {
