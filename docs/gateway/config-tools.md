@@ -579,8 +579,8 @@ Configuring a custom/local provider `baseUrl` is also the narrow network trust d
     | `requiresAssistantAfterToolResult` | Requires an assistant message after tool results. |
     | `requiresThinkingAsText` | Replays reasoning as text rather than structured content. |
     | `requiresReasoningContentOnAssistantMessages` | Preserves DeepSeek-style `reasoning_content` during replay. |
-    | `toolSchemaProfile` | Selects a provider-defined tool-schema normalization profile. Values recognized on a model's `compat`: `llamacpp` (a targeted llama.cpp GBNF compatibility cleaner — it removes `pattern` outright and drops `maxLength` only at or above the 2000-repetition threshold; it is not a guarantee that every remaining schema keyword or `minLength` is GBNF-safe) and `gemini`. (The `xai` profile is applied by the built-in xAI provider; other families such as `deepseek` and `openai` are wired through provider extensions, not this string.) Built-in `llama-cpp`, `ollama`, and `lmstudio` providers apply the `llamacpp` profile automatically; a **custom** `openai-completions` provider pointed at a llama.cpp / `llama-server` (or any GBNF-backed) endpoint must set this explicitly, otherwise tool schemas with large `minLength`/`maxLength` (for example the `cron` tool's `trigger.script`) make llama.cpp reject the request with `400 failed to parse grammar`. See the "Local models (llama.cpp / llama-server)" example under Provider examples below. |
-    | `unsupportedToolSchemaKeywords` | Removes named JSON Schema keywords rejected by the endpoint before tool schemas are sent. For a llama.cpp endpoint you can instead set `toolSchemaProfile: "llamacpp"`; only use this list directly when you need to strip keywords the profile does not cover (for example `format`, `propertyNames`, `patternProperties`). |
+    | `toolSchemaProfile` | Selects a tool-schema normalization profile. Custom model entries recognize `llamacpp` and `gemini`. The `llamacpp` profile removes `pattern` and `maxLength` values at or above 2000; built-in `llama-cpp`, `ollama`, and `lmstudio` providers apply the same cleaner automatically. Custom `llama-server` models must select it explicitly. See the llama.cpp example below. |
+    | `unsupportedToolSchemaKeywords` | Removes named JSON Schema keywords rejected by the endpoint before tool schemas are sent. Use this for endpoint-specific gaps beyond a profile's targeted transformations. |
     | `toolCallArgumentsEncoding` | Selects the endpoint's tool-call argument encoding. |
     | `requiresOpenAiAnthropicToolPayload` | Converts OpenAI-shaped tool calls to Anthropic-family payloads. |
 
@@ -660,7 +660,7 @@ Interactive custom-provider onboarding infers image input for known vision-model
     See [Local Models](/gateway/local-models). TL;DR: run a large local model via LM Studio Responses API on serious hardware; keep hosted models merged for fallback.
   </Accordion>
   <Accordion title="Local models (llama.cpp / llama-server)">
-    Point a **custom** `openai-completions` provider at a remote `llama-server` (or any OpenAI-compatible llama.cpp endpoint). The built-in `llama-cpp`, `ollama`, and `lmstudio` providers apply GBNF-safe schema normalization automatically; a custom endpoint does not, so set `compat.toolSchemaProfile: "llamacpp"` on every model that routes tool schemas through `json-schema-to-grammar`. Without it, tools whose schemas contain large `minLength`/`maxLength` (notably the `cron` tool's `trigger.script`, `maxLength: 65536`) exceed llama.cpp's 2000-repetition GBNF ceiling and every tool-enabled turn fails with `400 failed to parse grammar`.
+    Point a **custom** `openai-completions` provider at a remote `llama-server` (or another OpenAI-compatible llama.cpp endpoint). The built-in `llama-cpp`, `ollama`, and `lmstudio` providers apply the llama.cpp schema cleaner automatically; a custom endpoint does not. Set `compat.toolSchemaProfile: "llamacpp"` on each model whose llama-server chat template compiles tool arguments into GBNF. The profile removes `pattern` and `maxLength` values at or above 2000, covering the `cron` tool's `trigger.script` limit of 65536. It is a targeted mitigation, not complete compatibility for every JSON Schema constraint or `minLength`.
 
     ```json5
     {
@@ -694,7 +694,7 @@ Interactive custom-provider onboarding infers image input for known vision-model
     }
     ```
 
-    If you cannot set the profile (for example an older build without `toolSchemaProfile`), the equivalent escape hatch is `compat.unsupportedToolSchemaKeywords: ["pattern", "patternProperties", "format", "propertyNames", "uniqueItems", "contains", "minContains", "maxContains", "minLength", "maxLength"]`. The profile is preferred because it strips only the constraints llama.cpp cannot compile to GBNF — it removes `pattern` outright and drops `maxLength` only at or above the 2000-repetition threshold, leaving smaller bounds such as `minLength: 1` intact — whereas the keyword list drops every listed keyword unconditionally.
+    On older builds without `toolSchemaProfile`, the broader fallback is `compat.unsupportedToolSchemaKeywords: ["pattern", "patternProperties", "format", "propertyNames", "uniqueItems", "contains", "minContains", "maxContains", "minLength", "maxLength"]`. Unlike the profile, this removes every listed keyword unconditionally.
 
   </Accordion>
   <Accordion title="MiniMax M3 (direct)">
