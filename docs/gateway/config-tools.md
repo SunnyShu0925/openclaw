@@ -694,7 +694,7 @@ Interactive custom-provider onboarding infers image input for known vision-model
     }
     ```
 
-    If you cannot set the profile (for example an older build without `toolSchemaProfile`), the equivalent escape hatch is `compat.unsupportedToolSchemaKeywords: ["pattern", "patternProperties", "format", "propertyNames", "uniqueItems", "contains", "minContains", "maxContains", "minLength", "maxLength"]`. The profile is preferred because it also clamps rather than only dropping constraints.
+    If you cannot set the profile (for example an older build without `toolSchemaProfile`), the equivalent escape hatch is `compat.unsupportedToolSchemaKeywords: ["pattern", "patternProperties", "format", "propertyNames", "uniqueItems", "contains", "minContains", "maxContains", "minLength", "maxLength"]`. The profile is preferred because it strips only the constraints llama.cpp cannot compile to GBNF — it removes `pattern` outright and drops `maxLength` only at or above the 2000-repetition threshold, leaving smaller bounds such as `minLength: 1` intact — whereas the keyword list drops every listed keyword unconditionally.
 
   </Accordion>
   <Accordion title="MiniMax M3 (direct)">
