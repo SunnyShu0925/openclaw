@@ -291,5 +291,4 @@ describe("CodexAppServerEventProjector native tool hook projection", () => {
     expect(typeof event.error).toBe("string");
     expect((event.error as string).length).toBeGreaterThan(0);
   });
-
 });
