@@ -110,6 +110,57 @@ describe("cron tool creator cap", () => {
     });
   });
 
+  it("preserves stored explicit toolsAllow outside the creator snapshot on unrelated payload edits", () => {
+    const patch = readReadyPatch(
+      planCronJobUpdatePatch({
+        patch: { payload: { fallbacks: [] } },
+        creatorToolAllowlist: ["message", "write", "read"],
+        currentJob: {
+          payload: {
+            kind: "agentTurn",
+            message: "work",
+            toolsAllow: ["exec", "message", "write"],
+          },
+        },
+      }),
+    );
+
+    // exec was granted by the operator (CLI) and the cron runtime executes it;
+    // an unrelated payload edit must not re-derive it through the creator cap.
+    expect(patch).toEqual({
+      payload: {
+        kind: "agentTurn",
+        fallbacks: [],
+        toolsAllow: ["exec", "message", "write"],
+      },
+    });
+  });
+
+  it("preserves stored explicit toolsAllow for script-trigger jobs on unrelated payload edits", () => {
+    const patch = readReadyPatch(
+      planCronJobUpdatePatch({
+        patch: { payload: { model: "gpt-mini" } },
+        creatorToolAllowlist: ["read"],
+        currentJob: {
+          trigger: { script: "return true" },
+          payload: {
+            kind: "script",
+            script: "run()",
+            toolsAllow: ["exec", "write"],
+          },
+        },
+      }),
+    );
+
+    expect(patch).toEqual({
+      payload: {
+        kind: "script",
+        model: "gpt-mini",
+        toolsAllow: ["exec", "write"],
+      },
+    });
+  });
+
   it("inherits kind for kind-less patches independently of creator policy", () => {
     const patch = { payload: { model: null } };
     expect(

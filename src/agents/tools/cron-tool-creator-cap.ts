@@ -190,14 +190,24 @@ export function planCronJobUpdatePatch(params: {
     nextPayload.kind = payloadKind;
   }
   patch.payload = nextPayload;
+  const storedToolsAllow =
+    isRecord(existingPayload) && existingPayload.toolsAllowIsDefault !== true
+      ? existingPayload.toolsAllow
+      : undefined;
+  if (!writesToolsAllow && Array.isArray(storedToolsAllow)) {
+    // Edits that do not touch toolsAllow must not re-derive stored explicit
+    // scheduled authority through an incomplete creator snapshot. Preserve the
+    // persisted cap verbatim so unrelated payload patches cannot silently strip
+    // tools (e.g. loopback exec) the cron runtime already legitimately runs.
+    nextPayload.toolsAllow = storedToolsAllow;
+    delete nextPayload.toolsAllowIsDefault;
+    return { kind: "ready", patch };
+  }
   capCronJobToolsAllow({
     payload: nextPayload,
     trigger,
     creatorToolAllowlist: params.creatorToolAllowlist,
-    defaultToolsAllow:
-      isRecord(existingPayload) && existingPayload.toolsAllowIsDefault !== true
-        ? existingPayload.toolsAllow
-        : undefined,
+    defaultToolsAllow: storedToolsAllow,
   });
   return { kind: "ready", patch };
 }
