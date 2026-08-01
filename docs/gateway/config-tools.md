@@ -579,8 +579,8 @@ Configuring a custom/local provider `baseUrl` is also the narrow network trust d
     | `requiresAssistantAfterToolResult` | Requires an assistant message after tool results. |
     | `requiresThinkingAsText` | Replays reasoning as text rather than structured content. |
     | `requiresReasoningContentOnAssistantMessages` | Preserves DeepSeek-style `reasoning_content` during replay. |
-    | `toolSchemaProfile` | Selects a provider-defined tool-schema normalization profile. |
-    | `unsupportedToolSchemaKeywords` | Removes named JSON Schema keywords rejected by the endpoint. |
+    | `toolSchemaProfile` | Selects a provider-defined tool-schema normalization profile. Values recognized on a model's `compat`: `llamacpp` (rewrites tool schemas into the JSON Schema subset llama.cpp can compile to GBNF — strips `pattern` and removes `maxLength` at or above the 2000-repetition threshold) and `gemini`. (The `xai` profile is applied by the built-in xAI provider; other families such as `deepseek` and `openai` are wired through provider extensions, not this string.) Built-in `llama-cpp`, `ollama`, and `lmstudio` providers apply the `llamacpp` profile automatically; a **custom** `openai-completions` provider pointed at a llama.cpp / `llama-server` (or any GBNF-backed) endpoint must set this explicitly, otherwise tool schemas with large `minLength`/`maxLength` (for example the `cron` tool's `trigger.script`) make llama.cpp reject the request with `400 failed to parse grammar`. See the "Local models (llama.cpp / llama-server)" example under Provider examples below. |
+    | `unsupportedToolSchemaKeywords` | Removes named JSON Schema keywords rejected by the endpoint before tool schemas are sent. For a llama.cpp endpoint you can instead set `toolSchemaProfile: "llamacpp"`; only use this list directly when you need to strip keywords the profile does not cover (for example `format`, `propertyNames`, `patternProperties`). |
     | `toolCallArgumentsEncoding` | Selects the endpoint's tool-call argument encoding. |
     | `requiresOpenAiAnthropicToolPayload` | Converts OpenAI-shaped tool calls to Anthropic-family payloads. |
 
@@ -658,6 +658,44 @@ Interactive custom-provider onboarding infers image input for known vision-model
   </Accordion>
   <Accordion title="Local models (LM Studio)">
     See [Local Models](/gateway/local-models). TL;DR: run a large local model via LM Studio Responses API on serious hardware; keep hosted models merged for fallback.
+  </Accordion>
+  <Accordion title="Local models (llama.cpp / llama-server)">
+    Point a **custom** `openai-completions` provider at a remote `llama-server` (or any OpenAI-compatible llama.cpp endpoint). The built-in `llama-cpp`, `ollama`, and `lmstudio` providers apply GBNF-safe schema normalization automatically; a custom endpoint does not, so set `compat.toolSchemaProfile: "llamacpp"` on every model that routes tool schemas through `json-schema-to-grammar`. Without it, tools whose schemas contain large `minLength`/`maxLength` (notably the `cron` tool's `trigger.script`, `maxLength: 65536`) exceed llama.cpp's 2000-repetition GBNF ceiling and every tool-enabled turn fails with `400 failed to parse grammar`.
+
+    ```json5
+    {
+      agents: {
+        defaults: {
+          model: { primary: "my-llamacpp/qwen35" },
+        },
+      },
+      models: {
+        mode: "merge",
+        providers: {
+          "my-llamacpp": {
+            baseUrl: "http://127.0.0.1:8080/v1",
+            apiKey: "llamacpp-no-key",
+            api: "openai-completions",
+            models: [
+              {
+                id: "qwen35",
+                name: "Qwen3.5 (llama-server)",
+                contextWindow: 8192,
+                maxTokens: 2048,
+                compat: {
+                  supportsTools: true,
+                  toolSchemaProfile: "llamacpp",
+                },
+              },
+            ],
+          },
+        },
+      },
+    }
+    ```
+
+    If you cannot set the profile (for example an older build without `toolSchemaProfile`), the equivalent escape hatch is `compat.unsupportedToolSchemaKeywords: ["pattern", "patternProperties", "format", "propertyNames", "uniqueItems", "contains", "minContains", "maxContains", "minLength", "maxLength"]`. The profile is preferred because it also clamps rather than only dropping constraints.
+
   </Accordion>
   <Accordion title="MiniMax M3 (direct)">
     ```json5
