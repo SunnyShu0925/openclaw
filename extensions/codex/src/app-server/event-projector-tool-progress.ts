@@ -261,8 +261,12 @@ export class CodexToolProgressProjection {
     const mutatingAction = executionStarted && isMutatingNativeToolItem(params.item);
     const actionFingerprint = mutatingAction ? nativeToolActionFingerprint(params.item) : undefined;
     const isFailure = isNonSuccessItemStatus(params.status);
+    // Never propagate an empty cause: a tool failure with no extractable error
+    // still leaves operators a target path so cron lastError stays actionable
+    // instead of masking the real run-level failure with a generic message.
     const error = isFailure
-      ? itemToolError(params.item, params.status, this.output.textByItem)
+      ? (itemToolError(params.item, params.status, this.output.textByItem) ??
+        fallbackNativeToolErrorText(params.name, params.item))
       : undefined;
     const terminalResolution = this.params.observeToolTerminal?.({
       toolCallId: params.item.id,
@@ -271,7 +275,7 @@ export class CodexToolProgressProjection {
       ...(params.meta ? { meta: params.meta } : {}),
       executionStarted,
       outcome: isFailure ? "failure" : "success",
-      ...(isFailure ? { failure: error ? { error } : {} } : {}),
+      ...(isFailure ? { failure: { error } } : {}),
       nativeMutation: {
         mutatingAction,
         replaySafe: !mutatingAction,
@@ -553,4 +557,21 @@ export class CodexToolProgressProjection {
     }
     this.echoesByItem.set(itemId, existing);
   }
+}
+
+/**
+ * Builds a non-empty, locatable fallback message when a native tool failure
+ * carries no extractable cause. Names the tool and, for file changes, the first
+ * target path so the cron lastError never degrades to a generic string.
+ */
+function fallbackNativeToolErrorText(toolName: string, item: CodexThreadItem): string {
+  if (item.type === "fileChange") {
+    const firstPath = item.changes?.find(
+      (change) => typeof change.path === "string" && change.path,
+    )?.path;
+    if (firstPath) {
+      return `${toolName} failed: ${firstPath}`;
+    }
+  }
+  return `${toolName} failed`;
 }

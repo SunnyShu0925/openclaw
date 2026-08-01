@@ -451,4 +451,55 @@ describe("CodexAppServerEventProjector native tool failure recovery", () => {
 
     expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toBeUndefined();
   });
+
+  it("surfaces the underlying error message for a failed native apply_patch", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "fileChange",
+          id: "patch-failed",
+          changes: [{ path: "src/notes.ts", kind: { type: "update" } }],
+          status: "failed",
+          error: {
+            message: "permission denied: /workspace/src/notes.ts",
+            codexErrorInfo: null,
+            additionalDetails: null,
+          },
+        },
+      }),
+    );
+
+    expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toEqual({
+      toolName: "apply_patch",
+      error: "permission denied: /workspace/src/notes.ts",
+      mutatingAction: true,
+      actionFingerprint: JSON.stringify({
+        type: "fileChange",
+        changes: [{ path: "src/notes.ts", kind: { type: "update" } }],
+      }),
+    });
+  });
+
+  it("falls back to a locatable path when a failed native apply_patch has no error text", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "fileChange",
+          id: "patch-failed-no-error",
+          changes: [{ path: "src/orphan.ts", kind: { type: "add" } }],
+          status: "failed",
+        },
+      }),
+    );
+
+    expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toMatchObject({
+      toolName: "apply_patch",
+      error: "apply_patch failed: src/orphan.ts",
+      mutatingAction: true,
+    });
+  });
 });

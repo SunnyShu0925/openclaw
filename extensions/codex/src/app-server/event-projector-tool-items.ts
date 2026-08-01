@@ -278,7 +278,10 @@ export function itemToolError(
   if (status !== "failed") {
     return undefined;
   }
-  return itemOutputText(item, outputTextByItem) ?? "codex native tool failed";
+  // Return undefined when no concrete cause is extractable so callers can
+  // substitute a locatable fallback (e.g. target path) rather than propagating
+  // a generic "tool failed" string that masks the real run-level failure.
+  return itemOutputText(item, outputTextByItem);
 }
 
 export function itemMeta(
@@ -324,6 +327,45 @@ export function itemOutputText(
         ? stringifyJsonValue(item.result)
         : undefined;
     return output ? truncateToolTranscriptText(output) : undefined;
+  }
+  if (item.type === "fileChange") {
+    // Native apply_patch failures carry their cause in `item.error` (message /
+    // additionalDetails / codexErrorInfo). Surface it so operators and agents
+    // can diagnose the real failure instead of a generic "tool failed" string.
+    const errorText = readCodexFileChangeErrorText(item.error);
+    return errorText ? truncateToolTranscriptText(errorText) : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Extracts a human-readable cause from a native fileChange (apply_patch) error.
+ * Codex populates `message`, `additionalDetails`, and/or `codexErrorInfo`; we
+ * prefer the most specific non-empty field so the diagnostic stays actionable.
+ */
+function readCodexFileChangeErrorText(error: unknown): string | undefined {
+  if (!isJsonObject(error)) {
+    return undefined;
+  }
+  const message = normalizeNonEmptyString(readNonEmptyString(error, "message"));
+  if (message) {
+    return message;
+  }
+  const additionalDetails = normalizeNonEmptyString(readNonEmptyString(error, "additionalDetails"));
+  if (additionalDetails) {
+    return additionalDetails;
+  }
+  const codexErrorInfo = error.codexErrorInfo;
+  if (typeof codexErrorInfo === "string") {
+    const normalized = normalizeNonEmptyString(codexErrorInfo);
+    if (normalized) {
+      return normalized;
+    }
+  } else if (isJsonObject(codexErrorInfo) || Array.isArray(codexErrorInfo)) {
+    const serialized = stringifyJsonValue(codexErrorInfo);
+    if (serialized) {
+      return serialized;
+    }
   }
   return undefined;
 }
