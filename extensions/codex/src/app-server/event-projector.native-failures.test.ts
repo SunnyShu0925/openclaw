@@ -452,37 +452,7 @@ describe("CodexAppServerEventProjector native tool failure recovery", () => {
     expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toBeUndefined();
   });
 
-  it("surfaces the underlying error message for a failed native apply_patch", async () => {
-    const projector = await createProjector();
-
-    await projector.handleNotification(
-      forCurrentTurn("item/completed", {
-        item: {
-          type: "fileChange",
-          id: "patch-failed",
-          changes: [{ path: "src/notes.ts", kind: { type: "update" } }],
-          status: "failed",
-          error: {
-            message: "permission denied: /workspace/src/notes.ts",
-            codexErrorInfo: null,
-            additionalDetails: null,
-          },
-        },
-      }),
-    );
-
-    expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toEqual({
-      toolName: "apply_patch",
-      error: "permission denied: /workspace/src/notes.ts",
-      mutatingAction: true,
-      actionFingerprint: JSON.stringify({
-        type: "fileChange",
-        changes: [{ path: "src/notes.ts", kind: { type: "update" } }],
-      }),
-    });
-  });
-
-  it("falls back to a locatable path when a failed native apply_patch has no error text", async () => {
+  it("falls back to a locatable path for a failed native apply_patch (protocol has no error field)", async () => {
     const projector = await createProjector();
 
     await projector.handleNotification(
@@ -492,6 +462,9 @@ describe("CodexAppServerEventProjector native tool failure recovery", () => {
           id: "patch-failed-no-error",
           changes: [{ path: "src/orphan.ts", kind: { type: "add" } }],
           status: "failed",
+          // The v2 FileChangeThreadItem contract carries only
+          // changes/id/status/type (verified against upstream codex-rs); a
+          // failed apply_patch therefore reaches diagnostics with no cause.
         },
       }),
     );
@@ -499,6 +472,34 @@ describe("CodexAppServerEventProjector native tool failure recovery", () => {
     expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toMatchObject({
       toolName: "apply_patch",
       error: "apply_patch failed: src/orphan.ts",
+      mutatingAction: true,
+    });
+  });
+
+  it("does not consume an upstream-unsupported error payload on fileChange items", async () => {
+    // ClawSweeper P1/P2: treating a stray `error` member as a durable Codex
+    // contract was rejected because the checked-in generated schema and the
+    // upstream app-server-protocol FileChangeThreadItem expose no error field.
+    // The diagnostics path must stay on the locatable fallback.
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "fileChange",
+          id: "patch-failed-stray-error",
+          changes: [{ path: "src/notes.ts", kind: { type: "update" } }],
+          status: "failed",
+          error: {
+            message: "permission denied: /workspace/src/notes.ts",
+          },
+        },
+      }),
+    );
+
+    expect(projector.buildResult(buildEmptyToolTelemetry()).lastToolError).toMatchObject({
+      toolName: "apply_patch",
+      error: "apply_patch failed: src/notes.ts",
       mutatingAction: true,
     });
   });

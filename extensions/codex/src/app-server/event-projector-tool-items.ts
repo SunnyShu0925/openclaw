@@ -282,22 +282,9 @@ export function itemToolError(
   // like emitAfterToolCallObservation only forward `error` when this returns a
   // string, so returning undefined here would drop a previously delivered
   // failure signal from hook events. Diagnostics callers that prefer a
-  // locatable fallback use extractFileChangeErrorText directly.
+  // locatable fallback (e.g. for native apply_patch) substitute their own
+  // message via the tool-progress projection (see recordNativeToolError).
   return itemOutputText(item, outputTextByItem) ?? "codex native tool failed";
-}
-
-/**
- * Extracts a concrete cause from a native fileChange (apply_patch) error
- * without any generic fallback. Returns undefined when the item carries no
- * extractable error, so diagnostics callers can substitute a locatable
- * message (e.g. target path) without affecting the shared hook error contract.
- */
-export function extractFileChangeErrorText(item: CodexThreadItem): string | undefined {
-  if (item.type !== "fileChange") {
-    return undefined;
-  }
-  const errorText = readCodexFileChangeErrorText(item.error);
-  return errorText ? truncateToolTranscriptText(errorText) : undefined;
 }
 
 export function itemMeta(
@@ -343,44 +330,6 @@ export function itemOutputText(
         ? stringifyJsonValue(item.result)
         : undefined;
     return output ? truncateToolTranscriptText(output) : undefined;
-  }
-  if (item.type === "fileChange") {
-    // Native apply_patch failures carry their cause in `item.error` (message /
-    // additionalDetails / codexErrorInfo). Surface it so operators and agents
-    // can diagnose the real failure instead of a generic "tool failed" string.
-    return extractFileChangeErrorText(item);
-  }
-  return undefined;
-}
-
-/**
- * Extracts a human-readable cause from a native fileChange (apply_patch) error.
- * Codex populates `message`, `additionalDetails`, and/or `codexErrorInfo`; we
- * prefer the most specific non-empty field so the diagnostic stays actionable.
- */
-function readCodexFileChangeErrorText(error: unknown): string | undefined {
-  if (!isJsonObject(error)) {
-    return undefined;
-  }
-  const message = normalizeNonEmptyString(readNonEmptyString(error, "message"));
-  if (message) {
-    return message;
-  }
-  const additionalDetails = normalizeNonEmptyString(readNonEmptyString(error, "additionalDetails"));
-  if (additionalDetails) {
-    return additionalDetails;
-  }
-  const codexErrorInfo = error.codexErrorInfo;
-  if (typeof codexErrorInfo === "string") {
-    const normalized = normalizeNonEmptyString(codexErrorInfo);
-    if (normalized) {
-      return normalized;
-    }
-  } else if (isJsonObject(codexErrorInfo) || Array.isArray(codexErrorInfo)) {
-    const serialized = stringifyJsonValue(codexErrorInfo);
-    if (serialized) {
-      return serialized;
-    }
   }
   return undefined;
 }

@@ -292,39 +292,4 @@ describe("CodexAppServerEventProjector native tool hook projection", () => {
     expect((event.error as string).length).toBeGreaterThan(0);
   });
 
-  it("surfaces the upstream error message in after_tool_call hooks for failed fileChange items", async () => {
-    const afterToolCall = vi.fn();
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
-    );
-    const projector = await createProjector({
-      ...(await createParams()),
-      agentId: "main",
-      sessionKey: "agent:main:session-1",
-    });
-
-    await projector.handleNotification(
-      forCurrentTurn("item/completed", {
-        item: {
-          type: "fileChange",
-          id: "patch-failed-hook-with-error",
-          changes: [{ path: "src/notes.ts", kind: { type: "update" } }],
-          status: "failed",
-          error: {
-            message: "permission denied: /workspace/src/notes.ts",
-            codexErrorInfo: null,
-            additionalDetails: null,
-          },
-        },
-      }),
-    );
-
-    await vi.waitFor(() => expect(afterToolCall).toHaveBeenCalledTimes(1));
-    const event = requireRecord(
-      mockCallArg(afterToolCall, 0, 0, "after_tool_call event"),
-      "after_tool_call event",
-    );
-    expect(event.toolName).toBe("apply_patch");
-    expect(event.error).toBe("permission denied: /workspace/src/notes.ts");
-  });
 });
