@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompactResult, ContextEngine } from "../context-engine/types.js";
 import {
   compactContextEngineWithSafetyTimeout,
+  compactContextEngineWithSafetyTimeoutInternal,
   compactWithSafetyTimeout,
   resolveCompactionTimeoutMs,
+  resolveCompactionTimeoutProvenance,
 } from "./embedded-agent-runner/compaction-safety-timeout.js";
 
 const EMBEDDED_COMPACTION_TIMEOUT_MS = 180_000;
@@ -23,7 +25,10 @@ describe("compactWithSafetyTimeout", () => {
   it("rejects with timeout when compaction never settles", async () => {
     // Hung compaction must not stall the agent turn indefinitely.
     vi.useFakeTimers();
-    const compactPromise = compactWithSafetyTimeout(() => new Promise<never>(() => {}));
+    const compactPromise = compactWithSafetyTimeout(
+      () => new Promise<never>(() => {}),
+      EMBEDDED_COMPACTION_TIMEOUT_MS,
+    );
     const timeoutAssertion = expect(compactPromise).rejects.toThrow("Compaction timed out");
 
     await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS);
@@ -106,6 +111,26 @@ describe("compactWithSafetyTimeout", () => {
     await timeoutAssertion;
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("defaults to the 180s host watchdog when timeoutMs is omitted (ClawSweeper P1)", async () => {
+    // Public-contract regression: compactWithSafetyTimeout is exported on the
+    // plugin-sdk agent-harness-runtime surface, so a plugin harness that omits
+    // timeoutMs must still be bounded by the 180s default — never left with no
+    // timer (which would let a hung compact() block the turn indefinitely). The
+    // no-chain-deadline behavior the legacy embedded engine needs lives on a
+    // private path and must not leak into this public default.
+    vi.useFakeTimers();
+    const compactPromise = compactWithSafetyTimeout(() => new Promise<never>(() => {}));
+    const timeoutAssertion = expect(compactPromise).rejects.toThrow("Compaction timed out");
+
+    // No timer fires before the 180s default deadline…
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS - 1);
+
+    // …but it does fire at the 180s default backstop.
+    await vi.advanceTimersByTimeAsync(1);
+    await timeoutAssertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe("resolveCompactionTimeoutMs", () => {
@@ -178,6 +203,28 @@ describe("resolveCompactionTimeoutMs", () => {
   });
 });
 
+describe("resolveCompactionTimeoutProvenance", () => {
+  it("reports the default source when no timeoutSeconds is configured", () => {
+    expect(resolveCompactionTimeoutProvenance(undefined)).toEqual({
+      ms: EMBEDDED_COMPACTION_TIMEOUT_MS,
+      source: "default",
+    });
+    expect(
+      resolveCompactionTimeoutProvenance({
+        agents: { defaults: { compaction: { mode: "safeguard" } } },
+      }),
+    ).toEqual({ ms: EMBEDDED_COMPACTION_TIMEOUT_MS, source: "default" });
+  });
+
+  it("reports the configured source and resolved ms when timeoutSeconds is set", () => {
+    expect(
+      resolveCompactionTimeoutProvenance({
+        agents: { defaults: { compaction: { timeoutSeconds: 30 } } },
+      }),
+    ).toEqual({ ms: 30_000, source: "configured" });
+  });
+});
+
 describe("compactContextEngineWithSafetyTimeout", () => {
   type CompactFn = ContextEngine["compact"];
   const baseParams: Parameters<CompactFn>[0] = {
@@ -186,6 +233,12 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     tokenBudget: 100_000,
     force: true,
   };
+  // Engine ownership routing is fully internal: the public surface takes only
+  // positional (engine, params, timeoutMs?, abortSignal?) with no ownership
+  // flag, while the unexported internal helper carries legacyDelegating +
+  // ownsCompaction. Test engines are minimal `{ compact }` objects — matching
+  // the public `Pick<ContextEngine, "compact">` contract (ClawSweeper P1: keep
+  // timeout ownership options internal).
 
   beforeEach(() => {
     vi.useRealTimers();
@@ -253,30 +306,6 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("threads the host timeout abort signal into the plugin compact() params", async () => {
-    // Timeout cancellation is delivered through the same plugin abort signal as
-    // external run cancellation.
-    vi.useFakeTimers();
-    let compactAbortSignal: AbortSignal | undefined;
-    const compact = vi.fn<CompactFn>((params) => {
-      compactAbortSignal = params.abortSignal;
-      return new Promise<CompactResult>(() => {});
-    });
-
-    const pending = compactContextEngineWithSafetyTimeout({ compact }, baseParams, 30);
-    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
-
-    expect(compactAbortSignal).toBeInstanceOf(AbortSignal);
-    expect(compactAbortSignal?.aborted).toBe(false);
-
-    await vi.advanceTimersByTimeAsync(30);
-    await assertion;
-    expect(compactAbortSignal?.aborted).toBe(true);
-    expect(compactAbortSignal?.reason).toBeInstanceOf(Error);
-    expect((compactAbortSignal?.reason as Error | undefined)?.message).toBe("Compaction timed out");
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
   it("rejects promptly when the run abort signal fires before the timeout", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
@@ -296,6 +325,69 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("applies no chain deadline when timeoutMs is undefined but still honors caller cancellation", async () => {
+    // When no fallbackChainTimeoutSeconds is configured, resolveCompactionChainTimeoutMs
+    // returns undefined and the wrapper must not arm a chain-wide timer. Caller
+    // cancellation remains the only external abort path and must still work.
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const abortError = new Error("run aborted");
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: true,
+      ownsCompaction: false,
+      abortSignal: controller.signal,
+    });
+    const assertion = expect(pending).rejects.toBe(abortError);
+
+    // No chain timer is armed, so advancing time does not abort on its own.
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS * 2);
+    expect(vi.getTimerCount()).toBe(0);
+
+    controller.abort(abortError);
+    await assertion;
+  });
+
+  it("threads the raw caller abort signal into the embedded compact() params", async () => {
+    // Embedded engines run the candidate chain internally; each candidate is
+    // bounded by its own resolveCompactionTimeoutMs watchdog. The wrapper must
+    // still forward the raw caller signal via params.abortSignal so a caller
+    // cancellation aborts the in-flight candidate (the candidate executor
+    // composes it with its own per-candidate deadline). This mirrors the
+    // plugin-owned path: caller cancellation must not be lost when the wrapper
+    // arms no chain timer.
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const reason = new Error("run aborted");
+    let compactAbortSignal: AbortSignal | undefined;
+    const compact = vi.fn<CompactFn>((params) => {
+      compactAbortSignal = params.abortSignal;
+      return new Promise<CompactResult>(() => {});
+    });
+
+    const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: true,
+      ownsCompaction: false,
+      abortSignal: controller.signal,
+    });
+    const assertion = expect(pending).rejects.toBe(reason);
+
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(compactAbortSignal).toBeInstanceOf(AbortSignal);
+    expect(compactAbortSignal?.aborted).toBe(false);
+
+    // No chain timer is armed; the caller signal is the only external abort.
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS * 2);
+    expect(vi.getTimerCount()).toBe(0);
+
+    controller.abort(reason);
+    await assertion;
+    expect(compactAbortSignal?.aborted).toBe(true);
+    expect(compactAbortSignal?.reason).toBe(reason);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("preserves a thrown plugin compaction error", async () => {
     const error = new Error("engine compaction failed");
     const compact = vi.fn<CompactFn>(async () => {
@@ -305,5 +397,232 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     await expect(compactContextEngineWithSafetyTimeout({ compact }, baseParams, 30)).rejects.toBe(
       error,
     );
+  });
+
+  it("keeps the 180s default watchdog for a plugin-owned engine when timeoutMs is unset", async () => {
+    // ClawSweeper P1 regression: plugin-owned engines do not enter the native
+    // per-candidate executor, so when no fallbackChainTimeoutSeconds is
+    // configured the wrapper must still bound a hung plugin compact() with the
+    // 180s default — otherwise the turn hangs indefinitely.
+    vi.useFakeTimers();
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeout({ compact }, baseParams);
+    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
+
+    // No 180s timer fires before the deadline…
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS - 1);
+    expect(compact).toHaveBeenCalledTimes(1);
+
+    // …but it does fire at the 180s default backstop.
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("applies no default watchdog for an embedded engine when timeoutMs is unset", async () => {
+    // #115546 regression: the embedded path runs the candidate chain internally,
+    // each candidate bounded by its own resolveCompactionTimeoutMs watchdog. The
+    // wrapper must NOT arm a chain-wide 180s timer by default — that would let a
+    // slow candidate-1 erode candidate-2's window via the shared deadline.
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const abortError = new Error("run aborted");
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: true,
+      ownsCompaction: false,
+      abortSignal: controller.signal,
+    });
+
+    // Well past the 180s default — no timer is armed, so the pending compact()
+    // is NOT rejected. Only caller cancellation can abort it.
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS * 2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(compact).toHaveBeenCalledTimes(1);
+
+    controller.abort(abortError);
+    await expect(pending).rejects.toBe(abortError);
+  });
+
+  it("honors a configured timeoutSeconds for a plugin-owned engine instead of the 180s default (ClawSweeper P1)", async () => {
+    // Regression guard: a plugin-owned engine must use the per-operation timeout
+    // (resolveCompactionTimeoutMs = timeoutSeconds), NOT the chain timeout
+    // (resolveCompactionChainTimeoutMs, which is opt-in and defaults to undefined).
+    // Before this fix, all call sites passed resolveCompactionChainTimeoutMs, so
+    // pluginTimeoutMs = undefined ?? 180_000 collapsed a configured timeoutSeconds:30
+    // to 180s — a plugin-owned engine waited 180s where it was configured to wait 30s.
+    vi.useFakeTimers();
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    // resolveCompactionTimeoutMs({agents:{defaults:{compaction:{timeoutSeconds:30}}}}) = 30_000.
+    // This is the value the updated call sites pass as the positional timeoutMs.
+    const pending = compactContextEngineWithSafetyTimeout(
+      { compact },
+      baseParams,
+      resolveCompactionTimeoutMs({
+        agents: { defaults: { compaction: { timeoutSeconds: 30 } } },
+      }),
+    );
+    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
+
+    // The 30s per-operation timeout fires — NOT the 180s default.
+    await vi.advanceTimersByTimeAsync(30_000);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the finite watchdog for a third-party engine without ownership metadata (ClawSweeper P1)", async () => {
+    // ownsCompaction is optional in the context-engine contract. Only the
+    // legacy engine is known to delegate to the native per-candidate chain, so
+    // an engine that omits the metadata (or declares false) must NOT lose the
+    // finite host safety timeout — otherwise a hung third-party compact()
+    // blocks the agent turn indefinitely.
+    vi.useFakeTimers();
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeout({ compact }, baseParams);
+    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
+
+    // No 180s timer fires before the deadline…
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS - 1);
+    expect(compact).toHaveBeenCalledTimes(1);
+
+    // …but it does fire at the 180s default backstop.
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the watchdog for a third-party engine spoofing the legacy info.id (ClawSweeper P1)", async () => {
+    // `ContextEngine.info.id` is display metadata, not the trusted registry
+    // identity: a third-party engine may legally report `id: "legacy"` while
+    // registered under another slot. The no-timer bypass lives on the
+    // unexported `compactContextEngineWithSafetyTimeoutInternal` helper and is
+    // gated on trusted registry identity (`legacyDelegating`), never reachable
+    // from the public `compactContextEngineWithSafetyTimeout` surface — so a
+    // spoofed metadata id (or any third-party harness call) cannot remove the
+    // finite host watchdog and hang the agent turn. The public function applies
+    // the finite watchdog unconditionally here.
+    vi.useFakeTimers();
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeout(
+      { compact },
+      baseParams,
+      // The public surface has no legacyDelegating option at all — a third-party
+      // harness cannot opt out of the finite watchdog regardless of info.id.
+    );
+    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
+
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("honors the positional timeoutMs and abortSignal contract (ClawSweeper P1)", async () => {
+    // Public-contract regression: compactContextEngineWithSafetyTimeout is
+    // exported on the plugin-sdk agent-harness-runtime surface, and its
+    // signature is the positional (engine, params, timeoutMs?, abortSignal?) —
+    // no options bag, no ownership flag (ClawSweeper P1: keep timeout ownership
+    // options internal). An installed plugin harness calling positionally must
+    // keep working: the numeric timeoutMs is honored (NOT silently dropped) and
+    // the positional abortSignal still propagates.
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const abortError = new Error("run aborted");
+    let compactAbortSignal: AbortSignal | undefined;
+    const compact = vi.fn<CompactFn>((params) => {
+      compactAbortSignal = params.abortSignal;
+      return new Promise<CompactResult>(() => {});
+    });
+
+    // Positional form: timeoutMs=30 is the per-operation watchdog.
+    const pending = compactContextEngineWithSafetyTimeout(
+      { compact },
+      baseParams,
+      30,
+      controller.signal,
+    );
+    const assertion = expect(pending).rejects.toBe(abortError);
+
+    // The positional abortSignal reached the engine's composed signal.
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(compactAbortSignal).toBeInstanceOf(AbortSignal);
+    expect(compactAbortSignal?.aborted).toBe(false);
+
+    controller.abort(abortError);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("honors the positional timeoutMs as the per-operation watchdog (ClawSweeper P1)", async () => {
+    // The positional timeoutMs must bind the finite watchdog, not be ignored.
+    // A plugin-owned engine with a hung compact() and positional timeoutMs=30
+    // must reject at ~30ms — proving the positional contract is preserved end
+    // to end (main passed timeoutMs straight to the watchdog wrapper).
+    vi.useFakeTimers();
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeout({ compact }, baseParams, 30);
+    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
+
+    // No timer fires before the 30ms positional deadline…
+    await vi.advanceTimersByTimeAsync(29);
+    expect(compact).toHaveBeenCalledTimes(1);
+
+    // …but it does fire at the 30ms positional watchdog.
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("per-candidate window and chain-deadline cancellation", () => {
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("gives a later candidate its own full window after the previous one burned its budget", async () => {
+    // With no chain-wide backstop (the default), each candidate's watchdog is
+    // independent: candidate 2 starts with a fresh full window even though
+    // candidate 1 consumed its own entire budget. This is the core invariant
+    // the fix restores — the legacy shared deadline left candidate 2 only the
+    // leftover from candidate 1.
+    vi.useFakeTimers();
+    const perCandidateMs = 30;
+
+    // Candidate 1 hangs and is cut by its own per-candidate watchdog. Consume
+    // the rejection explicitly so it does not surface as an unhandled error.
+    const candidate1 = compactWithSafetyTimeout(
+      () => new Promise<never>(() => {}),
+      perCandidateMs,
+      {
+        onCancel: () => {},
+      },
+    );
+    const candidate1Outcome = candidate1.then(
+      () => "resolved",
+      () => "rejected",
+    );
+    await vi.advanceTimersByTimeAsync(perCandidateMs);
+    await expect(candidate1Outcome).resolves.toBe("rejected");
+
+    // Candidate 2 starts fresh with its own full window — no shared deadline
+    // can cut it short.
+    const candidate2 = compactWithSafetyTimeout(
+      () =>
+        new Promise<string>((resolve) => {
+          setTimeout(() => resolve("ok"), perCandidateMs - 10);
+        }),
+      perCandidateMs,
+      {
+        onCancel: () => {},
+      },
+    );
+    await vi.advanceTimersByTimeAsync(perCandidateMs - 10);
+    await expect(candidate2).resolves.toBe("ok");
   });
 });

@@ -120,6 +120,7 @@ export function installEmbeddedRunnerBaseE2eMocks(options?: {
       dispose: async () => undefined,
     })),
     resolveContextEngineOwnerPluginId: vi.fn(() => undefined),
+    resolveContextEngineIsTrustedLegacy: vi.fn(() => false),
   }));
   vi.doMock("../runtime-plugins.js", () => ({
     loadAgentRuntimePluginRegistryHandle: vi.fn(() => createEmptyPluginRegistry()),

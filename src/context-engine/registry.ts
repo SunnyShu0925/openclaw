@@ -374,6 +374,26 @@ export function resolveContextEngineOwnerPluginId(
   return pluginId || undefined;
 }
 
+/**
+ * Return whether a resolved context engine is the trusted built-in legacy
+ * engine, based on registry registration metadata — NOT `engine.info.id`, which
+ * is display metadata and can legally differ from (or spoof) the registered
+ * engine id. The built-in legacy engine is registered under core ownership with
+ * the default contextEngine slot id; its compact() delegates to the native
+ * per-candidate chain, which is the only path where the host may omit the
+ * wrapper watchdog.
+ */
+export function resolveContextEngineIsTrustedLegacy(
+  engine: ContextEngine | undefined | null,
+): boolean {
+  const metadata = engine ? resolvedEngineMetadata.get(engine) : undefined;
+  return (
+    metadata !== undefined &&
+    metadata.engineId === defaultSlotIdForKey("contextEngine") &&
+    metadata.owner === "core"
+  );
+}
+
 function describeResolvedContextEngineContractError(
   engineId: string,
   engine: unknown,

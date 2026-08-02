@@ -1105,6 +1105,7 @@ describe("runCliTurnCompactionLifecycle", () => {
       },
       contextEngine: (compactCalls) => ({
         ...buildContextEngine({ compactCalls }),
+        info: { id: "legacy", name: "Legacy Context Engine", ownsCompaction: true },
         async compact(compactParams) {
           compactCalls.push(compactParams);
           return await new Promise(() => {});
@@ -1115,6 +1116,10 @@ describe("runCliTurnCompactionLifecycle", () => {
       scenario;
 
     vi.useFakeTimers();
+    // A plugin-owned context engine (ownsCompaction: true) is bounded by the
+    // per-operation `timeoutSeconds` watchdog (resolveCompactionTimeoutMs),
+    // which honors the configured value instead of the 180s default. A hung
+    // compact() is rejected when the watchdog fires (ClawSweeper P1).
     const pending = scenario.run();
 
     const rejection = expect(pending).rejects.toThrow(
@@ -1125,8 +1130,12 @@ describe("runCliTurnCompactionLifecycle", () => {
     vi.useRealTimers();
 
     expect(compactCalls).toHaveLength(1);
-    expect(compactCalls[0]?.abortSignal).toBeInstanceOf(AbortSignal);
-    expect(compactCalls[0]?.abortSignal?.aborted).toBe(true);
+    // The plugin-owned path threads the wrapper's composed safety-timeout signal
+    // (deadline + caller cancellation) into params.abortSignal so a cooperative
+    // engine can cancel in-flight work; it is aborted once the watchdog fires.
+    const passedAbortSignal = compactCalls[0]?.abortSignal;
+    expect(passedAbortSignal).toBeInstanceOf(AbortSignal);
+    expect(passedAbortSignal?.aborted).toBe(true);
     expect(maintenance).not.toHaveBeenCalled();
     expect(recordCliCompactionInStore).not.toHaveBeenCalled();
     expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(

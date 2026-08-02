@@ -322,20 +322,16 @@ describe("harness context engine lifecycle", () => {
       promptTokenBudget: 2048,
       fallbackReason: "primary_provider_5xx",
     });
-    await compactContextEngineWithSafetyTimeout(
-      configuredEngine,
-      {
+    await compactContextEngineWithSafetyTimeout(configuredEngine, {
+      sessionId: sessionParams.sessionId,
+      sessionKey: sessionParams.sessionKey,
+      sessionTarget: {
         sessionId: sessionParams.sessionId,
         sessionKey: sessionParams.sessionKey,
-        sessionTarget: {
-          sessionId: sessionParams.sessionId,
-          sessionKey: sessionParams.sessionKey,
-        },
-        tokenBudget: 2048,
-        runtimeSettings: compactRuntimeSettings,
       },
-      100,
-    );
+      tokenBudget: 2048,
+      runtimeSettings: compactRuntimeSettings,
+    });
 
     expect(new Set(captured.map((entry) => entry.hook))).toEqual(
       new Set(["bootstrap", "assemble", "afterTurn", "maintain", "compact"]),

@@ -53,6 +53,7 @@ import {
 import {
   compactWithSafetyTimeout,
   resolveCompactionTimeoutMs,
+  resolveCompactionTimeoutProvenance,
 } from "./compaction-safety-timeout.js";
 import { prepareCompactionSessionAgent } from "./compaction-session-agent.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
@@ -110,6 +111,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
 
   try {
     const compactionTimeoutMs = resolveCompactionTimeoutMs(params.config);
+    const { source: compactionTimeoutSource } = resolveCompactionTimeoutProvenance(params.config);
     const sessionTarget = await resolveAgentRunSessionTarget({
       agentId: sessionAgentId,
       config: params.config,
@@ -386,6 +388,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
               `[compaction-diag] start runId=${runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
                 `diagId=${diagId} trigger=${trigger} provider=${provider}/${modelId} ` +
                 `attempt=${attempt} maxAttempts=${maxAttempts} ` +
+                `deadlineMs=${compactionTimeoutMs} deadlineSource=${compactionTimeoutSource} ` +
                 `pre.messages=${preMetrics.messages} pre.historyTextChars=${preMetrics.historyTextChars} ` +
                 `pre.toolResultChars=${preMetrics.toolResultChars} pre.estTokens=${preMetrics.estTokens ?? "unknown"}`,
             );
@@ -423,6 +426,10 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
             // the sanity check below becomes a no-op instead of crashing compaction.
           }
           const activeSession = session;
+          // The caller abort signal cancels an in-flight candidate while the
+          // per-candidate compactionTimeoutMs budget stays independent. Each
+          // candidate is bounded by its own resolveCompactionTimeoutMs watchdog
+          // (#115546 fix); the wrapper imposes no chain-wide deadline.
           const result = await compactWithSafetyTimeout(
             () => {
               setCompactionSafeguardCancelReason(compactionSessionManager, undefined);
@@ -489,6 +496,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
                 `diagId=${diagId} trigger=${trigger} provider=${provider}/${modelId} ` +
                 `attempt=${attempt} maxAttempts=${maxAttempts} outcome=compacted reason=none ` +
                 `durationMs=${Date.now() - compactStartedAt} retrying=false ` +
+                `deadlineMs=${compactionTimeoutMs} deadlineSource=${compactionTimeoutSource} ` +
                 `post.messages=${postMetrics.messages} post.historyTextChars=${postMetrics.historyTextChars} ` +
                 `post.toolResultChars=${postMetrics.toolResultChars} post.estTokens=${postMetrics.estTokens ?? "unknown"} ` +
                 `delta.messages=${postMetrics.messages - preMetrics.messages} ` +

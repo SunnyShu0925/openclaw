@@ -1,4 +1,5 @@
 import type { resolveContextEngine } from "../../../context-engine/registry.js";
+import { resolveContextEngineIsTrustedLegacy } from "../../../context-engine/registry.js";
 import type { buildContextEngineRuntimeSettings } from "../../../context-engine/runtime-settings.js";
 import {
   resolveCompactionSuccessorTranscript,
@@ -8,7 +9,7 @@ import { resolveProcessToolScopeKey } from "../../agent-tools.js";
 import { listActiveProcessSessionReferences } from "../../bash-process-references.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../compaction-runtime-context.js";
 import {
-  compactContextEngineWithSafetyTimeout,
+  compactContextEngineWithSafetyTimeoutInternal,
   resolveCompactionTimeoutMs,
 } from "../compaction-safety-timeout.js";
 import { resolveContextEngineCapabilities } from "../context-engine-capabilities.js";
@@ -144,7 +145,7 @@ export async function compactEmbeddedRunForRecovery(
     tokenBudget: recovery.tokenBudget,
     ...(recovery.trigger === "overflow" ? { degradedReason: "context_overflow" } : {}),
   });
-  const result = await compactContextEngineWithSafetyTimeout(
+  const result = await compactContextEngineWithSafetyTimeoutInternal(
     input.contextEngine,
     {
       sessionId: activeSession.id,
@@ -167,8 +168,12 @@ export async function compactEmbeddedRunForRecovery(
       runtimeContext,
       runtimeSettings,
     },
-    resolveCompactionTimeoutMs(runParams.config),
-    runParams.abortSignal,
+    {
+      pluginTimeoutMs: resolveCompactionTimeoutMs(runParams.config),
+      legacyDelegating: resolveContextEngineIsTrustedLegacy(input.contextEngine),
+      ownsCompaction: input.contextEngine.info.ownsCompaction === true,
+      abortSignal: runParams.abortSignal,
+    },
   );
   return { result, runtimeContext, runtimeSettings };
 }

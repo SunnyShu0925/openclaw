@@ -6,6 +6,7 @@ import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
 import {
   resolveContextEngine,
   resolveContextEngineOwnerPluginId,
+  resolveContextEngineIsTrustedLegacy,
 } from "../../context-engine/registry.js";
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
 import type {
@@ -48,7 +49,7 @@ import {
   resolveCompactionRuntimeSelection,
 } from "./compaction-runtime-preparation.js";
 import {
-  compactContextEngineWithSafetyTimeout,
+  compactContextEngineWithSafetyTimeoutInternal,
   resolveCompactionTimeoutMs,
 } from "./compaction-safety-timeout.js";
 import { resolveContextEngineCompactionSuccessor } from "./compaction-successor.js";
@@ -656,7 +657,7 @@ async function compactResolvedContextEngine(
         let result: Awaited<ReturnType<typeof contextEngine.compact>>;
         try {
           const compactionSessionTarget = buildContextEngineCompactionSessionTarget(params);
-          result = await compactContextEngineWithSafetyTimeout(
+          result = await compactContextEngineWithSafetyTimeoutInternal(
             contextEngine,
             {
               sessionId: params.sessionId,
@@ -686,8 +687,12 @@ async function compactResolvedContextEngine(
               },
               runtimeSettings: contextEngineRuntimeSettings,
             },
-            resolveCompactionTimeoutMs(params.config),
-            params.abortSignal,
+            {
+              pluginTimeoutMs: resolveCompactionTimeoutMs(params.config),
+              legacyDelegating: resolveContextEngineIsTrustedLegacy(contextEngine),
+              ownsCompaction: contextEngine.info.ownsCompaction === true,
+              abortSignal: params.abortSignal,
+            },
           );
         } catch (compactErr) {
           log.warn("context-engine compaction failed", {

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createSessionLockController: vi.fn(),
   resolveSessionWriteLockTargetKey: vi.fn(() => "canonical-lock-key"),
   resolveCompactionTimeoutMs: vi.fn(() => 30_000),
+  resolveCompactionTimeoutProvenance: vi.fn(() => ({ ms: 30_000, source: "default" })),
   resolveSessionWriteLockOptions: vi.fn(() => ({
     timeoutMs: 100,
     staleMs: 200,
@@ -19,6 +20,7 @@ vi.mock("../../session-write-lock.js", () => ({
 }));
 vi.mock("../compaction-safety-timeout.js", () => ({
   resolveCompactionTimeoutMs: mocks.resolveCompactionTimeoutMs,
+  resolveCompactionTimeoutProvenance: mocks.resolveCompactionTimeoutProvenance,
 }));
 vi.mock("./attempt.run-decisions.js", () => ({
   resolveEmbeddedAttemptSessionWriteLockOptions: mocks.resolveSessionWriteLockOptions,

@@ -10,7 +10,10 @@ import type { AgentCompactionMode } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import { ensureContextEnginesInitialized as ensureContextEnginesInitializedImpl } from "../../context-engine/init.js";
-import { resolveContextEngine as resolveContextEngineImpl } from "../../context-engine/registry.js";
+import {
+  resolveContextEngine as resolveContextEngineImpl,
+  resolveContextEngineIsTrustedLegacy,
+} from "../../context-engine/registry.js";
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
 import type { ContextEngine } from "../../context-engine/types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -30,7 +33,7 @@ import {
 } from "../embedded-agent-runner/compact-reasons.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../embedded-agent-runner/compaction-runtime-context.js";
 import {
-  compactContextEngineWithSafetyTimeout,
+  compactContextEngineWithSafetyTimeoutInternal,
   compactWithSafetyTimeout,
   resolveCompactionTimeoutMs,
 } from "../embedded-agent-runner/compaction-safety-timeout.js";
@@ -320,7 +323,7 @@ async function compactCliTranscript(params: {
 
   let compactResult: Awaited<ReturnType<typeof params.contextEngine.compact>>;
   try {
-    compactResult = await compactContextEngineWithSafetyTimeout(
+    compactResult = await compactContextEngineWithSafetyTimeoutInternal(
       params.contextEngine,
       {
         sessionId: params.sessionId,
@@ -337,7 +340,11 @@ async function compactCliTranscript(params: {
         runtimeContext,
         runtimeSettings,
       },
-      resolveCompactionTimeoutMs(params.cfg),
+      {
+        pluginTimeoutMs: resolveCompactionTimeoutMs(params.cfg),
+        legacyDelegating: resolveContextEngineIsTrustedLegacy(params.contextEngine),
+        ownsCompaction: params.contextEngine.info.ownsCompaction === true,
+      },
     );
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

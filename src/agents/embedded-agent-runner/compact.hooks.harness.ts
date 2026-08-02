@@ -819,6 +819,7 @@ export async function loadCompactHooksHarness(): Promise<{
   vi.doMock("../../context-engine/registry.js", () => ({
     resolveContextEngine: resolveContextEngineMock,
     resolveContextEngineOwnerPluginId: vi.fn(() => "lossless-claw"),
+    resolveContextEngineIsTrustedLegacy: vi.fn(() => false),
   }));
 
   vi.doMock("../../process/command-queue.js", () => ({
@@ -931,23 +932,64 @@ export async function loadCompactHooksHarness(): Promise<{
   }));
 
   vi.doMock("./compaction-safety-timeout.js", () => {
+    // Mirror the real wrapper: bound the engine's compact() with the
+    // (mocked) safety timeout and thread the abort signal into its params.
+    // The public signature is positional (engine, params, timeoutMs?, abortSignal?)
+    // — no options bag, no ownership flag (ClawSweeper P1: keep timeout ownership
+    // options internal).
+    const compactContextEngineWithSafetyTimeoutMock = vi.fn(
+      (
+        contextEngine: { compact: (params: Record<string, unknown>) => Promise<unknown> },
+        params: Record<string, unknown>,
+        timeoutMs?: number,
+        abortSignal?: AbortSignal,
+      ) =>
+        compactWithSafetyTimeoutMock(
+          () => contextEngine.compact(abortSignal ? { ...params, abortSignal } : params),
+          timeoutMs,
+          abortSignal ? { abortSignal } : undefined,
+        ),
+    );
     return {
       compactWithSafetyTimeout: compactWithSafetyTimeoutMock,
       resolveCompactionTimeoutMs: vi.fn(() => 30_000),
-      // Mirror the real wrapper: bound the engine's compact() with the
-      // (mocked) safety timeout and thread the abort signal into its params.
-      compactContextEngineWithSafetyTimeout: vi.fn(
+      resolveCompactionTimeoutProvenance: vi.fn(() => ({ ms: 30_000, source: "default" })),
+      compactContextEngineWithSafetyTimeout: compactContextEngineWithSafetyTimeoutMock,
+      // Mirror the unexported internal helper: select the legacy no-chain path
+      // (in the mock harness, equivalent to the bounded path — no real timers)
+      // when the engine is trusted-legacy and does not own compaction; otherwise
+      // forward to the public (mocked) positional wrapper. This keeps the mock
+      // harness aligned with the production internal/internal-call split
+      // (ClawSweeper P1: keep the legacy watchdog bypass private; keep timeout
+      // ownership options internal).
+      compactContextEngineWithSafetyTimeoutInternal: vi.fn(
         (
           contextEngine: { compact: (params: Record<string, unknown>) => Promise<unknown> },
           params: Record<string, unknown>,
-          timeoutMs?: number,
-          abortSignal?: AbortSignal,
-        ) =>
-          compactWithSafetyTimeoutMock(
-            () => contextEngine.compact(abortSignal ? { ...params, abortSignal } : params),
-            timeoutMs,
-            abortSignal ? { abortSignal } : undefined,
-          ),
+          opts: {
+            legacyDelegating?: boolean;
+            ownsCompaction?: boolean;
+            pluginTimeoutMs?: number;
+            abortSignal?: AbortSignal;
+          },
+        ) => {
+          if (opts.legacyDelegating && !opts.ownsCompaction) {
+            return compactWithSafetyTimeoutMock(
+              () =>
+                contextEngine.compact(
+                  opts?.abortSignal ? { ...params, abortSignal: opts.abortSignal } : params,
+                ),
+              undefined,
+              opts?.abortSignal ? { abortSignal: opts.abortSignal } : undefined,
+            );
+          }
+          return compactContextEngineWithSafetyTimeoutMock(
+            contextEngine,
+            params,
+            opts.pluginTimeoutMs,
+            opts.abortSignal,
+          );
+        },
       ),
     };
   });

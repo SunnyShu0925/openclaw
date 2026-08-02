@@ -41,6 +41,7 @@ import {
   prepareCompactionHarnessAuth,
   resolveCompactionRuntimeSelection,
 } from "./compaction-runtime-preparation.js";
+import { resolveCompactionTimeoutProvenance } from "./compaction-safety-timeout.js";
 import { log } from "./logger.js";
 import { resolveModelAsync } from "./model.js";
 import type { EmbeddedAgentCompactResult } from "./types.js";
@@ -114,11 +115,14 @@ export async function prepareDirectCompactionAttempt(
     const detail =
       failureReason === "unknown" ? formatUnknownCompactionReasonDetail(reason) : undefined;
     const detailSuffix = detail ? ` detail=${detail}` : "";
+    const { ms: deadlineMs, source: deadlineSource } = resolveCompactionTimeoutProvenance(
+      params.config,
+    );
     log.warn(
       `[compaction-diag] end runId=${runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
         `diagId=${diagId} trigger=${trigger} provider=${provider}/${modelId} ` +
         `attempt=${attempt} maxAttempts=${maxAttempts} outcome=failed reason=${failureReason}${detailSuffix} ` +
-        `durationMs=${Date.now() - startedAt}`,
+        `durationMs=${Date.now() - startedAt} deadlineMs=${deadlineMs} deadlineSource=${deadlineSource}`,
     );
     return {
       ok: false,

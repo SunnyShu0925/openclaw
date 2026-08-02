@@ -861,6 +861,7 @@ vi.mock("./preemptive-compaction.js", async (importOriginal) => {
 
 vi.mock("../compaction-safety-timeout.js", () => ({
   resolveCompactionTimeoutMs: () => undefined,
+  resolveCompactionTimeoutProvenance: () => undefined,
 }));
 
 vi.mock("../history.js", () => ({
