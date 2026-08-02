@@ -81,6 +81,97 @@ it("normalizes boolean-only pending delivery as transport-only", () => {
   });
 });
 
+it("normalizes and preserves the durable assistant transcript repair backlog", () => {
+  expect(
+    normalizePersistedSessionEntryShape({
+      sessionId: "session-1",
+      updatedAt: 42,
+      pendingTranscriptRepair: [
+        {
+          version: 1,
+          kind: "assistant-turn-repair",
+          text: "recoverable assistant final",
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          agentId: "main",
+          provider: "openai",
+          model: "gpt-5.5",
+          createdAt: 42,
+        },
+        {
+          version: 1,
+          kind: "assistant-turn-repair",
+          text: "second recoverable assistant final",
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          agentId: "main",
+          createdAt: 43,
+        },
+      ],
+    }),
+  ).toMatchObject({
+    pendingTranscriptRepair: [
+      {
+        version: 1,
+        kind: "assistant-turn-repair",
+        text: "recoverable assistant final",
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        agentId: "main",
+        provider: "openai",
+        model: "gpt-5.5",
+        createdAt: 42,
+      },
+      {
+        version: 1,
+        kind: "assistant-turn-repair",
+        text: "second recoverable assistant final",
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        agentId: "main",
+        createdAt: 43,
+      },
+    ],
+  });
+});
+
+it("upgrades a legacy single repair record into the backlog array", () => {
+  expect(
+    normalizePersistedSessionEntryShape({
+      sessionId: "session-1",
+      updatedAt: 42,
+      pendingTranscriptRepair: {
+        version: 1,
+        kind: "assistant-turn-repair",
+        text: "legacy recoverable assistant final",
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        agentId: "main",
+        createdAt: 42,
+      },
+    }),
+  ).toMatchObject({
+    pendingTranscriptRepair: [
+      {
+        version: 1,
+        kind: "assistant-turn-repair",
+        text: "legacy recoverable assistant final",
+        createdAt: 42,
+      },
+    ],
+  });
+});
+
+it("drops malformed assistant transcript repair records", () => {
+  expect(
+    normalizePersistedSessionEntryShape({
+      sessionId: "session-1",
+      updatedAt: 42,
+      pendingTranscriptRepair: [{ kind: "transport-only" }],
+    }),
+  ).not.toHaveProperty("pendingTranscriptRepair");
+});
+
 describe("session path safety", () => {
   it("rejects unsafe session IDs", () => {
     const unsafeSessionIds = [

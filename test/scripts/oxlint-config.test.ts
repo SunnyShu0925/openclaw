@@ -260,6 +260,12 @@ describe("oxlint config", () => {
           "max-lines": ["error", { max: 1200, skipBlankLines: true, skipComments: true }],
         },
       },
+      {
+        files: ["src/agents/agent-command.compaction-rotation.test.ts"],
+        rules: {
+          "max-lines": ["error", { max: 1300, skipBlankLines: true, skipComments: true }],
+        },
+      },
     ]);
   });
 

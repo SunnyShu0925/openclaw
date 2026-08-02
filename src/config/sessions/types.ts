@@ -65,6 +65,30 @@ type PendingFinalDeliveryState = {
   intentId?: string;
 } & ({ kind: "replayable"; text: string } | { kind: "transport-only" });
 
+/**
+ * Durable transcript-repair record: an assistant final that was delivered to
+ * the user but could not be appended to the canonical transcript. Kept
+ * separate from `pendingFinalDelivery` so transport-replay cleanup never drops
+ * the only copy of the missing assistant turn.
+ */
+export type PendingTranscriptRepairState = {
+  version: 1;
+  kind: "assistant-turn-repair";
+  text: string;
+  /** Immutable lifecycle generation of the admitted run that failed to persist. */
+  turnId?: string;
+  provider?: string;
+  model?: string;
+  sessionId: string;
+  sessionKey: string;
+  agentId: string;
+  threadId?: string | number;
+  storePath?: string;
+  createdAt: number;
+  lastAttemptAt?: number;
+  attemptCount?: number;
+};
+
 type FallbackNoticeState = {
   kind: "active";
   selectedModel: string;
@@ -514,6 +538,19 @@ type SessionEntryCore = SessionRestartRecoveryState &
     outputTokens?: number;
     totalTokens?: number;
     pendingFinalDelivery?: PendingFinalDeliveryState;
+    /**
+     * Present when a delivered assistant final failed to reach the canonical
+     * transcript. A later turn best-effort re-appends the stored text and
+     * clears this record once the transcript write succeeds again.
+     */
+    /**
+     * Ordered durable backlog of delivered assistant finals that failed to
+     * reach the canonical transcript. A later turn best-effort re-appends
+     * each stored text and removes it from the backlog once the transcript
+     * write succeeds again. Kept as a list so consecutive storage failures
+     * never overwrite an earlier delivered reply.
+     */
+    pendingTranscriptRepair?: PendingTranscriptRepairState[];
     /**
      * Whether totalTokens reflects a fresh context snapshot for the latest run.
      * Undefined means legacy/unknown freshness; false forces consumers to treat

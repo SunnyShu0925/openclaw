@@ -3,7 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { validateSessionId } from "./paths.js";
-import type { SessionEntry } from "./types.js";
+import type { PendingTranscriptRepairState, SessionEntry } from "./types.js";
 
 // Persisted stores may contain old or malformed ids; reject path-like ids before use.
 function isSafeSessionId(value: unknown): value is string {
@@ -87,6 +87,14 @@ export function projectCanonicalSessionEntryShape(value: Record<string, unknown>
   } else {
     delete canonicalValue.pendingFinalDelivery;
   }
+  const pendingTranscriptRepair = normalizePendingTranscriptRepair(
+    canonicalValue.pendingTranscriptRepair,
+  );
+  if (pendingTranscriptRepair) {
+    canonicalValue.pendingTranscriptRepair = pendingTranscriptRepair;
+  } else {
+    delete canonicalValue.pendingTranscriptRepair;
+  }
   const reason = normalizeOptionalString(fallbackNoticeReason);
   const fallbackNotice =
     normalizeFallbackNotice(canonicalValue.fallbackNotice) ??
@@ -145,6 +153,63 @@ function normalizePendingFinalDelivery(
   }
   const text = normalizeOptionalString(value.text);
   return value.kind === "replayable" && text ? { kind: "replayable", text, ...base } : undefined;
+}
+
+function normalizePendingTranscriptRepair(
+  value: unknown,
+): SessionEntry["pendingTranscriptRepair"] | undefined {
+  const values = Array.isArray(value) ? value : value !== undefined ? [value] : [];
+  if (values.length === 0) {
+    return undefined;
+  }
+  const normalized: NonNullable<SessionEntry["pendingTranscriptRepair"]> = [];
+  for (const item of values) {
+    const record = normalizePendingTranscriptRepairRecord(item);
+    if (record) {
+      normalized.push(record);
+    }
+  }
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizePendingTranscriptRepairRecord(
+  value: unknown,
+): PendingTranscriptRepairState | undefined {
+  if (!isRecord(value) || value.version !== 1 || value.kind !== "assistant-turn-repair") {
+    return undefined;
+  }
+  const text = normalizeOptionalString(value.text);
+  const turnId = normalizeOptionalString(value.turnId);
+  const sessionId = normalizeOptionalString(value.sessionId);
+  const sessionKey = normalizeOptionalString(value.sessionKey);
+  const agentId = normalizeOptionalString(value.agentId);
+  const createdAt = normalizeOptionalTimestamp(value.createdAt);
+  if (!text || !sessionId || !sessionKey || !agentId || createdAt === undefined) {
+    return undefined;
+  }
+  const provider = normalizeOptionalString(value.provider);
+  const model = normalizeOptionalString(value.model);
+  const storePath = normalizeOptionalString(value.storePath);
+  const lastAttemptAt = normalizeOptionalTimestamp(value.lastAttemptAt);
+  const attemptCount = normalizeCount(value.attemptCount);
+  return {
+    version: 1,
+    kind: "assistant-turn-repair",
+    text,
+    ...(turnId ? { turnId } : {}),
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
+    sessionId,
+    sessionKey,
+    agentId,
+    ...(typeof value.threadId === "string" || typeof value.threadId === "number"
+      ? { threadId: value.threadId }
+      : {}),
+    ...(storePath ? { storePath } : {}),
+    createdAt,
+    ...(lastAttemptAt !== undefined ? { lastAttemptAt } : {}),
+    ...(attemptCount !== undefined ? { attemptCount } : {}),
+  };
 }
 
 function normalizeFallbackNotice(value: unknown): SessionEntry["fallbackNotice"] | undefined {

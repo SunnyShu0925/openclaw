@@ -182,6 +182,13 @@ type PersistTextTurnTranscriptParams = {
   sessionCwd: string;
   config: OpenClawConfig;
   embeddedAssistantGapFill?: boolean;
+  /**
+   * When set, the assistant message is appended with this idempotency key and
+   * an exact per-message idempotency lookup (instead of tail-text gap-fill
+   * matching), so a distinct failed turn is never mistaken for an existing
+   * assistant message with identical text.
+   */
+  assistantIdempotencyKey?: string;
   skipAssistantTurn?: boolean;
   assistant: {
     api: string;
@@ -340,11 +347,15 @@ async function persistTextTurnTranscript(
         usage: resolveTranscriptUsage(params.assistant.usage),
         stopReason: "stop",
         timestamp: Date.now(),
+        ...(params.assistantIdempotencyKey
+          ? { idempotencyKey: params.assistantIdempotencyKey }
+          : {}),
       },
+      ...(params.assistantIdempotencyKey ? { idempotencyLookup: "scan-assistant" as const } : {}),
       shouldAppend: async (
         context: import("../../config/sessions/session-accessor.js").SessionTranscriptTurnWriteContext,
       ) => {
-        if (!params.embeddedAssistantGapFill) {
+        if (!params.embeddedAssistantGapFill || params.assistantIdempotencyKey) {
           return true;
         }
         const latest = await readTailAssistantTextFromSessionTranscript(context, {
@@ -444,6 +455,7 @@ export async function persistCliTurnTranscript(params: {
   sessionCwd: string;
   config: OpenClawConfig;
   embeddedAssistantGapFill?: boolean;
+  assistantIdempotencyKey?: string;
   skipUserTurn?: boolean;
   skipAssistantTurn?: boolean;
 }): Promise<PersistTextTurnTranscriptResult> {
@@ -470,6 +482,9 @@ export async function persistCliTurnTranscript(params: {
       sessionCwd: params.sessionCwd,
       config: params.config,
       embeddedAssistantGapFill: gapFill,
+      ...(params.assistantIdempotencyKey
+        ? { assistantIdempotencyKey: params.assistantIdempotencyKey }
+        : {}),
       assistant: {
         api: "cli",
         provider,
@@ -478,7 +493,7 @@ export async function persistCliTurnTranscript(params: {
       },
       skipAssistantTurn: params.skipAssistantTurn,
     });
-  if (!gapFill) {
+  if (!gapFill && !params.assistantIdempotencyKey) {
     return await persist();
   }
 
