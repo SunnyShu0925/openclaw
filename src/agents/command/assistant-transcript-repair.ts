@@ -128,12 +128,17 @@ export async function repairPendingAssistantTranscriptTurn(params: {
 
   const remaining: PendingTranscriptRepairState[] = [];
   for (let index = 0; index < backlog.length; index += 1) {
-    const item = backlog[index]!;
+    let item = backlog[index]!;
     if (freshEntry.sessionId !== item.sessionId) {
-      // The transcript target rotated (compaction/session rollover). Keep the
-      // record; cross-session writes are out of scope for this repair lane.
-      remaining.push(item);
-      continue;
+      // The session entry rotated to a successor under the same logical
+      // session key (compaction/session rollover). Migrate the repair target
+      // to the successor instead of retaining an unreachable record: rotation
+      // keeps the key while replacing the entry's session id, so a
+      // predecessor-scoped record would be skipped on every later pass and the
+      // delivered turn would stay missing from durable history forever. The
+      // successor is where the same logical session's history now lives, so
+      // the recovered turn is appended there under a tested ownership rule.
+      item = { ...item, sessionId: freshEntry.sessionId };
     }
     const syntheticResult: EmbeddedAgentRunResult = {
       payloads: [{ text: item.text }],
