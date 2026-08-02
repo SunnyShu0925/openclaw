@@ -96,6 +96,11 @@ describe("scheduled tool policy provenance", () => {
     const routine = await update(state, created.id, { description: "routine" });
     expect(routine.scheduledToolPolicy).toBeUndefined();
 
+    const payloadRoutine = await update(state, created.id, {
+      payload: { kind: "agentTurn", message: "updated" },
+    });
+    expect(payloadRoutine.scheduledToolPolicy).toBeUndefined();
+
     const reauthorized = await update(
       state,
       created.id,

@@ -72,7 +72,7 @@ describe("cron tool creator cap", () => {
     ).toEqual({ kind: "needs-current-job" });
   });
 
-  it("preserves explicit narrower caps and re-derives stored defaults", () => {
+  it("leaves stored toolsAllow untouched on unrelated payload edits", () => {
     const narrower = readReadyPatch(
       planCronJobUpdatePatch({
         patch: { payload: { message: "updated" } },
@@ -97,20 +97,19 @@ describe("cron tool creator cap", () => {
       }),
     );
 
+    // Neither an explicit stored cap nor a default-stamped cap is echoed into
+    // the unrelated patch: mergeCronPayload preserves the stored value, and
+    // omitting toolsAllow keeps the cron service from treating the routine
+    // edit as an explicit tool-authority mutation.
     expect(narrower).toEqual({
-      payload: { kind: "agentTurn", message: "updated", toolsAllow: ["read"] },
+      payload: { kind: "agentTurn", message: "updated" },
     });
     expect(storedDefault).toEqual({
-      payload: {
-        kind: "agentTurn",
-        message: "updated",
-        toolsAllow: ["read", "automations"],
-        toolsAllowIsDefault: true,
-      },
+      payload: { kind: "agentTurn", message: "updated" },
     });
   });
 
-  it("preserves stored explicit toolsAllow outside the creator snapshot on unrelated payload edits", () => {
+  it("omits stored toolsAllow from unrelated payload edits so the service keeps the cap without reauthorizing", () => {
     const patch = readReadyPatch(
       planCronJobUpdatePatch({
         patch: { payload: { fallbacks: [] } },
@@ -125,18 +124,18 @@ describe("cron tool creator cap", () => {
       }),
     );
 
-    // exec was granted by the operator (CLI) and the cron runtime executes it;
-    // an unrelated payload edit must not re-derive it through the creator cap.
+    // exec was granted by the operator (CLI) and the cron runtime executes it.
+    // The patch must not echo it (that would read as an explicit authority
+    // mutation) nor re-derive it through the incomplete creator snapshot.
     expect(patch).toEqual({
       payload: {
         kind: "agentTurn",
         fallbacks: [],
-        toolsAllow: ["exec", "message", "write"],
       },
     });
   });
 
-  it("preserves stored explicit toolsAllow for script-trigger jobs on unrelated payload edits", () => {
+  it("omits stored toolsAllow for script-trigger jobs on unrelated payload edits", () => {
     const patch = readReadyPatch(
       planCronJobUpdatePatch({
         patch: { payload: { model: "gpt-mini" } },
@@ -156,7 +155,6 @@ describe("cron tool creator cap", () => {
       payload: {
         kind: "script",
         model: "gpt-mini",
-        toolsAllow: ["exec", "write"],
       },
     });
   });

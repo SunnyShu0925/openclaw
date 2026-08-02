@@ -190,24 +190,20 @@ export function planCronJobUpdatePatch(params: {
     nextPayload.kind = payloadKind;
   }
   patch.payload = nextPayload;
-  const storedToolsAllow =
-    isRecord(existingPayload) && existingPayload.toolsAllowIsDefault !== true
-      ? existingPayload.toolsAllow
-      : undefined;
-  if (!writesToolsAllow && Array.isArray(storedToolsAllow)) {
-    // Edits that do not touch toolsAllow must not re-derive stored explicit
-    // scheduled authority through an incomplete creator snapshot. Preserve the
-    // persisted cap verbatim so unrelated payload patches cannot silently strip
-    // tools (e.g. loopback exec) the cron runtime already legitimately runs.
-    nextPayload.toolsAllow = storedToolsAllow;
-    delete nextPayload.toolsAllowIsDefault;
+  if (!writesToolsAllow) {
+    // Routine payload edits must not carry toolsAllow at all: echoing the
+    // stored list makes the cron service classify the update as an explicit
+    // tool-authority mutation (stamping a new scheduled policy on legacy
+    // jobs), and re-deriving it through the incomplete creator snapshot can
+    // strip tools (e.g. loopback exec) the runtime already legitimately runs.
+    // mergeCronPayload preserves the stored cap when the patch omits it, so
+    // the unrelated edit neither strips nor reauthorizes the job.
     return { kind: "ready", patch };
   }
   capCronJobToolsAllow({
     payload: nextPayload,
     trigger,
     creatorToolAllowlist: params.creatorToolAllowlist,
-    defaultToolsAllow: storedToolsAllow,
   });
   return { kind: "ready", patch };
 }
