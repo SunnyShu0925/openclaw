@@ -347,6 +347,14 @@ proc["spawn"]("node", ["server.js"]);
 `,
       expected: { ruleId: "dangerous-exec", severity: "critical" as const },
     },
+    {
+      name: "reports a literal and an aliased child_process call on the same line",
+      source: `
+const { exec: run } = require("child_process");
+exec("node a.js"); run("node b.js");
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
   ] as const;
 
   it("detects suspicious source patterns", () => {
@@ -355,6 +363,19 @@ proc["spawn"]("node", ["server.js"]);
         expectScanRule(testCase.source, testCase.expected);
       });
     }
+  });
+
+  it("reports every aliased child_process call on a line", () => {
+    // Per-occurrence reporting: two proven alias calls on one line must both
+    // be reported, not collapsed to the first one (ClawSweeper P1).
+    const source = `
+const { exec: run } = require("child_process");
+run("node a.js"); run("node b.js");
+`;
+    const findings = scanSource(source, "plugin.ts").filter(
+      (finding) => finding.ruleId === "dangerous-exec",
+    );
+    expect(findings).toHaveLength(2);
   });
 
   it("does not flag child_process import without exec/spawn call", () => {

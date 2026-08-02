@@ -369,23 +369,28 @@ function collectChildProcessBindings(source: string): ChildProcessBindings {
 }
 
 /**
- * Detects a call to a renamed child_process method alias on a single line
+ * Detects every call to a renamed child_process method alias on a single line
  * (e.g. `launch("node", [...])` for `spawn as launch`, `run("...")` for
  * `exec: run`). Only matches stand-alone calls (not member calls like
  * `obj.launch(`) so an unrelated `.launch()` on another object is not flagged.
  * The alias name is already provenance-scoped to child_process by the caller.
+ * Returns one entry per proven alias call occurrence, ordered by position, so
+ * a line with several calls (e.g. `run("a"); run("b")`) reports each of them
+ * instead of only the first (ClawSweeper P1: report every aliased execution
+ * call on a line).
  */
-function matchAliasedChildProcessCall(
+function matchAliasedChildProcessCalls(
   line: string,
   methodAliases: Map<string, string>,
-): string | null {
+): Array<{ alias: string; index: number }> {
+  const calls: Array<{ alias: string; index: number }> = [];
   for (const alias of methodAliases.keys()) {
-    const callMatch = new RegExp(`(?<![\\w.])${escapeRegExp(alias)}\\s*\\(`).exec(line);
-    if (callMatch) {
-      return alias;
+    const pattern = new RegExp(`(?<![\\w.])${escapeRegExp(alias)}\\s*\\(`, "g");
+    for (const callMatch of line.matchAll(pattern)) {
+      calls.push({ alias, index: callMatch.index ?? -1 });
     }
   }
-  return null;
+  return calls.toSorted((a, b) => a.index - b.index);
 }
 
 function escapeRegExp(value: string): string {
@@ -588,7 +593,7 @@ export function scanSource(source: string, filePath: string): SkillScanFinding[]
           rule.pattern.flags.includes("g") ? rule.pattern.flags : `${rule.pattern.flags}g`,
         ),
       );
-      let lineEmittedDangerousExec = false;
+      const literalDangerousExecIndexes = new Set<number>();
       for (const match of matches) {
         if (
           rule.ruleId === "dangerous-exec" &&
@@ -623,7 +628,7 @@ export function scanSource(source: string, filePath: string): SkillScanFinding[]
         });
         acceptedMatches += 1;
         if (rule.ruleId === "dangerous-exec") {
-          lineEmittedDangerousExec = true;
+          literalDangerousExecIndexes.add(match.index ?? -1);
         }
       }
 
@@ -631,9 +636,13 @@ export function scanSource(source: string, filePath: string): SkillScanFinding[]
       // the literal pattern cannot match. Only fires when the alias name was
       // bound from an actual child_process import/require (provenance-scoped),
       // so unrelated functions such as a locally-defined `launch()` do not.
-      if (rule.ruleId === "dangerous-exec" && methodAliases.size > 0 && !lineEmittedDangerousExec) {
-        const aliasMatch = matchAliasedChildProcessCall(line, methodAliases);
-        if (aliasMatch) {
+      // Every proven alias call on the line is reported (per-occurrence
+      // semantics), skipping any position the literal pattern already reported.
+      if (rule.ruleId === "dangerous-exec" && methodAliases.size > 0) {
+        for (const aliasMatch of matchAliasedChildProcessCalls(line, methodAliases)) {
+          if (literalDangerousExecIndexes.has(aliasMatch.index)) {
+            continue;
+          }
           if (acceptedMatches >= MAX_LINE_RULE_FINDINGS_PER_RULE) {
             omittedMatches += 1;
             lastOmittedLine = i + 1;
