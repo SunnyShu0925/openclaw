@@ -91,6 +91,22 @@ const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reac
 const OPENAI_CHATGPT_RESPONSES_ERROR_BODY_MAX_BYTES = 16 * 1024;
 const OPENAI_CHATGPT_RESPONSES_SUCCESS_BODY_MAX_BYTES = 16 * 1024 * 1024;
 
+// `globalThis.WebSocket` (standard WebSocket API) does not support the
+// `ws`-library `handshakeTimeout` option.  Use setTimeout to enforce a
+// connection-phase deadline so a TCP socket that accepts but never completes
+// the HTTP upgrade does not leave the connect promise pending indefinitely.
+// Matches the 30s handshakeTimeout used by Discord, Signal, QQBot, etc.
+const WEBSOCKET_CONNECT_HANDSHAKE_MS = 30_000;
+
+// Decode-boundary byte guard for inbound WebSocket messages. The standard
+// WebSocket API (globalThis.WebSocket) materializes a complete message before
+// dispatching the `message` event and exposes no pre-buffer receive limit, so
+// this guard cannot bound transport frame buffering. What it does bound is the
+// unbounded JSON string materialization and JSON.parse amplification that would
+// otherwise follow from an arbitrarily large message. Matches the gateway's
+// MAX_PAYLOAD_BYTES convention (25 MiB).
+const WEBSOCKET_MESSAGE_MAX_BYTES = 25 * 1024 * 1024;
+
 const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
   "completed",
   "incomplete",
@@ -1042,6 +1058,7 @@ async function connectWebSocket(
   url: string,
   headers: Headers,
   signal?: AbortSignal,
+  handshakeTimeoutMs?: number,
 ): Promise<WebSocketLike> {
   const WebSocketCtor = await getWebSocketConstructor();
   if (!WebSocketCtor) {
@@ -1054,6 +1071,7 @@ async function connectWebSocket(
   return new Promise<WebSocketLike>((resolve, reject) => {
     let settled = false;
     let socket: WebSocketLike;
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
       socket = new WebSocketCtor(url, { headers: wsHeaders });
@@ -1061,6 +1079,27 @@ async function connectWebSocket(
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
+
+    // Handshake deadline applies unconditionally.  When the caller
+    // specifies an explicit timeoutMs it is forwarded as handshakeTimeoutMs
+    // and governs the connection phase; otherwise the 30s default applies.
+    // The timer and the onAbort handler below race cleanly: whichever fires
+    // first settles the promise via the settled flag, and cleanup() prevents
+    // the other from leaking or double-rejecting.
+    const effectiveTimeout = handshakeTimeoutMs ?? WEBSOCKET_CONNECT_HANDSHAKE_MS;
+    connectTimer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      socket.close(1000, "handshake_timeout");
+      reject(
+        new Error(
+          `WebSocket connection to OpenAI Responses API timed out after ${effectiveTimeout}ms`,
+        ),
+      );
+    }, effectiveTimeout);
 
     const onOpen: WebSocketListener = () => {
       if (settled) {
@@ -1099,6 +1138,10 @@ async function connectWebSocket(
     };
 
     const cleanup = () => {
+      if (connectTimer !== undefined) {
+        clearTimeout(connectTimer);
+        connectTimer = undefined;
+      }
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);
@@ -1117,18 +1160,27 @@ async function connectWebSocket(
   });
 }
 
+// Test-only export — allows handshake-timeout tests without exposing the full
+// internal connect path to the public API surface.
+export const connectWebSocketForTest = connectWebSocket;
+
+// Test-only export of the WebSocket response parser so message-size bounds
+// can be exercised without a live connection. Mirrors `connectWebSocketForTest`.
+export const parseWebSocketForTest = parseWebSocket;
+
 async function acquireWebSocket(
   url: string,
   headers: Headers,
   sessionId: string | undefined,
   signal?: AbortSignal,
+  handshakeTimeoutMs?: number,
 ): Promise<{
   socket: WebSocketLike;
   entry?: CachedWebSocketConnection;
   release: (options?: { keep?: boolean }) => void;
 }> {
   if (!sessionId) {
-    const socket = await connectWebSocket(url, headers, signal);
+    const socket = await connectWebSocket(url, headers, signal, handshakeTimeoutMs);
     return {
       socket,
       release: ({ keep } = {}) => {
@@ -1174,7 +1226,7 @@ async function acquireWebSocket(
       };
     }
     if (cached.busy) {
-      const socket = await connectWebSocket(url, headers, signal);
+      const socket = await connectWebSocket(url, headers, signal, handshakeTimeoutMs);
       return {
         socket,
         release: () => {
@@ -1189,7 +1241,7 @@ async function acquireWebSocket(
     }
   }
 
-  const socket = await connectWebSocket(url, headers, signal);
+  const socket = await connectWebSocket(url, headers, signal, handshakeTimeoutMs);
   const entry: CachedWebSocketConnection = { socket, busy: true, createdAt: Date.now() };
   // Install only if the cache still matches what this acquire left behind (the
   // stale entry it removed, or empty for a first connect). A different cached
@@ -1254,7 +1306,10 @@ function extractWebSocketCloseError(event: unknown): Error {
   return new Error("WebSocket closed");
 }
 
-async function decodeWebSocketData(data: unknown): Promise<string | null> {
+async function decodeWebSocketData(
+  data: unknown,
+  preReadArrayBuffer?: ArrayBuffer,
+): Promise<string | null> {
   if (typeof data === "string") {
     return data;
   }
@@ -1267,15 +1322,75 @@ async function decodeWebSocketData(data: unknown): Promise<string | null> {
   }
   if (data && typeof data === "object" && "arrayBuffer" in data) {
     const blobLike = data as { arrayBuffer: () => Promise<ArrayBuffer> };
-    const arrayBuffer = await blobLike.arrayBuffer();
+    const arrayBuffer = preReadArrayBuffer ?? (await blobLike.arrayBuffer());
     return new TextDecoder().decode(new Uint8Array(arrayBuffer));
   }
   return null;
 }
 
+function utf8ByteLength(text: string): number {
+  let length = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code <= 0x7f) {
+      length += 1;
+    } else if (code <= 0x7ff) {
+      length += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        length += 4;
+        i += 1;
+      } else {
+        // Lone surrogate — TextDecoder emits U+FFFD (3 UTF-8 bytes).
+        length += 3;
+      }
+    } else {
+      length += 3;
+    }
+  }
+  return length;
+}
+
+interface WebSocketDataMeasurement {
+  byteLength: number | null;
+  preReadArrayBuffer?: ArrayBuffer;
+}
+
+/**
+ * Measures a WebSocket message payload without materializing extra strings or
+ * buffers. Real Blob payloads expose their byte size as `size` metadata, so an
+ * oversized Blob is rejected without allocating its contents. Only non-standard
+ * blob-likes without `size` require a single read, which is retained and reused
+ * for decoding (no duplicate read). This measurement feeds the decode-boundary
+ * guard in `parseWebSocket`; it runs after the runtime has already materialized
+ * the message for the `message` event.
+ */
+async function measureWebSocketData(data: unknown): Promise<WebSocketDataMeasurement> {
+  if (typeof data === "string") {
+    return { byteLength: utf8ByteLength(data) };
+  }
+  if (data instanceof ArrayBuffer) {
+    return { byteLength: data.byteLength };
+  }
+  if (ArrayBuffer.isView(data)) {
+    return { byteLength: data.byteLength };
+  }
+  if (data && typeof data === "object" && "arrayBuffer" in data) {
+    const blobLike = data as { size?: unknown; arrayBuffer: () => Promise<ArrayBuffer> };
+    if (typeof blobLike.size === "number") {
+      return { byteLength: blobLike.size };
+    }
+    const arrayBuffer = await blobLike.arrayBuffer();
+    return { byteLength: arrayBuffer.byteLength, preReadArrayBuffer: arrayBuffer };
+  }
+  return { byteLength: null };
+}
+
 async function* parseWebSocket(
   socket: WebSocketLike,
   signal?: AbortSignal,
+  maxMessageBytes = WEBSOCKET_MESSAGE_MAX_BYTES,
 ): AsyncGenerator<Record<string, unknown>> {
   const queue: Record<string, unknown>[] = [];
   let pending: (() => void) | null = null;
@@ -1299,7 +1414,27 @@ async function* parseWebSocket(
         if (!event || typeof event !== "object" || !("data" in event)) {
           return;
         }
-        text = await decodeWebSocketData((event as { data?: unknown }).data);
+        // Decode-boundary guard: `event.data` is only available after the
+        // WebSocket runtime has accepted and materialized the full message, so
+        // this bounds JSON decoding (unbounded string/parse memory) rather than
+        // transport frame buffering. The socket is still closed with 1009 so
+        // the peer learns the stream failed.
+        const data = (event as { data?: unknown }).data;
+        const measurement = await measureWebSocketData(data);
+        if (measurement.byteLength !== null && measurement.byteLength > maxMessageBytes) {
+          failed = new CodexProtocolError(
+            `WebSocket message exceeds maximum size of ${maxMessageBytes} bytes (received ${measurement.byteLength})`,
+          );
+          done = true;
+          wake();
+          try {
+            socket.close(1009, "message_too_big");
+          } catch {
+            // Ignore close errors — the stream is already failed.
+          }
+          return;
+        }
+        text = await decodeWebSocketData(data, measurement.preReadArrayBuffer);
         if (!text) {
           return;
         }
@@ -1484,6 +1619,7 @@ async function processWebSocketStream(
     headers,
     options?.sessionId,
     options?.signal,
+    resolveRequestTimeoutMs(options),
   );
   let keepConnection = true;
   const useCachedContext =
