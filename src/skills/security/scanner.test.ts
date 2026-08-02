@@ -315,6 +315,14 @@ proc["exec"]("node server.js");
 `,
       expected: { ruleId: "dangerous-exec", severity: "critical" as const },
     },
+    {
+      name: "detects child_process computed execSync through a namespace alias",
+      source: `
+import cp from "node:child_process";
+cp["execSync"]("node server.js");
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
   ] as const;
 
   it("detects suspicious source patterns", () => {
@@ -369,6 +377,35 @@ re["exec"](value);
     const findings = scanSource(source, "plugin.ts");
     // The bare `exec` import-without-call must not by itself produce a finding,
     // and the computed `re["exec"]()` must remain suppressed.
+    expectRulePresence(findings, "dangerous-exec", false);
+  });
+
+  it("does not flag unrelated computed spawn/execSync calls when child_process is present", () => {
+    // The file imports child_process (so the source-wide context gate passes),
+    // but the computed `worker["spawn"]()` / `bus["execSync"]()` receivers are
+    // NOT proven child_process namespace aliases. Provenance scoping must apply
+    // to every watched execution method, not only `exec`, so these stay benign.
+    const source = `
+import { spawn } from "node:child_process";
+const worker = getWorkerPool();
+worker["spawn"](task);
+const bus = getEventBus();
+bus["execSync"]("echo hi");
+`;
+    const findings = scanSource(source, "plugin.ts");
+    expectRulePresence(findings, "dangerous-exec", false);
+  });
+
+  it("does not flag an unrelated computed spawn on a literal-named non-alias receiver", () => {
+    // `pool` is not a collected namespace alias and not a literal child_process
+    // namespace receiver, so `pool["spawn"]()` must not be attributed to
+    // child_process even though `child_process` appears in the import.
+    const source = `
+import cp from "node:child_process";
+const pool = makePool();
+pool["spawn"](job);
+`;
+    const findings = scanSource(source, "plugin.ts");
     expectRulePresence(findings, "dangerous-exec", false);
   });
 

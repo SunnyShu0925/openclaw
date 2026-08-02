@@ -399,7 +399,7 @@ function isBenignMemberExecMatch(
 ): boolean {
   // group 1 = direct call command, group 2 = computed-member command.
   const command = match[1] ?? match[2];
-  if (command !== "exec") {
+  if (!command) {
     return false;
   }
 
@@ -409,12 +409,15 @@ function isBenignMemberExecMatch(
   }
 
   const charAtMatch = line[matchIndex];
-  // Computed-member call: `obj["exec"](` — the match starts at the opening
-  // quote, so `line.slice(0, matchIndex)` ends at the `[`. Benign unless the
-  // receiver is a proven child_process namespace alias, which preserves the
-  // `RegExp.exec` exclusion (a regex's `re["exec"](value)` receiver is not
-  // child_process-derived) while recognizing `proc["exec"]()` once `proc` is
-  // a proven alias.
+  // Computed-member call: `obj["spawn"](` / `obj["exec"](` — the match starts
+  // at the opening quote, so `line.slice(0, matchIndex)` ends at the `[`.
+  // Provenance is required for EVERY watched execution method, not only
+  // `exec`: an unrelated `worker["spawn"]()` or `bus["execSync"]()` must stay
+  // benign when the receiver is not a proven child_process namespace alias,
+  // even if `child_process` appears elsewhere in the file. Only once the
+  // receiver is a proven alias does the computed call get attributed to
+  // child_process. (This also preserves the `RegExp.exec` exclusion: a regex's
+  // `re["exec"](value)` receiver is not child_process-derived.)
   if (charAtMatch === '"' || charAtMatch === "'") {
     const receiverMatch = line.slice(0, matchIndex).match(/(\w+)\s*\[\s*$/);
     const receiver = receiverMatch?.[1];
@@ -424,9 +427,11 @@ function isBenignMemberExecMatch(
     return true;
   }
 
-  // Direct dot-member call: `obj.exec(` — the match starts at `exec`; benign
-  // unless the receiver is a literal child_process namespace name.
-  if (matchIndex > 0 && line[matchIndex - 1] === ".") {
+  // Direct dot-member call: `obj.exec(` — the match starts at `exec`. This
+  // branch only applies the long-standing `RegExp.exec` exclusion (a regex's
+  // `.exec()` is not child_process-derived); other dot-member execution calls
+  // fall through and are reported as before.
+  if (command === "exec" && matchIndex > 0 && line[matchIndex - 1] === ".") {
     return !/(?:cp|childProcess|child_process)\s*\.\s*exec\s*\(/.test(line);
   }
 
