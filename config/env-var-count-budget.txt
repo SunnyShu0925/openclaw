@@ -2,4 +2,7 @@
 # Ratchet: lower this number when cleanup removes names; never raise it without owner approval.
 # Worker bundle installation no longer injects OPENCLAW_STATE_DIR into a remote npm process.
 # The internal Node-version check no longer contributes a false OPENCLAW_* name.
+# Delegated operator-approval handoff (#116519): the operatorApprovalOnly flag
+# rides on the existing _APPROVAL_ARMED env value ("operator-only") across the
+# native CLI MCP stdio boundary, so no new OPENCLAW_* name is added.
 501

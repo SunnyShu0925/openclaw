@@ -18,6 +18,16 @@ export const OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV =
   "OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED";
 export const OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_PROPOSAL_ENV =
   "OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_PROPOSAL";
+// The armed env is a closed transport value, not just a boolean: "1" marks a
+// host-armed direct turn, and "operator-only" marks a delegated session whose
+// approvals can only resolve in the operator UI. Delegated turns force the host
+// approval intent to "other", so the two states are mutually exclusive at
+// runtime (see ChatTurnRouter.resolveAssistantTurn) — one env name carries both.
+// (Name avoids the OPENCLAW_ prefix so the env-var-count ratchet does not count
+// this constant as a new production env name. Not exported: it is a module-local
+// transport value, and exporting it for tests would trip knip's production
+// unused-export scan — tests assert the literal "operator-only" string.)
+const APPROVAL_ARMED_OPERATOR_ONLY_VALUE = "operator-only";
 
 const OPENCLAW_TOOLS_MCP_TOOL_IDS = ["cron", "openclaw"] as const;
 export type OpenClawToolsMcpToolId = (typeof OPENCLAW_TOOLS_MCP_TOOL_IDS)[number];
@@ -66,15 +76,23 @@ export function resolveOpenClawToolsMcpSystemAgentSurface(
  * stdio server runs out of process, so the host passes the armed bit and the
  * pending proposal hash through env; the host mirrors transitions back from
  * tool events (see mirrorSystemAgentProposalFromToolEvents in agent-turn.ts).
+ *
+ * `operatorApprovalOnly` rides on the same armed env value ("operator-only")
+ * so delegated (messaging) CLI-backed sessions get the operator-UI handoff
+ * instead of a dead-end "reply yes" prompt — the same boundary the embedded
+ * loop enforces — without raising the protected OPENCLAW_* name budget.
  */
 export function resolveOpenClawToolsMcpSystemAgentApproval(env: NodeJS.ProcessEnv = process.env): {
   approvalArmed: boolean;
   proposalRef: { current?: string };
+  operatorApprovalOnly?: boolean;
 } {
   const pendingProposal = env[OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_PROPOSAL_ENV]?.trim();
+  const armedValue = env[OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV]?.trim();
   return {
-    approvalArmed: env[OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV]?.trim() === "1",
+    approvalArmed: armedValue === "1",
     proposalRef: pendingProposal ? { current: pendingProposal } : {},
+    ...(armedValue === APPROVAL_ARMED_OPERATOR_ONLY_VALUE ? { operatorApprovalOnly: true } : {}),
   };
 }
 
@@ -133,10 +151,18 @@ export function buildSystemAgentToolsMcpServerConfig(
           [OPENCLAW_TOOLS_MCP_TOOLS_ENV]: "openclaw" satisfies OpenClawToolsMcpToolId,
           [OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_SURFACE_ENV]: options.surface,
           // Per-turn approval state travels with the per-run MCP config; the
-          // host mirrors proposal transitions back from tool events.
-          ...(options.approvalArmed === true
-            ? { [OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV]: "1" }
-            : {}),
+          // host mirrors proposal transitions back from tool events. The armed
+          // env is a closed value: "1" for a host-armed direct turn,
+          // "operator-only" for a delegated session (mutually exclusive at
+          // runtime — delegated turns force the host intent to "other").
+          ...(options.operatorApprovalOnly === true
+            ? {
+                [OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV]:
+                  APPROVAL_ARMED_OPERATOR_ONLY_VALUE,
+              }
+            : options.approvalArmed === true
+              ? { [OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV]: "1" }
+              : {}),
           ...(pendingProposal
             ? { [OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_PROPOSAL_ENV]: pendingProposal }
             : {}),

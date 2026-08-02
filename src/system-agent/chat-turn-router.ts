@@ -402,6 +402,7 @@ export class ChatTurnRouter {
         overview,
         surface: this.options.surface ?? "cli",
         approvalArmed,
+        ...(this.options.operatorApprovalOnly ? { operatorApprovalOnly: true } : {}),
         session: this.agentSession,
       });
     } catch (error) {
@@ -603,6 +604,20 @@ export class ChatTurnRouter {
     if (isPersistentSystemAgentOperation(recordedOperation) && !this.options.yes) {
       this.clearPendingProposals();
       this.pending = recordedOperation;
+      if (this.options.operatorApprovalOnly) {
+        // Delegated sessions cannot resolve approvals in-chat: record the
+        // refusal (not the interactive "reply yes" plan) and surface the
+        // operator path instead.
+        capture.log(
+          `Refused: ${describeSystemAgentPersistentOperation(recordedOperation)} requires operator approval and was not applied from this chat.`,
+        );
+        const handoff =
+          "This change needs operator approval — it can't be applied from this chat. Approve it in the OpenClaw operator UI, or run the change via the `openclaw` CLI.";
+        return {
+          text: [provenance, capture.read(), handoff].filter(Boolean).join("\n\n"),
+          action: "none",
+        };
+      }
       await executeSystemAgentOperation(recordedOperation, capture, {
         approved: false,
         deps: this.commandDeps(),
