@@ -319,6 +319,8 @@ function collectChildProcessBindings(source: string): ChildProcessBindings {
   const esmNamed = /\bimport\s*\{([^}]*)\}\s*from\s*["'](?:node:)?child_process["']/g;
   // ESM default namespace: import cp from "child_process"
   const esmDefault = /\bimport\s+(\w+)\s+from\s*["'](?:node:)?child_process["']/g;
+  // ESM namespace import: import * as proc from "child_process"
+  const esmNamespace = /\bimport\s*\*\s*as\s+(\w+)\s+from\s*["'](?:node:)?child_process["']/g;
   // CJS destructured: const { exec: run, spawn } = require("child_process")
   const cjsDestructured =
     /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\s*\(\s*["'](?:node:)?child_process["']\s*\)/g;
@@ -355,6 +357,9 @@ function collectChildProcessBindings(source: string): ChildProcessBindings {
   }
   while ((match = esmDefault.exec(source))) {
     namespaceAliases.add(expectDefined(match[1], "child_process esm default namespace"));
+  }
+  while ((match = esmNamespace.exec(source))) {
+    namespaceAliases.add(expectDefined(match[1], "child_process esm namespace import"));
   }
   while ((match = cjsNamespace.exec(source))) {
     namespaceAliases.add(expectDefined(match[1], "child_process cjs namespace"));
@@ -429,10 +434,19 @@ function isBenignMemberExecMatch(
 
   // Direct dot-member call: `obj.exec(` — the match starts at `exec`. This
   // branch only applies the long-standing `RegExp.exec` exclusion (a regex's
-  // `.exec()` is not child_process-derived); other dot-member execution calls
-  // fall through and are reported as before.
+  // `.exec()` is not child_process-derived) and the provenance-aware receiver
+  // check: a dot call through a collected namespace alias (e.g.
+  // `proc.exec(` for `const proc = require("child_process")` or
+  // `import * as proc from "node:child_process"`) is child_process-derived and
+  // must be reported. Other dot-member execution calls fall through and are
+  // reported as before.
   if (command === "exec" && matchIndex > 0 && line[matchIndex - 1] === ".") {
-    return !/(?:cp|childProcess|child_process)\s*\.\s*exec\s*\(/.test(line);
+    const receiverMatch = line.slice(0, matchIndex - 1).match(/(\w+)\s*$/);
+    const receiver = receiverMatch?.[1];
+    if (receiver && (namespaceAliases.has(receiver) || LITERAL_NAMESPACE_RECEIVERS.has(receiver))) {
+      return false;
+    }
+    return true;
   }
 
   return false;

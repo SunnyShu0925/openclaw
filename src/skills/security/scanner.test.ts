@@ -323,6 +323,30 @@ cp["execSync"]("node server.js");
 `,
       expected: { ruleId: "dangerous-exec", severity: "critical" as const },
     },
+    {
+      name: "detects child_process direct exec through a CJS namespace alias",
+      source: `
+const proc = require("child_process");
+proc.exec("node server.js");
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
+    {
+      name: "detects child_process direct exec through an ESM namespace import",
+      source: `
+import * as proc from "node:child_process";
+proc.exec("node server.js");
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
+    {
+      name: "detects child_process computed spawn through an ESM namespace import",
+      source: `
+import * as proc from "node:child_process";
+proc["spawn"]("node", ["server.js"]);
+`,
+      expected: { ruleId: "dangerous-exec", severity: "critical" as const },
+    },
   ] as const;
 
   it("detects suspicious source patterns", () => {
