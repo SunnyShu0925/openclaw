@@ -4,6 +4,7 @@ import type { AgentPlanStep } from "../channels/streaming.js";
 import type { ImageContent } from "../llm/types.js";
 import type { MediaFact } from "../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
+import type { CliBackendExecutionMode } from "../plugins/cli-backend.types.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
 import type { ReplyPayload } from "./reply-payload.js";
 import type { TypingController } from "./reply/typing.js";
@@ -151,6 +152,13 @@ export type GetReplyOptions = {
   disableTools?: boolean;
   /** Runtime tool allow-list for this turn. Empty means no tools. */
   toolsAllow?: string[];
+  /**
+   * CLI execution mode for this turn. Side questions are one-shot background
+   * answers and must not reuse or mutate normal agent sessions; the CLI
+   * preparation layer requires this mode for tool-disabled runs on
+   * always-on/selectable native-tool backends.
+   */
+  executionMode?: CliBackendExecutionMode;
   /** If true, include the heartbeat response tool for structured heartbeat outcomes. */
   enableHeartbeatTool?: boolean;
   /** If true, keep the heartbeat response tool available even under narrow tool profiles. */

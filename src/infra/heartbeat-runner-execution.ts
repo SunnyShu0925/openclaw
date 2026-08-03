@@ -664,7 +664,9 @@ export async function invokeHeartbeatAgentRun(
     suppressToolErrorWarnings: false,
     ...(usesHeartbeatResponseTool ? { enableHeartbeatTool: true, forceHeartbeatTool: true } : {}),
     ...(usesHeartbeatResponseTool ? { sourceReplyDeliveryMode: "message_tool_only" as const } : {}),
-    ...(hasDueCommitments ? { disableTools: true, skillFilter: [] } : {}),
+    ...(hasDueCommitments
+      ? { disableTools: true, skillFilter: [], executionMode: "side-question" as const }
+      : {}),
     ...(heartbeatWakeAbortSignal ? { abortSignal: heartbeatWakeAbortSignal } : {}),
     // Heartbeat timeout is a per-run override so user turns keep the global default.
     timeoutOverrideSeconds: resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),

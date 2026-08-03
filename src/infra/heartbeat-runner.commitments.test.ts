@@ -190,7 +190,7 @@ describe("runHeartbeatOnce commitments", () => {
             OriginatingTo?: string;
             SessionKey?: string;
           },
-          opts?: { disableTools?: boolean; skillFilter?: string[] },
+          opts?: { disableTools?: boolean; skillFilter?: string[]; executionMode?: string },
         ) => {
           expect(ctx.Body).toContain("Due inferred follow-up commitments");
           expect(ctx.Body).toContain("How did the interview go?");
@@ -203,6 +203,7 @@ describe("runHeartbeatOnce commitments", () => {
           );
           expect(opts?.disableTools).toBe(true);
           expect(opts?.skillFilter).toStrictEqual([]);
+          expect(opts?.executionMode).toBe("side-question");
           return { text: params?.replyText ?? "How did the interview go?" };
         },
       );
@@ -263,7 +264,7 @@ describe("runHeartbeatOnce commitments", () => {
         replySpy.mockImplementation(
           async (
             ctx: { Body?: string; OriginatingChannel?: string; OriginatingTo?: string },
-            opts?: { disableTools?: boolean; skillFilter?: string[] },
+            opts?: { disableTools?: boolean; skillFilter?: string[]; executionMode?: string },
           ) => {
             expect(ctx.Body).toContain("Run the following periodic tasks");
             expect(ctx.Body).toContain("- deployment-status: Check deployment status");
@@ -537,6 +538,7 @@ describe("runHeartbeatOnce commitments", () => {
           expect(ctx.OriginatingTo).toBe("155462274");
           expect(opts?.disableTools).toBe(true);
           expect(opts?.skillFilter).toStrictEqual([]);
+          expect(opts?.executionMode).toBe("side-question");
           return { text: "How did the interview go?" };
         });
 
@@ -1002,7 +1004,7 @@ tasks:
               OriginatingChannel?: string;
               OriginatingTo?: string;
             },
-            opts?: { disableTools?: boolean; skillFilter?: string[] },
+            opts?: { disableTools?: boolean; skillFilter?: string[]; executionMode?: string },
           ) => {
             expect(ctx.Body).toContain("Due inferred follow-up commitments");
             expect(ctx.Body).toContain("How did the interview go?");
@@ -1015,6 +1017,7 @@ tasks:
             expect(ctx.OriginatingTo).toBe("155462274");
             expect(opts?.disableTools).toBe(true);
             expect(opts?.skillFilter).toStrictEqual([]);
+            expect(opts?.executionMode).toBe("side-question");
             expect(resolveHeartbeatRunScope(opts)).toBe("commitment-only");
             return { text: "How did the interview go?" };
           },

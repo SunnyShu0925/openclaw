@@ -43,6 +43,38 @@ afterEach(() => {
 });
 
 describe("runCliAgentWithLifecycle", () => {
+  it("forwards executionMode and disableTools through to the CLI runner", async () => {
+    cliDispatchState.runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 1 },
+    });
+
+    await runCliAgentWithLifecycle({
+      runId: "run-mode-forward",
+      provider: "claude-cli",
+      runParams: {
+        sessionId: "session-1",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp/workspace",
+        prompt: "deliver commitment",
+        provider: "claude-cli",
+        model: "claude",
+        thinkLevel: "high",
+        timeoutMs: 1_000,
+        runId: "run-mode-forward",
+        disableTools: true,
+        executionMode: "side-question",
+      },
+    });
+
+    expect(cliDispatchState.runCliAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        disableTools: true,
+        executionMode: "side-question",
+      }),
+    );
+  });
+
   it("bridges typed CLI plan events", async () => {
     cliDispatchState.runCliAgentMock.mockImplementationOnce(async (params: { runId: string }) => {
       emitAgentEvent({
