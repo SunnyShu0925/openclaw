@@ -72,21 +72,12 @@ type PendingFinalDeliveryState = {
  * the only copy of the missing assistant turn.
  */
 export type PendingTranscriptRepairState = {
-  version: 1;
-  kind: "assistant-turn-repair";
+  /** Stable identity for retry-safe transcript insertion. */
+  id: string;
   text: string;
-  /** Immutable lifecycle generation of the admitted run that failed to persist. */
-  turnId?: string;
   provider?: string;
   model?: string;
-  sessionId: string;
-  sessionKey: string;
-  agentId: string;
-  threadId?: string | number;
-  storePath?: string;
   createdAt: number;
-  lastAttemptAt?: number;
-  attemptCount?: number;
 };
 
 type FallbackNoticeState = {
@@ -540,10 +531,9 @@ type SessionEntryCore = SessionRestartRecoveryState &
     pendingFinalDelivery?: PendingFinalDeliveryState;
     /**
      * Ordered durable backlog of delivered assistant finals that failed to
-     * reach the canonical transcript. A later turn best-effort re-appends
-     * each stored text and removes it from the backlog once the transcript
-     * write succeeds again. Kept as a list so consecutive storage failures
-     * never overwrite an earlier delivered reply.
+     * reach the canonical transcript. Session admission restores each item
+     * before another turn can extend that transcript. Kept as a list so
+     * independently admitted writers never overwrite an earlier reply.
      */
     pendingTranscriptRepair?: PendingTranscriptRepairState[];
     /**

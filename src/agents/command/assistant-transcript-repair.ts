@@ -1,56 +1,48 @@
-import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
+import { randomUUID } from "node:crypto";
 import type { SessionEntry, PendingTranscriptRepairState } from "../../config/sessions/types.js";
-/**
- * Durable repair for assistant finals that were delivered to the user but
- * failed to reach the canonical transcript.
- *
- * `persistCliTurnTranscript` failures are intentionally non-fatal for the
- * turn (the reply is still delivered), but the only durable copy of the final
- * used to be the `pendingFinalDelivery` marker — which is cleared after a
- * successful send. These helpers keep a separate `pendingTranscriptRepair`
- * record on the session entry so the missing assistant turn can be re-appended
- * once the transcript writer works again, without conflating transport replay
- * with transcript repair.
- */
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
-import { loadAttemptExecutionRuntime } from "./runtime-loaders.js";
+import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.js";
+import { loadTranscriptAppendRuntime } from "./runtime-loaders.js";
 import { persistSessionEntry } from "./session-helpers.js";
 
 const log = createSubsystemLogger("agents/assistant-transcript-repair");
 
 type AssistantTranscriptRepairContext = {
-  sessionId: string;
   sessionKey: string;
   sessionEntry: SessionEntry | undefined;
   sessionStore?: Record<string, SessionEntry>;
   storePath: string;
   sessionAgentId: string;
-  threadId?: string | number;
-  sessionCwd: string;
   config: OpenClawConfig;
 };
 
-/**
- * Persists a best-effort repair record for an assistant final that could not
- * be appended to the transcript. Never throws: a failed repair-record write
- * only degrades back to today's log-and-continue behavior.
- */
+const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+  },
+} as const;
+
+/** Records a final whose canonical transcript append failed. */
 export async function persistAssistantTranscriptRepairRecord(params: {
   context: AssistantTranscriptRepairContext;
   replyText: string;
-  turnId?: string;
   provider?: string;
   model?: string;
   runOwnedSessionId: string;
 }): Promise<void> {
-  const { context, replyText, turnId, provider, model, runOwnedSessionId } = params;
-  if (!replyText.trim()) {
-    return;
-  }
-  if (!context.sessionStore || context.sessionKey.trim() === "") {
+  const { context, replyText, provider, model, runOwnedSessionId } = params;
+  if (!replyText.trim() || !context.sessionStore || !context.sessionKey.trim()) {
     return;
   }
   const now = Date.now();
@@ -58,30 +50,11 @@ export async function persistAssistantTranscriptRepairRecord(params: {
   if (!existing) {
     return;
   }
-  const backlog = existing.pendingTranscriptRepair ?? [];
-  if (
-    turnId &&
-    backlog.some(
-      (record) =>
-        record.sessionKey === context.sessionKey &&
-        record.sessionId === context.sessionId &&
-        record.turnId === turnId,
-    )
-  ) {
-    return;
-  }
   const nextRepair: PendingTranscriptRepairState = {
-    version: 1,
-    kind: "assistant-turn-repair",
+    id: randomUUID(),
     text: replyText,
-    ...(turnId ? { turnId } : {}),
     ...(provider?.trim() ? { provider: provider.trim() } : {}),
     ...(model?.trim() ? { model: model.trim() } : {}),
-    sessionId: context.sessionId,
-    sessionKey: context.sessionKey,
-    agentId: context.sessionAgentId,
-    ...(context.threadId !== undefined ? { threadId: context.threadId } : {}),
-    ...(context.storePath ? { storePath: context.storePath } : {}),
     createdAt: now,
   };
   try {
@@ -90,7 +63,11 @@ export async function persistAssistantTranscriptRepairRecord(params: {
       sessionKey: context.sessionKey,
       storePath: context.storePath,
       initialEntry: existing,
-      entry: { ...existing, pendingTranscriptRepair: [...backlog, nextRepair], updatedAt: now },
+      entry: {
+        ...existing,
+        pendingTranscriptRepair: [...(existing.pendingTranscriptRepair ?? []), nextRepair],
+        updatedAt: now,
+      },
       shouldPersist: (current) =>
         current?.sessionId === runOwnedSessionId && current.abortedLastRun !== true,
     });
@@ -102,106 +79,72 @@ export async function persistAssistantTranscriptRepairRecord(params: {
 }
 
 /**
- * Best-effort re-append of a previously delivered assistant final that never
- * reached the transcript. Clears the repair record on success; on failure it
- * keeps the record for a later attempt and never blocks the current turn.
+ * Restores missing assistant finals before another turn can observe or extend
+ * the transcript. Append failures are an admission barrier: continuing would
+ * give the model incomplete history and make the eventual append out of order.
  */
-export async function repairPendingAssistantTranscriptTurn(params: {
+export async function repairPendingAssistantTranscriptTurns(params: {
   context: AssistantTranscriptRepairContext;
 }): Promise<void> {
   const { context } = params;
   if (!context.sessionStore || !context.sessionKey) {
     return;
   }
-  const freshEntry =
-    context.sessionStore[context.sessionKey] ??
-    loadSessionEntryReadOnly({
-      storePath: context.storePath,
-      sessionKey: context.sessionKey,
-      readConsistency: "latest",
-      clone: false,
-    });
-  const backlog = freshEntry?.pendingTranscriptRepair;
-  if (!backlog || backlog.length === 0) {
+  const entry = context.sessionStore[context.sessionKey] ?? context.sessionEntry;
+  const backlog = entry?.pendingTranscriptRepair;
+  if (!entry || !backlog?.length) {
     return;
   }
 
-  const remaining: PendingTranscriptRepairState[] = [];
-  for (let index = 0; index < backlog.length; index += 1) {
-    let item = backlog[index]!;
-    if (freshEntry.sessionId !== item.sessionId) {
-      // The session entry rotated to a successor under the same logical
-      // session key (compaction/session rollover). Migrate the repair target
-      // to the successor instead of retaining an unreachable record: rotation
-      // keeps the key while replacing the entry's session id, so a
-      // predecessor-scoped record would be skipped on every later pass and the
-      // delivered turn would stay missing from durable history forever. The
-      // successor is where the same logical session's history now lives, so
-      // the recovered turn is appended there under a tested ownership rule.
-      item = { ...item, sessionId: freshEntry.sessionId };
-    }
-    const syntheticResult: EmbeddedAgentRunResult = {
-      payloads: [{ text: item.text }],
-      meta: {
-        durationMs: 1,
-        finalAssistantVisibleText: item.text,
-        agentMeta: {
-          sessionId: item.sessionId,
-          provider: item.provider ?? "",
-          model: item.model ?? "",
-        },
-      },
-    };
+  const { appendExactAssistantMessageToSessionTranscript } = await loadTranscriptAppendRuntime();
+  const remaining = [...backlog];
+  while (remaining.length > 0) {
+    const item = remaining[0]!;
+    let result: Awaited<ReturnType<typeof appendExactAssistantMessageToSessionTranscript>>;
     try {
-      const { persistCliTurnTranscript } = await loadAttemptExecutionRuntime();
-      const transcriptResult = await persistCliTurnTranscript({
-        body: "",
-        result: syntheticResult,
-        sessionId: item.sessionId,
-        sessionKey: item.sessionKey,
-        sessionEntry: freshEntry,
-        sessionStore: context.sessionStore,
-        storePath: item.storePath ?? context.storePath,
-        sessionAgentId: item.agentId,
-        threadId: item.threadId ?? context.threadId,
-        sessionCwd: context.sessionCwd,
+      result = await appendExactAssistantMessageToSessionTranscript({
+        agentId: context.sessionAgentId,
+        sessionKey: context.sessionKey,
+        expectedSessionId: entry.sessionId,
+        storePath: context.storePath,
         config: context.config,
-        // Exact per-turn idempotency (not tail-text gap-fill): a distinct
-        // failed turn must be re-appended even when an earlier persisted
-        // assistant message has identical text.
-        embeddedAssistantGapFill: false,
-        assistantIdempotencyKey: `transcript-repair:${item.sessionId}:${item.turnId ?? item.createdAt}`,
-        skipAssistantTurn: false,
-        skipUserTurn: true,
+        updateMode: "file-only",
+        idempotencyKey: `transcript-repair:${item.id}`,
+        beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: item.text }],
+          api: "cli",
+          provider: item.provider ?? "cli",
+          model: item.model ?? "default",
+          usage: EMPTY_USAGE,
+          stopReason: "stop",
+          timestamp: item.createdAt,
+        },
       });
-      if (transcriptResult.kind === "session-rebound") {
-        remaining.push(item);
-        continue;
-      }
-      const current = context.sessionStore[context.sessionKey];
-      if (current?.sessionId !== item.sessionId) {
-        remaining.push(item);
-        continue;
-      }
-      log.info(
-        `Re-appended missing assistant transcript turn for ${context.sessionKey} after storage recovery`,
-      );
     } catch (error) {
-      remaining.push({
-        ...item,
-        lastAttemptAt: Date.now(),
-        attemptCount: (item.attemptCount ?? 0) + 1,
-      });
-      remaining.push(...backlog.slice(index + 1));
       log.warn(
-        `Assistant transcript repair retry failed for ${context.sessionKey}: ${formatErrorMessage(error)}`,
+        `Assistant transcript repair failed for ${context.sessionKey}: ${formatErrorMessage(error)}`,
       );
-      break;
+      throw new Error("Previous assistant reply is still pending transcript recovery; retry.", {
+        cause: error,
+      });
+    }
+
+    if (!result.ok && result.code !== "blocked") {
+      log.warn(`Assistant transcript repair failed for ${context.sessionKey}: ${result.reason}`);
+      throw new Error("Previous assistant reply is still pending transcript recovery; retry.");
+    }
+    remaining.shift();
+    if (result.ok) {
+      log.info(`Re-appended missing assistant transcript turn for ${context.sessionKey}`);
+    } else {
+      log.warn(`Dropped blocked assistant transcript repair for ${context.sessionKey}`);
     }
   }
 
   const current = context.sessionStore[context.sessionKey];
-  if (!current) {
+  if (!current || current.sessionId !== entry.sessionId) {
     return;
   }
   try {
@@ -210,13 +153,13 @@ export async function repairPendingAssistantTranscriptTurn(params: {
       sessionKey: context.sessionKey,
       storePath: context.storePath,
       initialEntry: current,
-      entry: {
-        ...current,
-        pendingTranscriptRepair: remaining.length > 0 ? remaining : undefined,
-        updatedAt: Date.now(),
-      },
+      entry: { ...current, pendingTranscriptRepair: undefined, updatedAt: Date.now() },
+      shouldPersist: (latest) => latest?.sessionId === entry.sessionId,
     });
-  } catch {
-    // A failed backlog cleanup must not throw; the next turn retries.
+  } catch (error) {
+    // The exact append key makes a later retry safe after cleanup failure.
+    log.warn(
+      `Failed to clear assistant transcript repair record for ${context.sessionKey}: ${formatErrorMessage(error)}`,
+    );
   }
 }

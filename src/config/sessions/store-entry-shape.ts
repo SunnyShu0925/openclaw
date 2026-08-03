@@ -174,40 +174,23 @@ function normalizePendingTranscriptRepair(
 function normalizePendingTranscriptRepairRecord(
   value: unknown,
 ): PendingTranscriptRepairState | undefined {
-  if (!isRecord(value) || value.version !== 1 || value.kind !== "assistant-turn-repair") {
+  if (!isRecord(value)) {
     return undefined;
   }
+  const id = normalizeOptionalString(value.id);
   const text = normalizeOptionalString(value.text);
-  const turnId = normalizeOptionalString(value.turnId);
-  const sessionId = normalizeOptionalString(value.sessionId);
-  const sessionKey = normalizeOptionalString(value.sessionKey);
-  const agentId = normalizeOptionalString(value.agentId);
   const createdAt = normalizeOptionalTimestamp(value.createdAt);
-  if (!text || !sessionId || !sessionKey || !agentId || createdAt === undefined) {
+  if (!id || !text || createdAt === undefined) {
     return undefined;
   }
   const provider = normalizeOptionalString(value.provider);
   const model = normalizeOptionalString(value.model);
-  const storePath = normalizeOptionalString(value.storePath);
-  const lastAttemptAt = normalizeOptionalTimestamp(value.lastAttemptAt);
-  const attemptCount = normalizeCount(value.attemptCount);
   return {
-    version: 1,
-    kind: "assistant-turn-repair",
+    id,
     text,
-    ...(turnId ? { turnId } : {}),
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
-    sessionId,
-    sessionKey,
-    agentId,
-    ...(typeof value.threadId === "string" || typeof value.threadId === "number"
-      ? { threadId: value.threadId }
-      : {}),
-    ...(storePath ? { storePath } : {}),
     createdAt,
-    ...(lastAttemptAt !== undefined ? { lastAttemptAt } : {}),
-    ...(attemptCount !== undefined ? { attemptCount } : {}),
   };
 }
 

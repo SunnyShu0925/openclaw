@@ -17,10 +17,7 @@ import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import type { AgentRunSessionTarget } from "../run-session-target.js";
 import { throwAgentRunRestartAbortReason } from "../run-termination.js";
-import {
-  persistAssistantTranscriptRepairRecord,
-  repairPendingAssistantTranscriptTurn,
-} from "./assistant-transcript-repair.js";
+import { persistAssistantTranscriptRepairRecord } from "./assistant-transcript-repair.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
 import type { EmbeddedAgentAttempt } from "./run-embedded-attempt.js";
 import {
@@ -180,29 +177,6 @@ export async function finalizeEmbeddedAgentCommand(params: {
       transcriptPersistenceRunner === "embedded" ||
       (transcriptPersistenceRunner === undefined &&
         Boolean(result.meta.finalAssistantVisibleText?.trim()));
-    if (
-      sessionStore &&
-      sessionKey &&
-      !params.suppressVisibleSessionEffects &&
-      !sessionReboundDuringRun &&
-      (transcriptPersistenceRunner === "cli" || embeddedAssistantGapFill)
-    ) {
-      // Best-effort recovery for a delivered assistant final that failed to
-      // reach the transcript in an earlier turn. Never blocks this turn.
-      await repairPendingAssistantTranscriptTurn({
-        context: {
-          sessionId: effectiveSessionId,
-          sessionKey: internalSessionTarget?.sessionKey ?? sessionKey,
-          sessionEntry,
-          sessionStore,
-          storePath: internalSessionTarget?.storePath ?? storePath,
-          sessionAgentId: internalSessionTarget?.agentId ?? sessionAgentId,
-          threadId: params.opts.threadId,
-          sessionCwd: effectiveCwd,
-          config: cfg,
-        },
-      });
-    }
     let persistedCliTurnTranscript = false;
     if (
       !sessionReboundDuringRun &&
@@ -248,18 +222,14 @@ export async function finalizeEmbeddedAgentCommand(params: {
         ) {
           await persistAssistantTranscriptRepairRecord({
             context: {
-              sessionId: effectiveSessionId,
               sessionKey: internalSessionTarget?.sessionKey ?? sessionKey ?? effectiveSessionId,
               sessionEntry: internalSessionTarget?.sessionEntry ?? sessionEntry,
               sessionStore,
               storePath: internalSessionTarget?.storePath ?? storePath,
               sessionAgentId: internalSessionTarget?.agentId ?? sessionAgentId,
-              threadId: params.opts.threadId,
-              sessionCwd: effectiveCwd,
               config: cfg,
             },
-            replyText: result.meta.finalAssistantVisibleText?.trim() ?? "",
-            turnId: lifecycleGeneration,
+            replyText: attemptExecutionRuntime.resolveCliTranscriptReplyText(result),
             provider: result.meta.agentMeta?.provider,
             model: result.meta.agentMeta?.model,
             runOwnedSessionId,

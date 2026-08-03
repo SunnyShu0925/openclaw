@@ -5,22 +5,24 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import {
   listSessionEntries,
   loadTranscriptEvents,
 } from "../../config/sessions/session-accessor.js";
+import type { appendExactAssistantMessageToSessionTranscript } from "../../config/sessions/transcript.runtime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
 import type { loadManifestModelCatalog } from "../model-catalog.js";
 import type { persistCliTurnTranscript } from "./attempt-execution.js";
 import type { runAgentAttempt } from "./attempt-execution.runtime.js";
+import type { persistSessionEntry } from "./session-helpers.js";
 
 type ProviderModelNormalizationParams = { provider: string; context: { modelId: string } };
 type LoadManifestModelCatalogParams = Parameters<typeof loadManifestModelCatalog>[0];
 type RunAgentAttempt = typeof runAgentAttempt;
 type PersistCliTurnTranscript = typeof persistCliTurnTranscript;
+type AppendExactAssistantMessage = typeof appendExactAssistantMessageToSessionTranscript;
+type PersistSessionEntry = typeof persistSessionEntry;
 type CliCompactionParams = {
   sessionEntry?: SessionEntry;
   sessionKey: string;
@@ -44,6 +46,10 @@ const state = vi.hoisted(() => ({
   emitAgentEventMock: vi.fn(),
   persistCliTurnTranscriptMock: vi.fn(),
   persistCliTurnTranscriptReal: undefined as PersistCliTurnTranscript | undefined,
+  appendExactAssistantMessageMock: vi.fn<AppendExactAssistantMessage>(),
+  appendExactAssistantMessageReal: undefined as AppendExactAssistantMessage | undefined,
+  persistSessionEntryMock: vi.fn<PersistSessionEntry>(),
+  persistSessionEntryReal: undefined as PersistSessionEntry | undefined,
   deliveryFreshEntries: [] as Array<SessionEntry | undefined>,
 }));
 
@@ -179,6 +185,33 @@ vi.mock("./attempt-execution.runtime.js", async () => {
   };
 });
 
+vi.mock("../../config/sessions/transcript.runtime.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../config/sessions/transcript.runtime.js")
+  >("../../config/sessions/transcript.runtime.js");
+  return {
+    ...actual,
+    appendExactAssistantMessageToSessionTranscript: (
+      ...args: Parameters<typeof actual.appendExactAssistantMessageToSessionTranscript>
+    ) => {
+      state.appendExactAssistantMessageReal = actual.appendExactAssistantMessageToSessionTranscript;
+      return state.appendExactAssistantMessageMock(...args);
+    },
+  };
+});
+
+vi.mock("./session-helpers.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("./session-helpers.js")>("./session-helpers.js");
+  return {
+    ...actual,
+    persistSessionEntry: (...args: Parameters<typeof actual.persistSessionEntry>) => {
+      state.persistSessionEntryReal = actual.persistSessionEntry;
+      return state.persistSessionEntryMock(...args);
+    },
+  };
+});
+
 vi.mock("./cli-compaction.js", () => ({
   runCliTurnCompactionLifecycle: (params: CliCompactionParams) =>
     state.runCliTurnCompactionLifecycleMock(params),
@@ -217,6 +250,16 @@ beforeEach(async () => {
   state.persistCliTurnTranscriptMock.mockImplementation(
     async (...args: Parameters<PersistCliTurnTranscript>) =>
       state.persistCliTurnTranscriptReal?.(...args),
+  );
+  state.appendExactAssistantMessageMock.mockImplementation(
+    async (...args: Parameters<AppendExactAssistantMessage>) =>
+      state.appendExactAssistantMessageReal?.(...args) ?? {
+        ok: false,
+        reason: "missing real transcript append",
+      },
+  );
+  state.persistSessionEntryMock.mockImplementation(
+    async (...args: Parameters<PersistSessionEntry>) => state.persistSessionEntryReal?.(...args),
   );
   state.deliveryFreshEntries = [];
   state.deliverAgentCommandResultMock.mockImplementation(
@@ -258,14 +301,12 @@ afterEach(async () => {
 
 function makeResult(params: {
   sessionId: string;
-  sessionFile?: string;
-  text: string;
-  compactionCount?: number;
+  text?: string;
   runner?: "cli" | "embedded";
   payloads?: EmbeddedAgentRunResult["payloads"];
 }): EmbeddedAgentRunResult {
   return {
-    payloads: params.payloads ?? [{ text: params.text }],
+    payloads: params.payloads ?? (params.text ? [{ text: params.text }] : []),
     meta: {
       durationMs: 1,
       stopReason: "end_turn",
@@ -275,13 +316,11 @@ function makeResult(params: {
         winnerProvider: "openai",
         winnerModel: "gpt-5.5",
       },
-      finalAssistantVisibleText: params.text,
+      ...(params.text ? { finalAssistantVisibleText: params.text } : {}),
       agentMeta: {
         sessionId: params.sessionId,
-        ...(params.sessionFile ? { sessionFile: params.sessionFile } : {}),
         provider: "openai",
         model: "gpt-5.5",
-        ...(params.compactionCount ? { compactionCount: params.compactionCount } : {}),
       },
     },
   };
@@ -304,6 +343,23 @@ async function readSessionMessages(params: {
     .map((entry) => entry.message);
 }
 
+async function readMessageSequence(params: {
+  agentId: string;
+  sessionId: string;
+  storePath: string;
+}): Promise<Array<{ role?: string; text: string }>> {
+  return (await readSessionMessages(params)).map((message) => {
+    const value = message as {
+      role?: string;
+      content?: string | Array<{ type?: string; text?: string }>;
+    };
+    const text = Array.isArray(value.content)
+      ? value.content.map((part) => part.text ?? "").join("")
+      : (value.content ?? "");
+    return { role: value.role, text };
+  });
+}
+
 function requireStorePath(): string {
   const storePath = state.cfg?.session?.store;
   if (!storePath) {
@@ -319,226 +375,119 @@ function findStoredSessionEntry(sessionKey: string): SessionEntry | undefined {
 }
 
 describe("assistant transcript repair", () => {
-  it("records a durable transcript-repair marker when transcript persistence fails after delivery", async () => {
+  it("records the canonical payload fallback when transcript persistence fails", async () => {
     const sessionId = "transcript-write-failure";
     const sessionKey = `agent:main:explicit:${sessionId}`;
-    const text = "delivered reply that failed transcript persistence";
-    state.runAgentAttemptMock.mockResolvedValueOnce(makeResult({ sessionId, text, runner: "cli" }));
-    state.persistCliTurnTranscriptMock.mockRejectedValueOnce(
-      new Error("simulated transcript table corruption"),
-    );
-
-    const result = await agentCommand({
-      message: "first prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-      channel: "discord",
-      to: "discord:dm:123",
-      accountId: "main",
-      deliver: true,
-    });
-
-    expect(result).toMatchObject({ deliverySucceeded: true });
-    expect(state.deliverAgentCommandResultMock).toHaveBeenCalledOnce();
-    const storedEntry = findStoredSessionEntry(sessionKey);
-    expect(storedEntry?.pendingTranscriptRepair).toEqual([
-      expect.objectContaining({
-        version: 1,
-        kind: "assistant-turn-repair",
-        text,
+    state.runAgentAttemptMock.mockResolvedValueOnce(
+      makeResult({
         sessionId,
-        sessionKey,
-        agentId: "main",
+        runner: "cli",
+        payloads: [{ text: "first payload" }, { text: "second payload" }],
       }),
-    ]);
-    // Normal delivery-marker cleanup must not be affected by the failed write.
-    expect(storedEntry?.pendingFinalDelivery).toBeUndefined();
-  });
-
-  it("re-appends the missing assistant turn and clears the repair record on the next turn", async () => {
-    const sessionId = "transcript-repair-consumed";
-    const sessionKey = `agent:main:explicit:${sessionId}`;
-    const text = "reply that must be recovered into the transcript";
-    state.runAgentAttemptMock.mockResolvedValueOnce(makeResult({ sessionId, text, runner: "cli" }));
+    );
     state.persistCliTurnTranscriptMock.mockRejectedValueOnce(
       new Error("simulated transcript table corruption"),
     );
 
-    await agentCommand({
-      message: "first prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
+    await agentCommand({ message: "first prompt", sessionId, sessionKey, cwd: state.workspaceDir });
 
     expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toEqual([
-      expect.objectContaining({ text }),
+      expect.objectContaining({
+        id: expect.any(String),
+        text: "first payload\n\nsecond payload",
+      }),
     ]);
-
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId, text: "second turn reply", runner: "cli" }),
-    );
-    await agentCommand({
-      message: "second prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
-
-    const entryAfterRepair = findStoredSessionEntry(sessionKey);
-    expect(entryAfterRepair?.pendingTranscriptRepair).toBeUndefined();
-    const transcriptMessages = await readSessionMessages({
-      agentId: "main",
-      sessionId,
-      storePath: requireStorePath(),
-    });
-    expect(transcriptMessages).toContainEqual(expect.objectContaining({ role: "assistant" }));
-    expect(transcriptMessages).toContainEqual(
-      expect.objectContaining({
-        role: "assistant",
-        content: expect.arrayContaining([expect.objectContaining({ type: "text", text })]),
-      }),
-    );
   });
 
-  it("keeps both delivered finals across consecutive transcript persistence failures", async () => {
-    const sessionId = "transcript-backlog-consecutive-failures";
+  it("repairs the prior assistant before the next model attempt", async () => {
+    const sessionId = "transcript-repair-order";
     const sessionKey = `agent:main:explicit:${sessionId}`;
-    const firstText = "first delivered reply";
-    const secondText = "second delivered reply";
-    let persistFailuresRemaining = 0;
-    state.persistCliTurnTranscriptMock.mockImplementation(
-      async (...args: Parameters<PersistCliTurnTranscript>) => {
-        if (persistFailuresRemaining > 0) {
-          persistFailuresRemaining -= 1;
-          throw new Error("simulated transcript table corruption");
-        }
-        return state.persistCliTurnTranscriptReal?.(...args);
-      },
-    );
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId, text: firstText, runner: "cli" }),
-    );
-    persistFailuresRemaining = 1;
-    await agentCommand({
-      message: "first prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
+    state.runAgentAttemptMock.mockImplementationOnce(async (params) => {
+      await params.userTurnTranscriptRecorder?.persistApproved();
+      return makeResult({ sessionId, text: "assistant one", runner: "cli" });
     });
-
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId, text: secondText, runner: "cli" }),
+    state.persistCliTurnTranscriptMock.mockRejectedValueOnce(
+      new Error("simulated transcript table corruption"),
     );
-    rotateAgentEventLifecycleGeneration();
-    // Turn 2: the repair retry attempt AND the current-turn append both fail,
-    // so the backlog must retain both delivered finals.
-    persistFailuresRemaining = 2;
-    await agentCommand({
-      message: "second prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
+    await agentCommand({ message: "user one", sessionId, sessionKey, cwd: state.workspaceDir });
 
-    const storedEntry = findStoredSessionEntry(sessionKey);
-    const backlog = storedEntry?.pendingTranscriptRepair;
-    expect(backlog).toHaveLength(2);
-    expect(backlog?.[0]).toMatchObject({ text: firstText });
-    expect(backlog?.[1]).toMatchObject({ text: secondText });
-
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId, text: "third turn reply", runner: "cli" }),
-    );
-    await agentCommand({
-      message: "third prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
+    state.runAgentAttemptMock.mockImplementationOnce(async (params) => {
+      expect(
+        await readMessageSequence({ agentId: "main", sessionId, storePath: requireStorePath() }),
+      ).toEqual([
+        { role: "user", text: "user one" },
+        { role: "assistant", text: "assistant one" },
+      ]);
+      await params.userTurnTranscriptRecorder?.persistApproved();
+      return makeResult({ sessionId, text: "assistant two", runner: "cli" });
     });
+    await agentCommand({ message: "user two", sessionId, sessionKey, cwd: state.workspaceDir });
 
     expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toBeUndefined();
-    const transcriptMessages = await readSessionMessages({
-      agentId: "main",
-      sessionId,
-      storePath: requireStorePath(),
-    });
-    expect(transcriptMessages).toContainEqual(
-      expect.objectContaining({
-        role: "assistant",
-        content: expect.arrayContaining([
-          expect.objectContaining({ type: "text", text: firstText }),
-        ]),
-      }),
-    );
-    expect(transcriptMessages).toContainEqual(
-      expect.objectContaining({
-        role: "assistant",
-        content: expect.arrayContaining([
-          expect.objectContaining({ type: "text", text: secondText }),
-        ]),
-      }),
-    );
+    expect(
+      await readMessageSequence({ agentId: "main", sessionId, storePath: requireStorePath() }),
+    ).toEqual([
+      { role: "user", text: "user one" },
+      { role: "assistant", text: "assistant one" },
+      { role: "user", text: "user two" },
+      { role: "assistant", text: "assistant two" },
+    ]);
   });
 
-  it("retains distinct turns that deliver identical reply text across consecutive failures", async () => {
-    const sessionId = "transcript-backlog-identical-text";
+  it("blocks a continuing turn while transcript repair storage is still unavailable", async () => {
+    const sessionId = "transcript-repair-barrier";
     const sessionKey = `agent:main:explicit:${sessionId}`;
-    const sameText = "OK";
-    let persistFailuresRemaining = 0;
-    state.persistCliTurnTranscriptMock.mockImplementation(
-      async (...args: Parameters<PersistCliTurnTranscript>) => {
-        if (persistFailuresRemaining > 0) {
-          persistFailuresRemaining -= 1;
-          throw new Error("simulated transcript table corruption");
-        }
-        return state.persistCliTurnTranscriptReal?.(...args);
-      },
+    state.runAgentAttemptMock.mockResolvedValueOnce(
+      makeResult({ sessionId, text: "assistant one", runner: "cli" }),
     );
+    state.persistCliTurnTranscriptMock.mockRejectedValueOnce(
+      new Error("simulated transcript table corruption"),
+    );
+    await agentCommand({ message: "user one", sessionId, sessionKey, cwd: state.workspaceDir });
+
+    state.appendExactAssistantMessageMock.mockResolvedValueOnce({
+      ok: false,
+      reason: "simulated transcript table corruption",
+    });
+    await expect(
+      agentCommand({ message: "user two", sessionId, sessionKey, cwd: state.workspaceDir }),
+    ).rejects.toThrow("pending transcript recovery");
+
+    expect(state.runAgentAttemptMock).toHaveBeenCalledOnce();
+    expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toHaveLength(1);
+  });
+
+  it("does not duplicate a repaired assistant when backlog cleanup retries", async () => {
+    const sessionId = "transcript-repair-cleanup-retry";
+    const sessionKey = `agent:main:explicit:${sessionId}`;
+    const repairedText = "assistant one";
+    state.runAgentAttemptMock.mockResolvedValueOnce(
+      makeResult({ sessionId, text: repairedText, runner: "cli" }),
+    );
+    state.persistCliTurnTranscriptMock.mockRejectedValueOnce(
+      new Error("simulated transcript table corruption"),
+    );
+    await agentCommand({ message: "user one", sessionId, sessionKey, cwd: state.workspaceDir });
+
+    state.persistSessionEntryMock.mockRejectedValueOnce(new Error("simulated cleanup failure"));
+    state.runAgentAttemptMock.mockResolvedValueOnce(
+      makeResult({ sessionId, text: "assistant two", runner: "cli" }),
+    );
+    await agentCommand({ message: "user two", sessionId, sessionKey, cwd: state.workspaceDir });
+    expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toHaveLength(1);
 
     state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId, text: sameText, runner: "cli" }),
+      makeResult({ sessionId, text: "assistant three", runner: "cli" }),
     );
-    persistFailuresRemaining = 1;
-    await agentCommand({
-      message: "first prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
-
-    // A real run gets a fresh lifecycle generation per turn; emulate that so
-    // each failed turn owns a distinct repair record despite identical text.
-    rotateAgentEventLifecycleGeneration();
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId, text: sameText, runner: "cli" }),
-    );
-    persistFailuresRemaining = 2;
-    await agentCommand({
-      message: "second prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
-
-    const backlog = findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair;
-    expect(backlog).toHaveLength(2);
-    expect(backlog?.[0]).toMatchObject({ text: sameText });
-    expect(backlog?.[1]).toMatchObject({ text: sameText });
-    expect(backlog?.[0]?.turnId).not.toBe(backlog?.[1]?.turnId);
-
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId, text: "third turn reply", runner: "cli" }),
-    );
-    await agentCommand({
-      message: "third prompt",
-      sessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
+    await agentCommand({ message: "user three", sessionId, sessionKey, cwd: state.workspaceDir });
 
     expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toBeUndefined();
+    const assistantTexts = (
+      await readMessageSequence({ agentId: "main", sessionId, storePath: requireStorePath() })
+    )
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.text);
+    expect(assistantTexts.filter((text) => text === repairedText)).toHaveLength(1);
   });
 
   it("does not queue a repair for a final owned by another transcript writer", async () => {
@@ -572,7 +521,7 @@ describe("assistant transcript repair", () => {
     expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toBeUndefined();
   });
 
-  it("re-appends a missing turn whose text matches an earlier persisted assistant message", async () => {
+  it("re-appends a missing turn whose text matches an earlier assistant message", async () => {
     const sessionId = "transcript-repair-equal-tail";
     const sessionKey = `agent:main:explicit:${sessionId}`;
     const sameText = "OK";
@@ -597,7 +546,6 @@ describe("assistant transcript repair", () => {
       cwd: state.workspaceDir,
     });
 
-    rotateAgentEventLifecycleGeneration();
     state.runAgentAttemptMock.mockResolvedValueOnce(
       makeResult({ sessionId, text: sameText, runner: "cli" }),
     );
@@ -610,7 +558,6 @@ describe("assistant transcript repair", () => {
     });
     expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toHaveLength(1);
 
-    rotateAgentEventLifecycleGeneration();
     state.runAgentAttemptMock.mockResolvedValueOnce(
       makeResult({ sessionId, text: "third turn reply", runner: "cli" }),
     );
@@ -622,90 +569,64 @@ describe("assistant transcript repair", () => {
     });
 
     expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toBeUndefined();
-    const transcriptMessages = (await readSessionMessages({
-      agentId: "main",
-      sessionId,
-      storePath: requireStorePath(),
-    })) as Array<{
-      role?: string;
-      content?: Array<{ type?: string; text?: string }>;
-    }>;
-    const assistantTexts = transcriptMessages
-      .filter((message) => message?.role === "assistant")
-      .map((message) => {
-        const content = message?.content;
-        return Array.isArray(content)
-          ? content
-              .filter((part) => part?.type === "text")
-              .map((part) => part.text)
-              .join("")
-          : "";
-      });
+    const assistantTexts = (
+      await readMessageSequence({ agentId: "main", sessionId, storePath: requireStorePath() })
+    )
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.text);
     expect(assistantTexts.filter((text) => text === sameText)).toHaveLength(2);
   });
 
-  it("recovers a repair record across session rotation onto the successor transcript", async () => {
-    const predecessorSessionId = "rotation-predecessor";
-    const successorSessionId = "rotation-successor";
-    const sessionKey = `agent:main:explicit:${predecessorSessionId}`;
-    const missingText = "delivered reply lost before rotation";
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({ sessionId: predecessorSessionId, text: missingText, runner: "cli" }),
-    );
-    state.persistCliTurnTranscriptMock.mockRejectedValueOnce(
-      new Error("simulated transcript table corruption"),
-    );
+  it("does not carry an unavailable predecessor repair into a reset session", async () => {
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    try {
+      const predecessorSessionId = "reset-predecessor";
+      const sessionKey = `agent:main:explicit:${predecessorSessionId}`;
+      state.cfg!.session!.reset = { mode: "idle", idleMinutes: 1 };
+      state.runAgentAttemptMock.mockResolvedValueOnce(
+        makeResult({
+          sessionId: predecessorSessionId,
+          text: "missing predecessor reply",
+          runner: "cli",
+        }),
+      );
+      state.persistCliTurnTranscriptMock.mockRejectedValueOnce(
+        new Error("simulated transcript table corruption"),
+      );
+      await agentCommand({
+        message: "old user",
+        sessionId: predecessorSessionId,
+        sessionKey,
+        cwd: state.workspaceDir,
+      });
 
-    await agentCommand({
-      message: "first prompt",
-      sessionId: predecessorSessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
-    expect(findStoredSessionEntry(sessionKey)?.pendingTranscriptRepair).toEqual([
-      expect.objectContaining({ sessionId: predecessorSessionId, text: missingText }),
-    ]);
+      vi.setSystemTime(now + 120_000);
+      state.appendExactAssistantMessageMock.mockResolvedValueOnce({
+        ok: false,
+        reason: "simulated transcript table corruption",
+      });
+      state.runAgentAttemptMock.mockImplementationOnce(async (params) =>
+        makeResult({ sessionId: params.sessionId, text: "fresh reply", runner: "cli" }),
+      );
+      await agentCommand({ message: "fresh user", sessionKey, cwd: state.workspaceDir });
 
-    // The next run rotates the same session key to a successor session id
-    // (compaction rollover). The repair pass on this turn must migrate the
-    // predecessor-scoped record to the successor instead of retaining an
-    // unreachable record forever.
-    const rotatedSessionFile = formatSqliteSessionFileMarker({
-      agentId: "main",
-      sessionId: successorSessionId,
-      storePath: requireStorePath(),
-    });
-    state.runAgentAttemptMock.mockResolvedValueOnce(
-      makeResult({
-        sessionId: successorSessionId,
-        sessionFile: rotatedSessionFile,
-        text: "second turn reply",
-        runner: "cli",
-        compactionCount: 1,
-      }),
-    );
-    await agentCommand({
-      message: "second prompt",
-      sessionId: predecessorSessionId,
-      sessionKey,
-      cwd: state.workspaceDir,
-    });
-
-    const entryAfterRotation = findStoredSessionEntry(sessionKey);
-    expect(entryAfterRotation?.sessionId).toBe(successorSessionId);
-    expect(entryAfterRotation?.pendingTranscriptRepair).toBeUndefined();
-    const successorMessages = await readSessionMessages({
-      agentId: "main",
-      sessionId: successorSessionId,
-      storePath: requireStorePath(),
-    });
-    expect(successorMessages).toContainEqual(
-      expect.objectContaining({
-        role: "assistant",
-        content: expect.arrayContaining([
-          expect.objectContaining({ type: "text", text: missingText }),
-        ]),
-      }),
-    );
+      const successor = findStoredSessionEntry(sessionKey);
+      expect(successor?.sessionId).not.toBe(predecessorSessionId);
+      expect(successor?.pendingTranscriptRepair).toBeUndefined();
+      expect(
+        await readMessageSequence({
+          agentId: "main",
+          sessionId: successor!.sessionId,
+          storePath: requireStorePath(),
+        }),
+      ).toEqual([
+        { role: "user", text: "fresh user" },
+        { role: "assistant", text: "fresh reply" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

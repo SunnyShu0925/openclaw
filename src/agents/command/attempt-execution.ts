@@ -182,13 +182,6 @@ type PersistTextTurnTranscriptParams = {
   sessionCwd: string;
   config: OpenClawConfig;
   embeddedAssistantGapFill?: boolean;
-  /**
-   * When set, the assistant message is appended with this idempotency key and
-   * an exact per-message idempotency lookup (instead of tail-text gap-fill
-   * matching), so a distinct failed turn is never mistaken for an existing
-   * assistant message with identical text.
-   */
-  assistantIdempotencyKey?: string;
   skipAssistantTurn?: boolean;
   assistant: {
     api: string;
@@ -347,15 +340,11 @@ async function persistTextTurnTranscript(
         usage: resolveTranscriptUsage(params.assistant.usage),
         stopReason: "stop",
         timestamp: Date.now(),
-        ...(params.assistantIdempotencyKey
-          ? { idempotencyKey: params.assistantIdempotencyKey }
-          : {}),
       },
-      ...(params.assistantIdempotencyKey ? { idempotencyLookup: "scan-assistant" as const } : {}),
       shouldAppend: async (
         context: import("../../config/sessions/session-accessor.js").SessionTranscriptTurnWriteContext,
       ) => {
-        if (!params.embeddedAssistantGapFill || params.assistantIdempotencyKey) {
+        if (!params.embeddedAssistantGapFill) {
           return true;
         }
         const latest = await readTailAssistantTextFromSessionTranscript(context, {
@@ -395,7 +384,7 @@ async function persistTextTurnTranscript(
   return { kind: "persisted", sessionEntry: turn.sessionEntry };
 }
 
-function resolveCliTranscriptReplyText(result: EmbeddedAgentRunResult): string {
+export function resolveCliTranscriptReplyText(result: EmbeddedAgentRunResult): string {
   const visibleText = result.meta.finalAssistantVisibleText?.trim();
   if (visibleText) {
     return visibleText;
@@ -455,7 +444,6 @@ export async function persistCliTurnTranscript(params: {
   sessionCwd: string;
   config: OpenClawConfig;
   embeddedAssistantGapFill?: boolean;
-  assistantIdempotencyKey?: string;
   skipUserTurn?: boolean;
   skipAssistantTurn?: boolean;
 }): Promise<PersistTextTurnTranscriptResult> {
@@ -482,9 +470,6 @@ export async function persistCliTurnTranscript(params: {
       sessionCwd: params.sessionCwd,
       config: params.config,
       embeddedAssistantGapFill: gapFill,
-      ...(params.assistantIdempotencyKey
-        ? { assistantIdempotencyKey: params.assistantIdempotencyKey }
-        : {}),
       assistant: {
         api: "cli",
         provider,
@@ -493,7 +478,7 @@ export async function persistCliTurnTranscript(params: {
       },
       skipAssistantTurn: params.skipAssistantTurn,
     });
-  if (!gapFill && !params.assistantIdempotencyKey) {
+  if (!gapFill) {
     return await persist();
   }
 
