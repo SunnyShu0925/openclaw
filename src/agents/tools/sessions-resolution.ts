@@ -9,11 +9,14 @@ import {
   normalizeGatewayClientId,
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { GatewayClientRequestError } from "../../gateway/client.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { logWarn } from "../../logger.js";
 import {
-  createSessionVisibilityChecker,
-  listSpawnedSessionKeys,
-} from "../../plugin-sdk/session-visibility.js";
+  listSpawnedSessionKeysWithResult,
+  lookupFailedDenialSuffix,
+} from "../../plugin-sdk/session-visibility-internal.js";
+import { createSessionVisibilityChecker } from "../../plugin-sdk/session-visibility.js";
 import {
   isAcpSessionKey,
   isIncognitoSessionKey,
@@ -87,43 +90,87 @@ export function resolveCurrentSessionClientAlias(params: {
   return requesterKey;
 }
 
+type SpawnedVisibilityOutcome =
+  | { kind: "visible" }
+  | { kind: "not-owned" }
+  | { kind: "lookup-failed"; retryable: boolean };
+
+/**
+ * Detects the expected "No session found" miss from the speculative
+ * `sessions.resolve` probe in {@link isRequesterSpawnedSessionVisible}. A valid
+ * target outside the requester's spawned set is a normal policy miss, not an
+ * operational lookup failure, so it must not trigger the warn trail (review P2).
+ */
+function isExpectedSessionResolveMiss(error: unknown): boolean {
+  if (!(error instanceof GatewayClientRequestError)) {
+    return false;
+  }
+  if (error.gatewayCode !== "INVALID_REQUEST") {
+    return false;
+  }
+  return Boolean(error.message?.includes("No session found"));
+}
+
 async function isRequesterSpawnedSessionVisible(params: {
   requesterSessionKey: string;
   requesterAgentId: string;
   targetSessionKey: string;
   targetAgentId?: string;
   callGateway?: GatewayCaller;
-}): Promise<boolean> {
+}): Promise<SpawnedVisibilityOutcome> {
   if (
     params.requesterSessionKey === params.targetSessionKey &&
     params.targetAgentId === params.requesterAgentId
   ) {
-    return true;
+    return { kind: "visible" };
   }
   const gatewayCall = params.callGateway ?? callAgentToolGatewayRequest;
   try {
-    const resolved = await gatewayCall({
-      method: "sessions.resolve",
-      params: {
+    // A successful no-match is a policy miss. Operational failures remain
+    // distinct and observable instead of collapsing into a denial.
+    const resolved = await requestResolvedSession(
+      {
         key: params.targetSessionKey,
         agentId: params.targetAgentId,
         spawnedBy: params.requesterSessionKey,
+        allowMissing: true,
       },
-    });
-    if (normalizeOptionalString(resolved?.key) === params.targetSessionKey) {
-      return true;
+      gatewayCall,
+    );
+    if (resolved?.key === params.targetSessionKey) {
+      return { kind: "visible" };
     }
-  } catch {
-    // Older Gateways can reject exact spawned-session resolution.
+  } catch (error) {
+    // A valid target outside the requester's spawned set is an EXPECTED miss
+    // on this speculative probe (the resolver deliberately falls back to
+    // `sessions.list` below). On newer gateways `allowMissing: true` makes the
+    // server return a successful no-match response so no error is thrown; on
+    // older gateways that reject the additive field the retry surfaces the
+    // normal "No session found" INVALID_REQUEST. Either way this is not an
+    // operational lookup failure, so suppress the warn and fall back quietly —
+    // logging it would bury the real failures this PR is meant to diagnose
+    // (review P2). Only a genuine transport/credential error is logged.
+    if (!isExpectedSessionResolveMiss(error)) {
+      logWarn(
+        `sessions-resolution: sessions.resolve threw for requester=${params.requesterSessionKey} target=${params.targetSessionKey}: ${formatErrorMessage(error)}`,
+      );
+    }
   }
-  const keys = await listSpawnedSessionKeys({
+  const result = await listSpawnedSessionKeysWithResult({
     requesterSessionKey: params.requesterSessionKey,
     callGateway: gatewayCall,
   });
-  return (
-    (!params.targetAgentId || params.targetAgentId === params.requesterAgentId) &&
-    keys.has(params.targetSessionKey)
-  );
+  // A failed lookup fail-closes as a distinct outcome carrying retryability, so
+  // a transient transport failure (retry) is distinguishable from a permanent
+  // credential/configuration failure (do not retry); it must not collapse into
+  // the generic sandboxed-session denial (review P1: classify before prescribing retry).
+  if (!result.ok) {
+    return { kind: "lookup-failed", retryable: result.retryable };
+  }
+  return (!params.targetAgentId || params.targetAgentId === params.requesterAgentId) &&
+    result.keys.has(params.targetSessionKey)
+    ? { kind: "visible" }
+    : { kind: "not-owned" };
 }
 
 function looksLikeSessionKey(value: string): boolean {
@@ -182,6 +229,19 @@ type VisibleSessionReferenceResolution =
       error: string;
       displayKey: string;
     };
+
+function resolutionActionPrefix(action: "history" | "send" | "status" | "list"): string {
+  if (action === "history") {
+    return "Session history";
+  }
+  if (action === "send") {
+    return "Session send";
+  }
+  if (action === "status") {
+    return "Session status";
+  }
+  return "Session list";
+}
 
 function buildResolvedSessionReference(params: {
   agentId?: string;
@@ -451,24 +511,30 @@ export async function resolveVisibleSessionReference(params: {
           requesterSessionKey: params.requesterSessionKey,
           targetSessionKey: resolvedKey,
         });
-  const visible =
-    Boolean(scopedAccess) ||
-    verifiedSpawnedVisibility ||
-    !shouldVerifySpawnedVisibility ||
-    (await isRequesterSpawnedSessionVisible({
+  if (!scopedAccess && shouldVerifySpawnedVisibility && !verifiedSpawnedVisibility) {
+    const spawnedOutcome = await isRequesterSpawnedSessionVisible({
       requesterSessionKey: params.requesterSessionKey,
       requesterAgentId: params.requesterAgentId,
       targetSessionKey: resolvedKey,
       targetAgentId: resolvedAgentId,
       callGateway: params.callGateway,
-    }));
-  if (!visible) {
-    return {
-      ok: false,
-      status: "forbidden",
-      error: `Session not visible from this sandboxed agent session: ${params.visibilitySessionKey}`,
-      displayKey,
-    };
+    });
+    if (spawnedOutcome.kind === "lookup-failed") {
+      return {
+        ok: false,
+        status: "forbidden",
+        error: `${resolutionActionPrefix(params.action)} denied because ${lookupFailedDenialSuffix(spawnedOutcome.retryable)}`,
+        displayKey,
+      };
+    }
+    if (spawnedOutcome.kind === "not-owned") {
+      return {
+        ok: false,
+        status: "forbidden",
+        error: `Session not visible from this sandboxed agent session: ${params.visibilitySessionKey}`,
+        displayKey,
+      };
+    }
   }
   return {
     ok: true,
