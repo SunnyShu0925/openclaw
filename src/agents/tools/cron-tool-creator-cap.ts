@@ -190,20 +190,28 @@ export function planCronJobUpdatePatch(params: {
     nextPayload.kind = payloadKind;
   }
   patch.payload = nextPayload;
-  if (!writesToolsAllow) {
-    // Routine payload edits must not carry toolsAllow at all: echoing the
-    // stored list makes the cron service classify the update as an explicit
-    // tool-authority mutation (stamping a new scheduled policy on legacy
-    // jobs), and re-deriving it through the incomplete creator snapshot can
-    // strip tools (e.g. loopback exec) the runtime already legitimately runs.
-    // mergeCronPayload preserves the stored cap when the patch omits it, so
-    // the unrelated edit neither strips nor reauthorizes the job.
+  // A stored cap (explicit or default-stamped) is preserved by mergeCronPayload
+  // when the patch omits toolsAllow. Echoing it here would make the cron
+  // service classify the routine edit as an explicit tool-authority mutation
+  // (explicitlyMutatesToolsAllow), stamping a fresh scheduled policy on a
+  // legacy job. Re-deriving it through the incomplete creator snapshot can
+  // also strip tools (e.g. loopback exec) the runtime already legitimately
+  // runs. So unrelated edits on a job that already carries a cap leave the
+  // patch cap-less.
+  const storedToolsAllow = isRecord(existingPayload) ? existingPayload.toolsAllow : undefined;
+  if (!writesToolsAllow && Array.isArray(storedToolsAllow)) {
     return { kind: "ready", patch };
   }
+  // The job had no cap (legacy/capless) and this edit keeps it in the tool
+  // runtime. Synthesize the creator-capped default so the service stamps a
+  // bounded policy rather than falling back to applyDefaultCronToolsAllow's
+  // unrestricted ["*"]. Pass the stored cap (if any) as the default basis so a
+  // re-derivation cannot strip tools the runtime already legitimately runs.
   capCronJobToolsAllow({
     payload: nextPayload,
     trigger,
     creatorToolAllowlist: params.creatorToolAllowlist,
+    defaultToolsAllow: Array.isArray(storedToolsAllow) ? storedToolsAllow : undefined,
   });
   return { kind: "ready", patch };
 }
