@@ -1,5 +1,4 @@
 import type { resolveContextEngine } from "../../../context-engine/registry.js";
-import { resolveContextEngineIsTrustedLegacy } from "../../../context-engine/registry.js";
 import type { buildContextEngineRuntimeSettings } from "../../../context-engine/runtime-settings.js";
 import {
   resolveCompactionSuccessorTranscript,
@@ -170,7 +169,6 @@ export async function compactEmbeddedRunForRecovery(
     },
     {
       pluginTimeoutMs: resolveCompactionTimeoutMs(runParams.config),
-      legacyDelegating: resolveContextEngineIsTrustedLegacy(input.contextEngine),
       ownsCompaction: input.contextEngine.info.ownsCompaction === true,
       abortSignal: runParams.abortSignal,
     },

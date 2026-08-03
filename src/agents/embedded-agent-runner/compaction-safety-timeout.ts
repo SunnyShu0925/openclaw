@@ -80,10 +80,11 @@ export async function compactWithSafetyTimeout<T>(
 
 /**
  * Private implementation shared by {@link compactWithSafetyTimeout} and the
- * legacy embedded path. Pass `timeoutMs: undefined` only when the caller is
- * known to run its own per-candidate watchdog chain (the trusted core-legacy
- * engine via the unexported
- * {@link compactLegacyContextEngineWithSafetyTimeout} helper); in that case
+ * delegating-engine path. Pass `timeoutMs: undefined` only when the caller is
+ * known to run its own per-candidate watchdog chain (an engine that delegates
+ * compaction to the runtime native fallback chain — trusted built-in legacy or
+ * a runtime-delegating plugin — via the unexported
+ * {@link compactDelegatingContextEngineWithSafetyTimeout} helper); in that case
  * `withTimeout` arms no wrapper timer and each candidate is bounded
  * independently (#115546). Every other caller must pass a finite `timeoutMs`
  * (the public default is 180s) so a hung `compact()` cannot block the turn
@@ -183,14 +184,16 @@ type ContextEngineCompactParams = Parameters<ContextEngine["compact"]>[0];
  * main-branch behavior and bounds a slow or hung `compact()` so it cannot
  * block the agent turn indefinitely.
  *
- * The "no chain-wide deadline" behavior the trusted built-in legacy engine
- * needs (each fallback candidate bounded by its own independent watchdog) is
- * NOT reachable from this public function — it lives on the unexported
- * {@link compactLegacyContextEngineWithSafetyTimeout} helper, which only
- * internal call sites invoke after verifying trusted core-legacy registry
- * identity. This prevents a third-party plugin harness from passing a flag to
+ * The "no chain-wide deadline" behavior that engines delegating compaction to
+ * the runtime native fallback chain need (each fallback candidate bounded by its
+ * own independent watchdog) is NOT reachable from this public function — it
+ * lives on the unexported
+ * {@link compactDelegatingContextEngineWithSafetyTimeout} helper, which only
+ * internal call sites invoke for engines with `info.ownsCompaction !== true`
+ * (trusted built-in legacy and the documented runtime-delegating plugin
+ * pattern). This prevents a third-party plugin harness from passing a flag to
  * disable the finite watchdog and stall an agent turn (ClawSweeper P1: keep
- * the legacy watchdog bypass private).
+ * the delegating-engine watchdog bypass private).
  *
  * Callers keep their existing try/catch — a timeout or abort surfaces as a
  * thrown error, never a silent hang.
@@ -219,25 +222,30 @@ export function compactContextEngineWithSafetyTimeout(
 }
 
 /**
- * Unexported helper for the trusted built-in legacy context engine only.
+ * Unexported helper for engines that delegate compaction to the runtime native
+ * fallback chain — i.e. any engine whose `info.ownsCompaction` is not `true`.
  *
- * `compact()` on the legacy engine delegates to the model-fallback candidate
- * chain internally, so each candidate is bounded by its own independent
- * {@link resolveCompactionTimeoutMs} watchdog. The wrapper therefore arms NO
- * chain-wide timer — doing so would recreate #115546 (a slow candidate-1 erodes
- * candidate-2's window via the shared deadline). It threads only the raw caller
- * `abortSignal` into `params.abortSignal` so caller cancellation still propagates
- * into the candidate chain (each candidate watchdog composes it with its own
- * per-candidate deadline) while each candidate keeps its own independent
+ * This covers both the trusted built-in legacy engine and the documented
+ * runtime-delegating plugin pattern (`ownsCompaction: false` with `compact()`
+ * calling {@link delegateCompactionToRuntime}). Both delegate to the same
+ * model-fallback candidate chain, where each candidate is bounded by its own
+ * independent {@link resolveCompactionTimeoutMs} watchdog. The wrapper therefore
+ * arms NO chain-wide timer — doing so would recreate #115546 (a slow candidate-1
+ * erodes candidate-2's window via the shared deadline). It threads only the raw
+ * caller `abortSignal` into `params.abortSignal` so caller cancellation still
+ * propagates into the candidate chain (each candidate watchdog composes it with
+ * its own per-candidate deadline) while each candidate keeps its own independent
  * `timeoutSeconds` window.
  *
  * This is intentionally NOT exported: a third-party plugin harness must not be
- * able to reach the no-watchdog branch by passing a flag. Callers verify trusted
- * core-legacy registry identity (via {@link resolveContextEngineIsTrustedLegacy},
- * never `info.id` which is spoofable display metadata) before invoking this
- * helper (ClawSweeper P1: keep the legacy watchdog bypass private).
+ * able to reach the no-watchdog branch by passing a flag. Callers select this
+ * path based on `info.ownsCompaction !== true` (the contract that an engine
+ * which does not own compaction delegates `compact()` to the runtime native
+ * chain), never `info.id` which is spoofable display metadata (ClawSweeper P1:
+ * keep the delegating-engine watchdog bypass private; cover the documented
+ * runtime-delegating plugin mode, not only trusted core legacy).
  */
-function compactLegacyContextEngineWithSafetyTimeout(
+function compactDelegatingContextEngineWithSafetyTimeout(
   contextEngine: Pick<ContextEngine, "compact">,
   params: ContextEngineCompactParams,
   opts?: { abortSignal?: AbortSignal },
@@ -267,34 +275,40 @@ function compactLegacyContextEngineWithSafetyTimeout(
 
 /**
  * Internal entry point for host compaction call sites. Selects between the
- * trusted legacy no-chain-deadline path and the public finite-watchdog path
- * based on trusted registry identity. Not exported: the public SDK surface is
- * {@link compactContextEngineWithSafetyTimeout} (finite watchdog always on).
+ * no-chain-deadline path (engines that delegate compaction to the runtime
+ * native fallback chain) and the public finite-watchdog path (engines that own
+ * their compaction algorithm), based on `info.ownsCompaction`. Not exported:
+ * the public SDK surface is {@link compactContextEngineWithSafetyTimeout}
+ * (finite watchdog always on).
  */
 export function compactContextEngineWithSafetyTimeoutInternal(
   contextEngine: Pick<ContextEngine, "compact">,
   params: ContextEngineCompactParams,
   opts: {
-    /** Trusted core-legacy registry identity (resolveContextEngineIsTrustedLegacy). */
-    legacyDelegating: boolean;
     /** contextEngine.info.ownsCompaction === true. */
     ownsCompaction: boolean;
     pluginTimeoutMs?: number;
     abortSignal?: AbortSignal;
   },
 ): Promise<CompactResult> {
-  if (opts.legacyDelegating && !opts.ownsCompaction) {
-    return compactLegacyContextEngineWithSafetyTimeout(
+  if (!opts.ownsCompaction) {
+    // Engines that do not own compaction (trusted built-in legacy AND the
+    // documented runtime-delegating plugin pattern whose compact() calls
+    // delegateCompactionToRuntime) enter the same native per-candidate fallback
+    // chain, where each candidate is bounded by its own independent
+    // resolveCompactionTimeoutMs watchdog. Arm no wrapper timer — a chain-wide
+    // deadline would recreate #115546 (slow candidate-1 erodes candidate-2's
+    // window). Caller cancellation still threads through params.abortSignal.
+    return compactDelegatingContextEngineWithSafetyTimeout(
       contextEngine,
       params,
       opts.abortSignal ? { abortSignal: opts.abortSignal } : undefined,
     );
   }
-  // Non-legacy (or legacy-but-owns-compaction) engines: the public finite-
-  // watchdog path. ownsCompaction is not passed here — the public wrapper
-  // always applies the finite per-operation watchdog regardless of ownership,
-  // so the flag is irrelevant on this branch (it only mattered for selecting
-  // the private legacy no-chain path above). This keeps ownership routing
+  // ownsCompaction engines: the public finite-watchdog path. The wrapper always
+  // applies the finite per-operation watchdog (pluginTimeoutMs, default 180s)
+  // so a slow self-owned compact() cannot block the agent turn indefinitely
+  // (Round 8 timeoutSeconds contract preserved). This keeps ownership routing
   // fully internal (ClawSweeper P1: keep timeout ownership options internal).
   return compactContextEngineWithSafetyTimeout(
     contextEngine,

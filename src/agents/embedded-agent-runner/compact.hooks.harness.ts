@@ -955,25 +955,25 @@ export async function loadCompactHooksHarness(): Promise<{
       resolveCompactionTimeoutMs: vi.fn(() => 30_000),
       resolveCompactionTimeoutProvenance: vi.fn(() => ({ ms: 30_000, source: "default" })),
       compactContextEngineWithSafetyTimeout: compactContextEngineWithSafetyTimeoutMock,
-      // Mirror the unexported internal helper: select the legacy no-chain path
+      // Mirror the unexported internal helper: select the no-chain path
       // (in the mock harness, equivalent to the bounded path — no real timers)
-      // when the engine is trusted-legacy and does not own compaction; otherwise
-      // forward to the public (mocked) positional wrapper. This keeps the mock
-      // harness aligned with the production internal/internal-call split
-      // (ClawSweeper P1: keep the legacy watchdog bypass private; keep timeout
-      // ownership options internal).
+      // when the engine does not own compaction (trusted legacy or a
+      // runtime-delegating plugin); otherwise forward to the public (mocked)
+      // positional wrapper. This keeps the mock harness aligned with the
+      // production internal/internal-call split (ClawSweeper P1: keep the
+      // delegating-engine watchdog bypass private; keep timeout ownership
+      // options internal).
       compactContextEngineWithSafetyTimeoutInternal: vi.fn(
         (
           contextEngine: { compact: (params: Record<string, unknown>) => Promise<unknown> },
           params: Record<string, unknown>,
           opts: {
-            legacyDelegating?: boolean;
             ownsCompaction?: boolean;
             pluginTimeoutMs?: number;
             abortSignal?: AbortSignal;
           },
         ) => {
-          if (opts.legacyDelegating && !opts.ownsCompaction) {
+          if (!opts.ownsCompaction) {
             return compactWithSafetyTimeoutMock(
               () =>
                 contextEngine.compact(
