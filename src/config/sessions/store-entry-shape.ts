@@ -158,12 +158,11 @@ function normalizePendingFinalDelivery(
 function normalizePendingTranscriptRepair(
   value: unknown,
 ): SessionEntry["pendingTranscriptRepair"] | undefined {
-  const values = Array.isArray(value) ? value : value !== undefined ? [value] : [];
-  if (values.length === 0) {
+  if (!Array.isArray(value) || value.length === 0) {
     return undefined;
   }
   const normalized: NonNullable<SessionEntry["pendingTranscriptRepair"]> = [];
-  for (const item of values) {
+  for (const item of value) {
     const record = normalizePendingTranscriptRepairRecord(item);
     if (record) {
       normalized.push(record);

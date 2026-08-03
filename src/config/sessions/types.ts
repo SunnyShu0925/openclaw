@@ -539,11 +539,6 @@ type SessionEntryCore = SessionRestartRecoveryState &
     totalTokens?: number;
     pendingFinalDelivery?: PendingFinalDeliveryState;
     /**
-     * Present when a delivered assistant final failed to reach the canonical
-     * transcript. A later turn best-effort re-appends the stored text and
-     * clears this record once the transcript write succeeds again.
-     */
-    /**
      * Ordered durable backlog of delivered assistant finals that failed to
      * reach the canonical transcript. A later turn best-effort re-appends
      * each stored text and removes it from the backlog once the transcript

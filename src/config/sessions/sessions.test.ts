@@ -135,7 +135,7 @@ it("normalizes and preserves the durable assistant transcript repair backlog", (
   });
 });
 
-it("upgrades a legacy single repair record into the backlog array", () => {
+it("drops a non-array assistant transcript repair value", () => {
   expect(
     normalizePersistedSessionEntryShape({
       sessionId: "session-1",
@@ -143,23 +143,14 @@ it("upgrades a legacy single repair record into the backlog array", () => {
       pendingTranscriptRepair: {
         version: 1,
         kind: "assistant-turn-repair",
-        text: "legacy recoverable assistant final",
+        text: "recoverable assistant final",
         sessionId: "session-1",
         sessionKey: "agent:main:session-1",
         agentId: "main",
         createdAt: 42,
       },
     }),
-  ).toMatchObject({
-    pendingTranscriptRepair: [
-      {
-        version: 1,
-        kind: "assistant-turn-repair",
-        text: "legacy recoverable assistant final",
-        createdAt: 42,
-      },
-    ],
-  });
+  ).not.toHaveProperty("pendingTranscriptRepair");
 });
 
 it("drops malformed assistant transcript repair records", () => {
