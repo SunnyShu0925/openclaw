@@ -312,12 +312,9 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
     pluginConfig: unknown,
   ) => {
     const normalizedEvents = normalizeStringEntries(Array.isArray(events) ? events : [events]);
-    // Typed hook lifecycle events (before_tool_call, message_received, ...) are
-    // dispatched exclusively by the typed hook runner, which reads
-    // `registry.typedHooks`. `api.registerHook` registers into the legacy
-    // internal-hook path only, so handlers registered under a typed name never
-    // fire. Surface that silent no-op at registration time so plugin authors
-    // migrate to `registerTypedHook` instead of trusting a false "loaded".
+    // Typed lifecycle names (before_tool_call, message_received, ...) are dispatched only by
+    // the typed hook runner; registerHook uses the legacy internal-hook path so they never
+    // fire. Warn so authors move to `api.on(...)` instead of trusting a false "loaded".
     for (const event of normalizedEvents) {
       if (isPluginHookName(event)) {
         pushDiagnostic({
