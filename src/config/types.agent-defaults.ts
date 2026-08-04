@@ -400,7 +400,11 @@ export type AgentCompactionConfig = {
    * When set, compaction uses this model instead of the agent's primary model.
    * Falls back to the primary model when unset. */
   model?: string;
-  /** Maximum time in seconds for a single compaction candidate attempt (default: 180). */
+  /** Compaction timeout in seconds (default: 180). For the trusted built-in legacy
+   * engine (which delegates to the native per-candidate fallback chain), this is
+   * the maximum seconds for a single candidate attempt; for engines that own
+   * their compaction (`ownsCompaction: true`), this is a whole-operation outer
+   * watchdog. */
   timeoutSeconds?: number;
   /**
    * Id of a registered compaction provider plugin.

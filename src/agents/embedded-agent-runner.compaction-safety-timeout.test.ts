@@ -325,19 +325,21 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("applies no chain deadline when the engine delegates compaction but still honors caller cancellation", async () => {
-    // Engines with ownsCompaction !== true (trusted built-in legacy and the
-    // documented runtime-delegating plugin pattern) delegate compact() to the
-    // runtime native per-candidate fallback chain, where each candidate is
-    // bounded by its own resolveCompactionTimeoutMs watchdog. The internal
-    // helper must NOT arm a chain-wide timer — doing so would recreate #115546.
-    // Caller cancellation remains the only external abort path and must work.
+  it("applies no chain deadline for the trusted built-in legacy engine but still honors caller cancellation", async () => {
+    // The trusted built-in legacy engine (verified via
+    // resolveContextEngineIsTrustedLegacy — NOT info.id, which is spoofable)
+    // delegates compact() to the runtime native per-candidate fallback chain,
+    // where each candidate is bounded by its own resolveCompactionTimeoutMs
+    // watchdog. The internal helper must NOT arm a chain-wide timer — doing so
+    // would recreate #115546. Caller cancellation remains the only external
+    // abort path and must work.
     vi.useFakeTimers();
     const controller = new AbortController();
     const abortError = new Error("run aborted");
     const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: true,
       ownsCompaction: false,
       abortSignal: controller.signal,
     });
@@ -352,13 +354,13 @@ describe("compactContextEngineWithSafetyTimeout", () => {
   });
 
   it("threads the raw caller abort signal into the embedded compact() params", async () => {
-    // Embedded engines run the candidate chain internally; each candidate is
-    // bounded by its own resolveCompactionTimeoutMs watchdog. The wrapper must
-    // still forward the raw caller signal via params.abortSignal so a caller
-    // cancellation aborts the in-flight candidate (the candidate executor
-    // composes it with its own per-candidate deadline). This mirrors the
-    // plugin-owned path: caller cancellation must not be lost when the wrapper
-    // arms no chain timer.
+    // The trusted legacy engine runs the candidate chain internally; each
+    // candidate is bounded by its own resolveCompactionTimeoutMs watchdog. The
+    // wrapper must still forward the raw caller signal via params.abortSignal
+    // so a caller cancellation aborts the in-flight candidate (the candidate
+    // executor composes it with its own per-candidate deadline). This mirrors
+    // the plugin-owned path: caller cancellation must not be lost when the
+    // wrapper arms no chain timer.
     vi.useFakeTimers();
     const controller = new AbortController();
     const reason = new Error("run aborted");
@@ -369,6 +371,7 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     });
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: true,
       ownsCompaction: false,
       abortSignal: controller.signal,
     });
@@ -421,17 +424,19 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("applies no default watchdog for an embedded engine when timeoutMs is unset", async () => {
+  it("applies no default watchdog for the trusted legacy engine when timeoutMs is unset", async () => {
     // #115546 regression: the embedded path runs the candidate chain internally,
-    // each candidate bounded by its own resolveCompactionTimeoutMs watchdog. The
-    // wrapper must NOT arm a chain-wide 180s timer by default — that would let a
-    // slow candidate-1 erode candidate-2's window via the shared deadline.
+    // each candidate bounded by its own resolveCompactionTimeoutMs watchdog —
+    // but ONLY for the trusted built-in legacy engine (registry identity). The
+    // wrapper must NOT arm a chain-wide 180s timer by default — that would let
+    // a slow candidate-1 erode candidate-2's window via the shared deadline.
     vi.useFakeTimers();
     const controller = new AbortController();
     const abortError = new Error("run aborted");
     const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: true,
       ownsCompaction: false,
       abortSignal: controller.signal,
     });
@@ -446,40 +451,37 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     await expect(pending).rejects.toBe(abortError);
   });
 
-  it("applies no chain deadline for a runtime-delegating plugin engine (ClawSweeper P1)", async () => {
-    // P1 regression: the documented runtime-delegating plugin pattern sets
-    // ownsCompaction: false and has compact() call delegateCompactionToRuntime,
-    // entering the SAME native per-candidate fallback chain the trusted built-in
-    // legacy engine uses (legacy.ts compact() is itself delegateCompactionToRuntime).
-    // Such a plugin is NOT trusted core legacy (owner is plugin:xxx, not "core"),
-    // so the prior legacyDelegating gate gave it the outer 180s watchdog — letting
-    // a slow candidate-1 erode candidate-2's window (#115546 regression). The fix
-    // gates the no-chain path on ownsCompaction !== true, so a delegating plugin
-    // engine receives NO outer shared deadline; each candidate keeps its own
-    // independent resolveCompactionTimeoutMs window.
+  it("keeps the finite watchdog for a runtime-delegating plugin engine without trusted-core identity (ClawSweeper P1)", async () => {
+    // ClawSweeper P1: ownsCompaction false-or-unset does NOT prove the engine
+    // delegates compact() to the runtime native fallback chain. The documented
+    // runtime-delegating plugin pattern sets ownsCompaction: false and calls
+    // delegateCompactionToRuntime, but a plugin cannot be trusted by identity
+    // (owner is plugin:xxx, not "core") — so it must keep the finite host
+    // watchdog. Only the trusted built-in legacy engine (registry identity,
+    // legacyDelegating) receives the no-chain per-candidate path. This guards a
+    // hung non-delegating plugin from blocking /compact indefinitely.
     vi.useFakeTimers();
-    const controller = new AbortController();
-    const abortError = new Error("run aborted");
-    // Simulated runtime-delegating plugin engine: ownsCompaction: false, compact()
-    // would call delegateCompactionToRuntime. The internal helper must select the
-    // no-chain path based solely on ownsCompaction, without any trusted-identity
-    // flag (which a plugin cannot supply).
+    // Simulated runtime-delegating plugin engine: ownsCompaction: false and
+    // legacyDelegating: false (not trusted core). A hung compact() must still be
+    // bounded by the finite host watchdog.
     const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: false,
       ownsCompaction: false,
       pluginTimeoutMs: resolveCompactionTimeoutMs(),
-      abortSignal: controller.signal,
     });
+    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
 
-    // Well past the 180s default — no outer timer is armed, so the pending
-    // compact() is NOT rejected. Only caller cancellation can abort it.
-    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS * 2);
-    expect(vi.getTimerCount()).toBe(0);
+    // No timer fires before the 180s backstop…
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS - 1);
     expect(compact).toHaveBeenCalledTimes(1);
 
-    controller.abort(abortError);
-    await expect(pending).rejects.toBe(abortError);
+    // …but it does fire at the finite watchdog, even though ownsCompaction is
+    // false — proving delegation alone is not trusted without core identity.
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("honors a configured timeoutSeconds for a plugin-owned engine instead of the 180s default (ClawSweeper P1)", async () => {
@@ -533,18 +535,45 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("keeps the finite watchdog for a hung non-delegating engine via the internal helper (ClawSweeper P1)", async () => {
+    // ClawSweeper P1 regression: a custom engine with ownsCompaction false or
+    // absent is NOT proven to delegate compact() to the native fallback chain.
+    // The internal helper must therefore keep the finite host watchdog on this
+    // path — a hung compact() on /compact or overflow recovery must not block
+    // the agent turn indefinitely. Only the trusted built-in legacy engine
+    // (legacyDelegating: true) reaches the no-chain per-candidate path.
+    vi.useFakeTimers();
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: false,
+      ownsCompaction: false,
+      pluginTimeoutMs: resolveCompactionTimeoutMs(),
+    });
+    const assertion = expect(pending).rejects.toThrow("Compaction timed out");
+
+    // No 180s timer fires before the deadline…
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS - 1);
+    expect(compact).toHaveBeenCalledTimes(1);
+
+    // …but it does fire at the 180s backstop, even though ownsCompaction is
+    // false and no abort signal was supplied.
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("keeps the watchdog for a third-party engine spoofing the legacy info.id (ClawSweeper P1)", async () => {
     // `ContextEngine.info.id` is display metadata, not a trusted signal: a
     // third-party engine may legally report `id: "legacy"` while registered
     // under another slot. The no-timer bypass lives on the unexported
     // `compactContextEngineWithSafetyTimeoutInternal` helper and is gated on
-    // `ownsCompaction !== true` (the contract that an engine delegating
-    // compaction to the runtime native chain has each candidate bounded by its
-    // own watchdog), never reachable from the public
-    // `compactContextEngineWithSafetyTimeout` surface — so a spoofed metadata
-    // id (or any third-party harness call) cannot remove the finite host
-    // watchdog and hang the agent turn. The public function applies the finite
-    // watchdog unconditionally here.
+    // trusted core-legacy registry identity (`legacyDelegating`), never
+    // `info.id` — so a spoofed metadata id cannot remove the finite host
+    // watchdog. The public `compactContextEngineWithSafetyTimeout` surface has
+    // no ownership option at all and applies the finite watchdog
+    // unconditionally; a third-party harness cannot opt out regardless of
+    // info.id.
     vi.useFakeTimers();
     const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
 

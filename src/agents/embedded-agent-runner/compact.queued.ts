@@ -5,6 +5,7 @@ import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../context-engine/host
 import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
 import {
   resolveContextEngine,
+  resolveContextEngineIsTrustedLegacy,
   resolveContextEngineOwnerPluginId,
 } from "../../context-engine/registry.js";
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
@@ -688,6 +689,7 @@ async function compactResolvedContextEngine(
             },
             {
               pluginTimeoutMs: resolveCompactionTimeoutMs(params.config),
+              legacyDelegating: resolveContextEngineIsTrustedLegacy(contextEngine),
               ownsCompaction: contextEngine.info.ownsCompaction === true,
               abortSignal: params.abortSignal,
             },

@@ -957,8 +957,8 @@ export async function loadCompactHooksHarness(): Promise<{
       compactContextEngineWithSafetyTimeout: compactContextEngineWithSafetyTimeoutMock,
       // Mirror the unexported internal helper: select the no-chain path
       // (in the mock harness, equivalent to the bounded path — no real timers)
-      // when the engine does not own compaction (trusted legacy or a
-      // runtime-delegating plugin); otherwise forward to the public (mocked)
+      // only for the trusted built-in legacy engine (legacyDelegating) that
+      // does not own compaction; otherwise forward to the public (mocked)
       // positional wrapper. This keeps the mock harness aligned with the
       // production internal/internal-call split (ClawSweeper P1: keep the
       // delegating-engine watchdog bypass private; keep timeout ownership
@@ -968,12 +968,13 @@ export async function loadCompactHooksHarness(): Promise<{
           contextEngine: { compact: (params: Record<string, unknown>) => Promise<unknown> },
           params: Record<string, unknown>,
           opts: {
+            legacyDelegating?: boolean;
             ownsCompaction?: boolean;
             pluginTimeoutMs?: number;
             abortSignal?: AbortSignal;
           },
         ) => {
-          if (!opts.ownsCompaction) {
+          if (opts.legacyDelegating && !opts.ownsCompaction) {
             return compactWithSafetyTimeoutMock(
               () =>
                 contextEngine.compact(
