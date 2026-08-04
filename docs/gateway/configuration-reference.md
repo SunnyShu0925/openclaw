@@ -1571,10 +1571,10 @@ Validation:
 Notes:
 
 - `file` provider supports `mode: "json"` and `mode: "singleValue"` (`id` must be `"value"` in singleValue mode).
-- File and exec provider paths fail closed when Windows ACL verification is unavailable. Use paths whose ACLs OpenClaw can verify; there is no provider-level bypass.
+- File and exec provider paths fail closed when Windows ACL verification is unavailable; no opt-out exists. Ensure command or file paths are on a local NTFS volume with inspectable ACLs.
 - `exec` provider requires an absolute `command` path and uses protocol payloads on stdin/stdout.
-- Symlink command paths are rejected. Configure the resolved absolute binary path instead.
-- If `trustedDirs` is configured, the command path must be inside an approved directory.
+- Symlink command paths are rejected with no opt-out; `command` must not be group- or world-writable and (on POSIX) be owned by the current user (Windows instead requires inspectable ACLs on a local NTFS volume).
+- If `trustedDirs` is configured, the command path (after `~` expansion) must be inside an approved directory; symlinked commands are rejected before this check, so the configured path itself is what `trustedDirs` constrains.
 - `exec` child environment is minimal by default; pass required variables explicitly with `passEnv`.
 - Secret refs are resolved at activation time into an in-memory snapshot, then request paths read the snapshot only.
 - Active-surface filtering applies during activation: unresolved refs on enabled surfaces fail startup/reload, while inactive surfaces are skipped with diagnostics.

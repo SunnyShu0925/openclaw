@@ -257,6 +257,14 @@ function setGatewaySnapshot(secrets?: OpenClawConfig["secrets"]): void {
   setSnapshot(resolved, resolved);
 }
 
+function createValidExecutableFixture(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-valid-exec-"));
+  const fixturePath = path.join(root, "node");
+  fs.copyFileSync(process.execPath, fixturePath);
+  fs.chmodSync(fixturePath, 0o755);
+  return fixturePath;
+}
+
 function setSnapshotOnce(snapshot: ConfigFileSnapshot) {
   mockReadConfigFileSnapshot.mockResolvedValueOnce(snapshot);
 }
@@ -1734,6 +1742,97 @@ describe("config cli", () => {
       expectErrorIncludes("Config file not found:");
       expect(mockLog).not.toHaveBeenCalled();
     });
+
+    it.skipIf(process.platform === "win32")(
+      "rejects exec SecretRef providers whose command path is a symlink",
+      async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-validate-link-"));
+        const symlinkPath = path.join(root, "node-link");
+        fs.symlinkSync(process.execPath, symlinkPath);
+        try {
+          setGatewaySnapshot({
+            providers: {
+              execmain: {
+                source: "exec",
+                command: symlinkPath,
+              },
+            },
+          });
+
+          await expect(runConfigCommand(["config", "validate"])).rejects.toThrow(ExitError);
+
+          expectErrorIncludes("secrets.providers.execmain");
+          expectErrorIncludes("must not be a symlink");
+          expect(mockLog).not.toHaveBeenCalled();
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it("accepts exec SecretRef providers with a valid command path", async () => {
+      const fixturePath = createValidExecutableFixture();
+      try {
+        setGatewaySnapshot({
+          providers: {
+            execmain: {
+              source: "exec",
+              command: fixturePath,
+            },
+          },
+        });
+
+        await runConfigCommand(["config", "validate"]);
+
+        expect(mockExit).not.toHaveBeenCalled();
+        expect(mockError).not.toHaveBeenCalled();
+        expectLogIncludes("Config valid:");
+      } finally {
+        fs.rmSync(path.dirname(fixturePath), { recursive: true, force: true });
+      }
+    });
+
+    it.skipIf(process.platform === "win32")(
+      "reports exec provider command-path errors in --json validate output",
+      async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-validate-json-link-"));
+        const symlinkPath = path.join(root, "node-link");
+        fs.symlinkSync(process.execPath, symlinkPath);
+        try {
+          setGatewaySnapshot({
+            providers: {
+              execmain: {
+                source: "exec",
+                command: symlinkPath,
+              },
+            },
+          });
+
+          await expect(runConfigCommand(["config", "validate", "--json"])).rejects.toThrow(
+            ExitError,
+          );
+
+          const payload = JSON.parse(String(firstMockArg(mockLog))) as {
+            valid: boolean;
+            path: string;
+            issues: string[];
+          };
+          // Machine-readable validate output must surface the exec provider
+          // command-path failure as an issue string (see ClawSweeper review on
+          // #117128 — cover the --json contract, not just the text surface).
+          expect(payload.valid).toBe(false);
+          expect(payload.issues).toEqual(
+            expect.arrayContaining([expect.stringContaining("secrets.providers.execmain")]),
+          );
+          expect(payload.issues.some((issue) => issue.includes("must not be a symlink"))).toBe(
+            true,
+          );
+          expect(mockError).not.toHaveBeenCalled();
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
   });
 
   describe("config schema", () => {
@@ -2281,6 +2380,27 @@ describe("config cli", () => {
       expect(requireRecord(resolveOptions, "resolve options").env).toBeTypeOf("object");
     });
 
+    it.skipIf(process.platform === "win32")(
+      "rejects writes that set an exec provider command to a symlink",
+      async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-set-link-"));
+        const symlinkPath = path.join(root, "node-link");
+        fs.symlinkSync(process.execPath, symlinkPath);
+        try {
+          setGatewaySnapshot();
+
+          await expect(
+            runConfigCommand(["config", "set", "secrets.providers.execmain.command", symlinkPath]),
+          ).rejects.toThrow("exec SecretRef provider command path is unsafe");
+
+          expect(mockWriteConfigFile).not.toHaveBeenCalled();
+          expectErrorIncludes("must not be a symlink");
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
     it("requires schema validation in JSON dry-run mode", async () => {
       setGatewaySnapshot();
 
@@ -2298,6 +2418,126 @@ describe("config cli", () => {
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
       expectErrorIncludes("Dry run failed: config schema validation failed.");
     });
+
+    it("does not throw a raw TypeError when a value-mode write sets a provider to null", async () => {
+      // A value-mode write can set secrets.providers.<alias> to a non-object
+      // (null/primitive) without triggering full schema validation. The
+      // exec-provider preflight must narrow to a non-null object instead of
+      // throwing a raw TypeError on `"command" in provider` (see ClawSweeper
+      // review on #117128).
+      setGatewaySnapshot();
+
+      // The command may succeed (value mode skips schema validation) or fail
+      // (later schema/policy check); either is acceptable as long as no raw
+      // TypeError leaks out of the preflight.
+      let thrown: unknown;
+      try {
+        await runConfigCommand(["config", "set", "secrets.providers.ghost", "null", "--dry-run"]);
+      } catch (err) {
+        thrown = err;
+      }
+      const message =
+        thrown instanceof Error
+          ? thrown.message
+          : typeof thrown === "string"
+            ? thrown
+            : thrown == null
+              ? ""
+              : JSON.stringify(thrown);
+      expect(message).not.toMatch(/Cannot use 'in' operator/i);
+      expect(message).not.toMatch(/^TypeError/u);
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    });
+
+    it.skipIf(process.platform === "win32")(
+      "reports exec path preflight in --dry-run --json checks for ref-builder commands",
+      async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-set-dryrun-link-"));
+        const symlinkPath = path.join(root, "node-link");
+        fs.symlinkSync(process.execPath, symlinkPath);
+        try {
+          setGatewaySnapshot({
+            providers: { execmain: { source: "exec", command: symlinkPath } },
+          });
+
+          await expect(
+            runConfigCommand([
+              "config",
+              "set",
+              "channels.discord.token",
+              "--ref-provider",
+              "execmain",
+              "--ref-source",
+              "exec",
+              "--ref-id",
+              "DISCORD_BOT_TOKEN",
+              "--dry-run",
+              "--json",
+            ]),
+          ).rejects.toThrow(ExitError);
+
+          expect(mockWriteConfigFile).not.toHaveBeenCalled();
+          const payload = parseLastLogPayload() as {
+            ok: boolean;
+            checks: { schema: boolean; resolvability: boolean; resolvabilityComplete: boolean };
+            errors?: Array<{ kind: string; message: string }>;
+          };
+          expect(payload.ok).toBe(false);
+          // The exec-path preflight is schema-class validation; when it fails,
+          // the JSON report must not claim no schema check ran.
+          expect(payload.checks.schema).toBe(true);
+          expect(payload.errors).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                kind: "schema",
+                message: expect.stringContaining("secrets.providers.execmain"),
+              }),
+            ]),
+          );
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "accepts a valid exec command in --dry-run --json and reports no schema errors",
+      async () => {
+        const validCommandPath = createValidExecutableFixture();
+        try {
+          setGatewaySnapshot({
+            providers: { execmain: { source: "exec", command: validCommandPath } },
+          });
+
+          await runConfigCommand([
+            "config",
+            "set",
+            "channels.discord.token",
+            "--ref-provider",
+            "execmain",
+            "--ref-source",
+            "exec",
+            "--ref-id",
+            "DISCORD_BOT_TOKEN",
+            "--dry-run",
+            "--json",
+          ]);
+
+          expect(mockWriteConfigFile).not.toHaveBeenCalled();
+          const payload = parseLastLogPayload() as {
+            ok: boolean;
+            checks: { schema: boolean; resolvability: boolean; resolvabilityComplete: boolean };
+            errors?: Array<{ kind: string; message: string }>;
+          };
+          // A valid exec provider passes the non-executing command-path check,
+          // so the dry run succeeds with no schema-class errors.
+          expect(payload.ok).toBe(true);
+          expect(payload.checks.schema).toBe(false);
+        } finally {
+          fs.rmSync(path.dirname(validCommandPath), { recursive: true, force: true });
+        }
+      },
+    );
 
     it("dry-runs config patch channel fields against plugin-owned schemas", async () => {
       setExternalFeishuSchema();
@@ -2422,54 +2662,68 @@ describe("config cli", () => {
     });
 
     it("skips exec SecretRef resolvability checks in dry-run by default", async () => {
-      setGatewaySnapshot({ providers: { runner: { source: "exec", command: "/usr/bin/env" } } });
+      const fixturePath = createValidExecutableFixture();
+      try {
+        setGatewaySnapshot({
+          providers: { runner: { source: "exec", command: fixturePath } },
+        });
 
-      await runConfigCommand([
-        "config",
-        "set",
-        "channels.discord.token",
-        "--ref-provider",
-        "runner",
-        "--ref-source",
-        "exec",
-        "--ref-id",
-        "openai",
-        "--dry-run",
-      ]);
+        await runConfigCommand([
+          "config",
+          "set",
+          "channels.discord.token",
+          "--ref-provider",
+          "runner",
+          "--ref-source",
+          "exec",
+          "--ref-id",
+          "openai",
+          "--dry-run",
+        ]);
 
-      expect(mockWriteConfigFile).not.toHaveBeenCalled();
-      expect(mockResolveSecretRefValue).not.toHaveBeenCalled();
-      expectLogIncludes(
-        "Dry run note: skipped 1 exec SecretRef resolvability check(s). Re-run with --allow-exec",
-      );
+        expect(mockWriteConfigFile).not.toHaveBeenCalled();
+        expect(mockResolveSecretRefValue).not.toHaveBeenCalled();
+        expectLogIncludes(
+          "Dry run note: skipped 1 exec SecretRef resolvability check(s). Re-run with --allow-exec",
+        );
+      } finally {
+        fs.rmSync(path.dirname(fixturePath), { recursive: true, force: true });
+      }
     });
 
     it("allows exec SecretRef resolvability checks in dry-run when --allow-exec is set", async () => {
-      setGatewaySnapshot({ providers: { runner: { source: "exec", command: "/usr/bin/env" } } });
+      const fixturePath = createValidExecutableFixture();
+      try {
+        setGatewaySnapshot({
+          providers: { runner: { source: "exec", command: fixturePath } },
+        });
 
-      await runConfigCommand([
-        "config",
-        "set",
-        "channels.discord.token",
-        "--ref-provider",
-        "runner",
-        "--ref-source",
-        "exec",
-        "--ref-id",
-        "openai",
-        "--dry-run",
-        "--allow-exec",
-      ]);
+        await runConfigCommand([
+          "config",
+          "set",
+          "channels.discord.token",
+          "--ref-provider",
+          "runner",
+          "--ref-source",
+          "exec",
+          "--ref-id",
+          "openai",
+          "--dry-run",
+          "--allow-exec",
+        ]);
 
-      expect(mockWriteConfigFile).not.toHaveBeenCalled();
-      expect(mockResolveSecretRefValue).toHaveBeenCalledTimes(1);
-      const [secretRef, resolveOptions] = requireResolveSecretRefCall(0);
-      const secretRefRecord = requireRecord(secretRef, "exec SecretRef");
-      expect(secretRefRecord.source).toBe("exec");
-      expect(secretRefRecord.provider).toBe("runner");
-      expect(secretRefRecord.id).toBe("openai");
-      expect(resolveOptions).toBeTypeOf("object");
-      expectLogExcludes("Dry run note: skipped 1 exec SecretRef resolvability check(s).");
+        expect(mockWriteConfigFile).not.toHaveBeenCalled();
+        expect(mockResolveSecretRefValue).toHaveBeenCalledTimes(1);
+        const [secretRef, resolveOptions] = requireResolveSecretRefCall(0);
+        const secretRefRecord = requireRecord(secretRef, "exec SecretRef");
+        expect(secretRefRecord.source).toBe("exec");
+        expect(secretRefRecord.provider).toBe("runner");
+        expect(secretRefRecord.id).toBe("openai");
+        expect(resolveOptions).toBeTypeOf("object");
+        expectLogExcludes("Dry run note: skipped 1 exec SecretRef resolvability check(s).");
+      } finally {
+        fs.rmSync(path.dirname(fixturePath), { recursive: true, force: true });
+      }
     });
 
     it("rejects --allow-exec without --dry-run", async () => {
@@ -3162,6 +3416,8 @@ describe("config cli", () => {
           fs.rmSync(invalidPatch, { force: true });
         }
         const invalidPayload = lastMockArg(defaultRuntime.writeJson) as {
+          ok?: boolean;
+          checks?: { schema?: boolean };
           errors?: Array<{ message?: string }>;
         };
         const errorMessages = invalidPayload.errors?.map((error) => error.message ?? "") ?? [];
@@ -3173,6 +3429,10 @@ describe("config cli", () => {
             message.includes(`does not declare secret provider integration "missing"`),
           ),
         ).toBe(true);
+        // The integration was selected and materialization was attempted (and
+        // failed); checks.schema reflects that schema-class validation ran.
+        expect(invalidPayload.ok).toBe(false);
+        expect(invalidPayload.checks?.schema).toBe(true);
       } finally {
         fs.rmSync(rootDir, { recursive: true, force: true });
       }
@@ -3585,34 +3845,176 @@ describe("config cli", () => {
     });
 
     it("emits skipped exec metadata for --dry-run --json success", async () => {
-      setGatewaySnapshot({ providers: { runner: { source: "exec", command: "/usr/bin/env" } } });
+      const fixturePath = createValidExecutableFixture();
+      try {
+        setGatewaySnapshot({
+          providers: { runner: { source: "exec", command: fixturePath } },
+        });
+
+        await runConfigCommand([
+          "config",
+          "set",
+          "channels.discord.token",
+          "--ref-provider",
+          "runner",
+          "--ref-source",
+          "exec",
+          "--ref-id",
+          "openai",
+          "--dry-run",
+          "--json",
+        ]);
+
+        const payload = parseLastLogPayload() as {
+          ok: boolean;
+          checks: { resolvability: boolean; resolvabilityComplete: boolean };
+          refsChecked: number;
+          skippedExecRefs: number;
+        };
+        expect(payload.ok).toBe(true);
+        expect(payload.checks.resolvability).toBe(true);
+        expect(payload.checks.resolvabilityComplete).toBe(false);
+        expect(payload.refsChecked).toBe(0);
+        expect(payload.skippedExecRefs).toBe(1);
+      } finally {
+        fs.rmSync(path.dirname(fixturePath), { recursive: true, force: true });
+      }
+    });
+
+    it("reports checks.schema false when no exec provider is touched by the dry run", async () => {
+      // An env-only provider runs no exec command-path check, so checks.schema
+      // stays false on a successful dry run (no schema-class errors).
+      setGatewaySnapshot({ providers: { default: { source: "env" } } });
 
       await runConfigCommand([
         "config",
         "set",
         "channels.discord.token",
         "--ref-provider",
-        "runner",
+        "default",
         "--ref-source",
-        "exec",
+        "env",
         "--ref-id",
-        "openai",
+        "DISCORD_BOT_TOKEN",
         "--dry-run",
         "--json",
       ]);
 
       const payload = parseLastLogPayload() as {
         ok: boolean;
-        checks: { resolvability: boolean; resolvabilityComplete: boolean };
-        refsChecked: number;
-        skippedExecRefs: number;
+        checks: { schema: boolean; resolvability: boolean; resolvabilityComplete: boolean };
       };
       expect(payload.ok).toBe(true);
-      expect(payload.checks.resolvability).toBe(true);
-      expect(payload.checks.resolvabilityComplete).toBe(false);
-      expect(payload.refsChecked).toBe(0);
-      expect(payload.skippedExecRefs).toBe(1);
+      expect(payload.checks.schema).toBe(false);
     });
+
+    it("reports checks.schema true when a touched exec provider fails preflight alongside an untouched valid one", async () => {
+      const validPath = createValidExecutableFixture();
+      const badRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-set-mix-"));
+      const symlinkPath = path.join(badRoot, "bad-link");
+      fs.symlinkSync(process.execPath, symlinkPath);
+      try {
+        setGatewaySnapshot({
+          providers: {
+            good: { source: "exec", command: validPath },
+            bad: { source: "exec", command: symlinkPath },
+          },
+        });
+
+        await expect(
+          runConfigCommand([
+            "config",
+            "set",
+            "channels.discord.token",
+            "--ref-provider",
+            "bad",
+            "--ref-source",
+            "exec",
+            "--ref-id",
+            "DISCORD_BOT_TOKEN",
+            "--dry-run",
+            "--json",
+          ]),
+        ).rejects.toThrow(ExitError);
+
+        const payload = parseLastLogPayload() as {
+          ok: boolean;
+          checks: { schema: boolean };
+          errors?: Array<{ kind: string; message: string }>;
+        };
+        // The bad provider's symlink is touched, so the preflight ran and
+        // checks.schema must be true; the symlink error is reported.
+        expect(payload.ok).toBe(false);
+        expect(payload.checks.schema).toBe(true);
+        expect(payload.errors).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "schema",
+              message: expect.stringContaining("secrets.providers.bad"),
+            }),
+          ]),
+        );
+      } finally {
+        fs.rmSync(badRoot, { recursive: true, force: true });
+        fs.rmSync(path.dirname(validPath), { recursive: true, force: true });
+      }
+    });
+
+    it.skipIf(process.platform === "win32")(
+      "allows a config write that leaves an untouched inactive unsafe exec provider in place",
+      async () => {
+        // Ordinary writes preserve targeted validation for recovery. An
+        // untouched dormant exec provider may be repaired separately without
+        // blocking an unrelated Discord-token dry run; `config validate` is
+        // the strict all-provider surface (see #117128).
+        const badRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-untouched-"));
+        const symlinkPath = path.join(badRoot, "bad-link");
+        fs.symlinkSync(process.execPath, symlinkPath);
+        try {
+          setGatewaySnapshot({
+            providers: {
+              default: { source: "env" },
+              bad: { source: "exec", command: symlinkPath },
+            },
+          });
+
+          // Dry run must succeed and not write despite the dormant unsafe
+          // exec provider — targeted preflight skips untouched providers.
+          await runConfigCommand([
+            "config",
+            "set",
+            "channels.discord.token",
+            "--ref-provider",
+            "default",
+            "--ref-source",
+            "env",
+            "--ref-id",
+            "DISCORD_BOT_TOKEN",
+            "--dry-run",
+            "--json",
+          ]);
+          expect(mockWriteConfigFile).not.toHaveBeenCalled();
+          expect(mockError).not.toHaveBeenCalled();
+
+          // A real write also succeeds; the unrelated dormant provider does
+          // not block routine configuration recovery.
+          await runConfigCommand([
+            "config",
+            "set",
+            "channels.discord.token",
+            "--ref-provider",
+            "default",
+            "--ref-source",
+            "env",
+            "--ref-id",
+            "DISCORD_BOT_TOKEN",
+          ]);
+          expect(mockWriteConfigFile).toHaveBeenCalledTimes(1);
+        } finally {
+          fs.rmSync(badRoot, { recursive: true, force: true });
+        }
+      },
+    );
 
     it("emits structured JSON for --dry-run --json failure", async () => {
       setGatewaySnapshot({ providers: { default: { source: "env" } } });
@@ -4533,6 +4935,44 @@ describe("config cli", () => {
       expectErrorIncludes("Dry run failed: 1 SecretRef assignment(s) could not be resolved.");
       expectErrorIncludes("provider removed");
     });
+
+    it.skipIf(process.platform === "win32")(
+      "rejects a non-dry-run unset that persists an unsafe exec provider command path",
+      async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-config-unset-link-"));
+        const symlinkPath = path.join(root, "node-link");
+        fs.symlinkSync(process.execPath, symlinkPath);
+        try {
+          const resolved: OpenClawConfig = {
+            gateway: { port: 18789 },
+            secrets: {
+              providers: {
+                execmain: {
+                  source: "exec",
+                  command: symlinkPath,
+                  trustedDirs: ["/tmp"],
+                },
+              },
+            },
+          } as OpenClawConfig;
+          setSnapshot(resolved, resolved);
+          setSnapshot(resolved, resolved);
+
+          // A non-dry-run unset that touches an exec provider (here, removing an
+          // unrelated sub-field while leaving the unsafe command in place) must run
+          // the same targeted preflight as `config set/patch` before persistence, so
+          // a dormant unsafe command path cannot survive an unset-based rewrite.
+          await expect(
+            runConfigCommand(["config", "unset", "secrets.providers.execmain.trustedDirs"]),
+          ).rejects.toThrow("exec SecretRef provider command path is unsafe");
+
+          expect(mockWriteConfigFile).not.toHaveBeenCalled();
+          expectErrorIncludes("must not be a symlink");
+        } finally {
+          fs.rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
 
     it("validates existing refs when unset dry-run removes secret defaults", async () => {
       const resolved: OpenClawConfig = {

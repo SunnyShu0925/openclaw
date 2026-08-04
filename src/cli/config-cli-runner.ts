@@ -48,6 +48,7 @@ import {
   collectDryRunResolvabilityErrors,
   collectDryRunSchemaErrors,
   collectDryRunStaticErrorsForSkippedExecRefs,
+  collectManualExecProviderCommandPathErrors,
   collectPluginIntegrationProviderErrors,
   dedupeDryRunErrors,
   formatDryRunFailureMessage,
@@ -418,6 +419,7 @@ export async function runConfigOperations(params: {
     config: nextConfig,
     operations: appliedOperations,
   });
+
   if (options.dryRun) {
     const hasJsonMode = operations.some(({ inputMode }) => inputMode === "json");
     const hasBuilderMode = operations.some(({ inputMode }) => inputMode === "builder");
@@ -447,6 +449,11 @@ export async function runConfigOperations(params: {
       errors.push(...policyIssueLines.map((message) => ({ kind: "schema" as const, message })));
     }
     errors.push(...pluginIntegrationErrors);
+    const execProviderCommandPathErrors = await collectManualExecProviderCommandPathErrors({
+      config: nextConfig,
+      operations,
+    });
+    errors.push(...execProviderCommandPathErrors);
     if (requiresFullSchemaValidation) {
       errors.push(
         ...collectDryRunSchemaErrors(
@@ -477,7 +484,8 @@ export async function runConfigOperations(params: {
         schema:
           requiresFullSchemaValidation ||
           policyIssueLines.length > 0 ||
-          pluginIntegrationErrors.length > 0,
+          pluginIntegrationErrors.length > 0 ||
+          execProviderCommandPathErrors.length > 0,
         resolvability: checksRefs || modelRefCheck.refsTotal > 0,
         resolvabilityComplete:
           (checksRefs || modelRefCheck.refsTotal > 0) &&
@@ -533,6 +541,18 @@ export async function runConfigOperations(params: {
       [
         "Config validation failed: plugin-managed SecretRef provider integration is invalid.",
         ...pluginIntegrationErrors.map((error) => `- ${error.message}`),
+      ].join("\n"),
+    );
+  }
+  const execProviderCommandPathErrors = await collectManualExecProviderCommandPathErrors({
+    config: nextConfig,
+    operations,
+  });
+  if (execProviderCommandPathErrors.length > 0) {
+    throw new Error(
+      [
+        "Config validation failed: exec SecretRef provider command path is unsafe.",
+        ...execProviderCommandPathErrors.map((error) => `- ${error.message}`),
       ].join("\n"),
     );
   }

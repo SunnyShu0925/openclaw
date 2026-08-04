@@ -16,6 +16,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { type RuntimeEnv, defaultRuntime, writeRuntimeJson } from "../runtime.js";
+import { assertSecureExecCommandPath } from "../secrets/exec-provider-path-validation.js";
 import {
   isPluginIntegrationSecretProviderConfig,
   resolveSecretProviderIntegrationConfig,
@@ -277,13 +278,18 @@ function touchesSecretProviderCollection(path: readonly string[]): boolean {
   );
 }
 
-export function collectPluginIntegrationProviderErrors(params: {
-  config: OpenClawConfig;
+/**
+ * Collects the provider aliases a set of write operations touches, plus whether
+ * the whole provider collection was touched (forcing all providers to be
+ * inspected). Shared by the plugin-integration and manual exec-provider
+ * preflights so both honor the same touch scope.
+ */
+function collectTouchedProviders(params: {
   operations: ConfigSetOperation[];
-}): ConfigSetDryRunError[] {
-  const providers = params.config.secrets?.providers ?? {};
-  let validateAllProviders = false;
+  validateAllProviders?: boolean;
+}): { touchedProviderAliases: Set<string>; validateAllProviders: boolean } {
   const touchedProviderAliases = new Set<string>();
+  let validateAllProviders = params.validateAllProviders === true;
   for (const operation of params.operations) {
     if (operation.touchedProviderAlias) {
       touchedProviderAliases.add(operation.touchedProviderAlias);
@@ -296,6 +302,16 @@ export function collectPluginIntegrationProviderErrors(params: {
     }
     validateAllProviders ||= touchesSecretProviderCollection(operation.setPath);
   }
+  return { touchedProviderAliases, validateAllProviders };
+}
+
+export function collectPluginIntegrationProviderErrors(params: {
+  config: OpenClawConfig;
+  operations: ConfigSetOperation[];
+  validateAllProviders?: boolean;
+}): ConfigSetDryRunError[] {
+  const providers = params.config.secrets?.providers ?? {};
+  const { touchedProviderAliases, validateAllProviders } = collectTouchedProviders(params);
   if (!validateAllProviders && touchedProviderAliases.size === 0) {
     return [];
   }
@@ -329,6 +345,60 @@ export function collectPluginIntegrationProviderErrors(params: {
     });
     if (!resolved.ok) {
       errors.push({ kind: "schema", message: `secrets.providers.${alias}: ${resolved.reason}` });
+    }
+  }
+  return errors;
+}
+
+/**
+ * Runs the non-executing exec-provider command-path trust checks (the same
+ * rules startup activation applies) over the manual exec providers in the
+ * candidate config. A write checks only the providers it touches, or every
+ * provider when the write edits the provider collection itself; `config
+ * validate` scans the whole config separately. Plugin-integration providers
+ * are out of scope here; their materialized command parity is left to
+ * maintainers.
+ */
+export async function collectManualExecProviderCommandPathErrors(params: {
+  config: OpenClawConfig;
+  operations: ConfigSetOperation[];
+  validateAllProviders?: boolean;
+}): Promise<ConfigSetDryRunError[]> {
+  const providers = params.config.secrets?.providers ?? {};
+  const { touchedProviderAliases, validateAllProviders } = collectTouchedProviders(params);
+  if (!validateAllProviders && touchedProviderAliases.size === 0) {
+    return [];
+  }
+
+  const errors: ConfigSetDryRunError[] = [];
+  for (const [alias, provider] of Object.entries(providers)) {
+    if (!validateAllProviders && !touchedProviderAliases.has(alias)) {
+      continue;
+    }
+    if (isPluginIntegrationSecretProviderConfig(provider)) {
+      continue;
+    }
+    // A value-mode write can set a provider to `null` or a primitive without
+    // triggering full schema validation; guard the `in` check so malformed
+    // provider values fall through to the normal config error path instead of
+    // throwing a raw TypeError.
+    if (provider === null || typeof provider !== "object") {
+      continue;
+    }
+    if (!("command" in provider)) {
+      continue;
+    }
+    try {
+      await assertSecureExecCommandPath({
+        command: provider.command,
+        label: `secrets.providers.${alias}.command`,
+        trustedDirs: provider.trustedDirs,
+      });
+    } catch (err) {
+      errors.push({
+        kind: "schema",
+        message: `secrets.providers.${alias}: ${String(err)}`,
+      });
     }
   }
   return errors;

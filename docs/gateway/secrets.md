@@ -224,16 +224,16 @@ Provider aliases are source-specific. A matching explicit provider entry wins; i
 - `mode: "json"` (default) expects a JSON object payload and resolves `id` as a JSON pointer.
 - `mode: "singleValue"` expects ref id `"value"` and returns the raw file contents (trailing newline stripped).
 - Path must pass ownership/permission checks; `timeoutMs` (default 5000) and `maxBytes` (default 1 MiB) bound the read.
-- Windows fail-closed: if ACL verification is unavailable for the path, resolution fails. Move the secret to a path whose ACLs OpenClaw can verify; there is no provider-level bypass.
+- Windows fail-closed: if ACL verification is unavailable for the path, resolution fails; no opt-out exists.
 
 </Accordion>
 
 <Accordion title="Exec provider">
 - Runs the configured absolute binary path directly, no shell.
-- `command` must be a regular file, not a symlink. For package-manager shims, resolve the real binary path (for example with `realpath "$(command -v vault)"`) and configure that absolute path. Use `trustedDirs` to restrict executables to approved directories.
+- `command` must not be a symlink, not group- or world-writable, and (on POSIX) be owned by the current user. On Windows, inspectable ACLs are required instead (see the Windows fail-closed note below). Homebrew shims are symlinks and are rejected — point `command` at the real target path instead. Resolve it portably with `python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' /opt/homebrew/bin/vault` (works on macOS and Linux; re-resolve after each `brew upgrade`), and pair it with `trustedDirs` (for example `["/opt/homebrew"]`) so only package-manager paths qualify.
 - Supports `timeoutMs` (default 5000), `noOutputTimeoutMs` (default equals `timeoutMs`), `maxOutputBytes` (default 1 MiB), `env`/`passEnv` allowlist, and `trustedDirs`.
 - `jsonOnly` defaults to `true`. With `jsonOnly: false` and a single requested id, plain non-JSON stdout is accepted as that id's value.
-- Windows fail-closed: if ACL verification is unavailable for the command path, resolution fails. Use a command path whose ACLs OpenClaw can verify; there is no provider-level bypass.
+- Windows fail-closed: if ACL verification is unavailable for the command path, resolution fails.
 - Plugin-managed exec providers can use `pluginIntegration` instead of a copied `command`/`args`. OpenClaw resolves the current command details from the installed plugin manifest during startup/reload; if the plugin is disabled, removed, untrusted, or no longer declares the integration, active SecretRefs on that provider fail closed.
 
 Request payload (stdin):
@@ -529,8 +529,8 @@ For a dedicated 1Password guide covering service accounts, the bundled agent ski
         providers: {
           vault_openai: {
             source: "exec",
-            command: "/absolute/non-symlink/path/to/vault",
-            trustedDirs: ["/absolute/non-symlink/path/to"],
+            command: "<vault-real-path>", // resolve with the portable realpath command above; must not be a symlink
+            trustedDirs: ["/opt/homebrew"],
             args: ["kv", "get", "-field=OPENAI_API_KEY", "secret/openclaw"],
             passEnv: ["VAULT_ADDR", "VAULT_TOKEN"],
             jsonOnly: false,
@@ -636,8 +636,8 @@ For a dedicated 1Password guide covering service accounts, the bundled agent ski
         providers: {
           sops_openai: {
             source: "exec",
-            command: "/absolute/non-symlink/path/to/sops",
-            trustedDirs: ["/absolute/non-symlink/path/to"],
+            command: "<sops-real-path>", // resolve with the portable realpath command above; must not be a symlink
+            trustedDirs: ["/opt/homebrew"],
             args: ["-d", "--extract", '["providers"]["openai"]["apiKey"]', "/path/to/secrets.enc.json"],
             passEnv: ["SOPS_AGE_KEY_FILE"],
             jsonOnly: false,

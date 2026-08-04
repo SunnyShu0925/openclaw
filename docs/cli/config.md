@@ -112,12 +112,34 @@ machine-output spelling and keeps stdout reserved for the schema document.
 
 ### `config validate`
 
-Validates the current config against the active schema without starting the gateway. It also checks provider/source compatibility for every registry-declared SecretRef, including disabled plugin or channel configuration. This strict command can report an inactive mismatch that does not block normal Gateway startup, where SecretRef resolution remains limited to effectively active surfaces.
+Validates the current config against the active schema without starting the
+gateway. It also checks provider/source compatibility for every
+registry-declared SecretRef, including disabled plugin or channel
+configuration. This strict command can report an inactive mismatch that does
+not block normal Gateway startup, where SecretRef resolution remains limited to
+effectively active surfaces. Additionally, after schema validation passes,
+`config validate` runs the same non-executing exec-provider command-path trust
+checks (absolute path, symlink, trusted-directory, permission, ownership, and
+Windows ACL) that gateway startup activation applies, so a symlinked, missing,
+or unsafe `exec` command cannot pass validation and then fail on the next
+restart. These exec-provider checks cover every configured manual exec
+provider, not only the ones active on the current surfaces, matching the
+all-provider scope of the provider/source compatibility check above. Writes use
+targeted preflight instead: `config set/patch/unset` checks providers changed by
+the operation, or all providers when the write changes the `secrets.providers`
+collection itself.
 
 ```bash
 openclaw config validate
 openclaw config validate --json
 ```
+
+<Note>
+The exec-provider checks inspect the filesystem of the host where the CLI
+runs. Run `config validate` on the gateway host itself (or on a host with
+matching command paths, ownership, and ACLs) before relying on the result for
+restart safety.
+</Note>
 
 <Note>
 If validation is already failing, start with `openclaw configure` or `openclaw doctor --fix`. `openclaw chat` does not bypass the invalid-config guard.
