@@ -83,7 +83,9 @@ describe("writeImportedSourcePage", () => {
       "updatedAt: 2026-05-01T12:00:00.000Z\nsource body",
     );
     expect(result).toEqual({ pagePath: "pages/source.md", changed: true, created: true });
-    expect(state.entries["unsafe:source"]?.sourceUpdatedAtMs).toBe(8_700_000_000_000_000);
+    expect(state.entries["unsafe-local\0unsafe:source"]?.sourceUpdatedAtMs).toBe(
+      8_700_000_000_000_000,
+    );
   });
 
   it("skips 1,914 unchanged pages before opening the guarded vault", async () => {
@@ -103,7 +105,8 @@ describe("writeImportedSourcePage", () => {
     const syncKeys = Array.from({ length: 1_914 }, (_, index) => `bridge:${index}`);
     const state: Parameters<typeof writeImportedSourcePage>[0]["state"] = {
       version: 1,
-      entries: Object.fromEntries(syncKeys.map((syncKey) => [syncKey, { ...entry }])),
+      // Entries are keyed by `${group}\0${syncKey}` (#118370).
+      entries: Object.fromEntries(syncKeys.map((syncKey) => [`bridge\0${syncKey}`, { ...entry }])),
     };
     const buildRendered = vi.fn();
     fsRootMock.mockClear();

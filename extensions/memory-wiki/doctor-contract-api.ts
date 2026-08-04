@@ -29,9 +29,11 @@ import {
   writeMemoryWikiImportRunRecord,
 } from "./src/import-runs-state.js";
 import {
+  countMemoryWikiSourceSyncBareKeys,
   createMemoryWikiSourceSyncStateStore,
   MEMORY_WIKI_SOURCE_SYNC_STATE_MAX_ENTRIES,
   MEMORY_WIKI_SOURCE_SYNC_STATE_NAMESPACE,
+  migrateMemoryWikiSourceSyncBareKeys,
   readLegacyMemoryWikiSourceSyncState,
   resolveMemoryWikiSourceSyncStatePath,
   writeMemoryWikiSourceSyncState,
@@ -321,6 +323,52 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
           `Migrated Memory Wiki import runs -> plugin state (${importedCount} imported, ${existingRunIds.size} existing)`,
         );
         await archiveLegacyImportRunRecords({ vaultRoot, changes, warnings });
+      }
+      return { changes, warnings };
+    },
+  },
+  {
+    id: "memory-wiki-source-sync-bare-key-to-group-scoped",
+    label: "Memory Wiki source sync ownership keys",
+    async detectLegacyState(params) {
+      const previews: string[] = [];
+      for (const vaultRoot of resolveConfiguredVaultRoots({
+        config: params.config,
+        env: params.env,
+      })) {
+        const legacyCount = await countMemoryWikiSourceSyncBareKeys({
+          openKeyedStore: params.context.openPluginStateKeyedStore,
+          vaultRoot,
+        });
+        if (legacyCount > 0) {
+          previews.push(
+            `- Memory Wiki source sync: rewrite ${legacyCount} legacy ownership key(s) to group-scoped keys for ${vaultRoot}`,
+          );
+        }
+      }
+      return previews.length > 0 ? { preview: previews } : null;
+    },
+    async migrateLegacyState(params) {
+      const changes: string[] = [];
+      const warnings: string[] = [];
+      for (const vaultRoot of resolveConfiguredVaultRoots({
+        config: params.config,
+        env: params.env,
+      })) {
+        const { migratedCount, skippedCount } = await migrateMemoryWikiSourceSyncBareKeys({
+          openKeyedStore: params.context.openPluginStateKeyedStore,
+          vaultRoot,
+        });
+        if (migratedCount > 0) {
+          changes.push(
+            `Rewrote ${migratedCount} Memory Wiki source-sync ownership key(s) to group-scoped keys for ${vaultRoot}`,
+          );
+        }
+        if (skippedCount > 0) {
+          warnings.push(
+            `Skipped ${skippedCount} Memory Wiki source-sync legacy ownership key(s) for ${vaultRoot} because the namespace is at its cap; rerun \`openclaw doctor --fix\` after pruning unused sources to reclaim them`,
+          );
+        }
       }
       return { changes, warnings };
     },

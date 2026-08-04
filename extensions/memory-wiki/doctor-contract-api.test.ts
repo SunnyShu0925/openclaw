@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 // Memory Wiki tests cover doctor migration of legacy source sync state.
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -28,9 +29,26 @@ import {
 } from "./src/import-runs-state.js";
 import {
   createMemoryWikiSourceSyncStateStore,
+  MEMORY_WIKI_SOURCE_SYNC_STATE_MAX_ENTRIES,
+  MEMORY_WIKI_SOURCE_SYNC_STATE_NAMESPACE,
   readMemoryWikiSourceSyncState,
   resolveMemoryWikiSourceSyncStatePath,
 } from "./src/source-sync-state.js";
+
+// Local mirrors of the private key-resolution helpers in source-sync-state.ts,
+// duplicated here so the production module need not export them for tests
+// (which would trip the production knip unused-export gate). Keep in sync with
+// `resolveVaultRootKey` / `resolveStateEntryKey`.
+function resolveVaultRootKey(vaultRoot: string): string {
+  return createHash("sha256").update(path.resolve(vaultRoot), "utf8").digest("hex").slice(0, 32);
+}
+function resolveStateEntryKey(
+  vaultRootKey: string,
+  group: "bridge" | "unsafe-local",
+  syncKey: string,
+): string {
+  return createHash("sha256").update(`${vaultRootKey}\0${group}\0${syncKey}`, "utf8").digest("hex");
+}
 
 function requireStateMigration(id: string) {
   return expectDefined(
@@ -197,7 +215,7 @@ describe("memory-wiki doctor source sync migration", () => {
     await expect(readMemoryWikiSourceSyncState(vaultRoot, store)).resolves.toEqual({
       version: 1,
       entries: {
-        alpha: {
+        "bridge\0alpha": {
           group: "bridge",
           pagePath: "sources/alpha.md",
           sourcePath: "/tmp/alpha.md",
@@ -371,7 +389,7 @@ describe("memory-wiki doctor source sync migration", () => {
     await expect(readMemoryWikiSourceSyncState(vaultRoot, store)).resolves.toEqual({
       version: 1,
       entries: {
-        stale: {
+        "bridge\0stale": {
           group: "bridge",
           pagePath: "sources/stale.md",
           sourcePath: "/tmp/stale.md",
@@ -379,7 +397,7 @@ describe("memory-wiki doctor source sync migration", () => {
           sourceSize: 20,
           renderFingerprint: "stale",
         },
-        current: {
+        "bridge\0current": {
           group: "bridge",
           pagePath: "sources/current.md",
           sourcePath: "/tmp/current.md",
@@ -433,7 +451,75 @@ describe("memory-wiki doctor source sync migration", () => {
     for (const agentId of agentIds) {
       await expect(
         readMemoryWikiSourceSyncState(path.join(vaultRoot, agentId), store),
-      ).resolves.toMatchObject({ entries: { [agentId]: { renderFingerprint: agentId } } });
+      ).resolves.toMatchObject({
+        entries: { [`bridge\0${agentId}`]: { renderFingerprint: agentId } },
+      });
     }
+  });
+
+  it("detects and migrates legacy bare-key ownership rows to group-scoped keys", async () => {
+    // Regression for the #118370 upgrade path: pre-fix versions persisted each
+    // ownership row under a bare (vaultRootKey, syncKey) key. The Doctor
+    // migration rewrites these to canonical group-scoped keys so the runtime
+    // sync path can stay canonical-only (no capacity-sensitive rewrite on the
+    // hot path).
+    const stateDir = await makeTempDir();
+    const vaultRoot = path.join(stateDir, "vault");
+    const params = migrationParams({ stateDir, vaultRoot });
+    const migration = requireStateMigration("memory-wiki-source-sync-bare-key-to-group-scoped");
+
+    const vaultRootKey = resolveVaultRootKey(vaultRoot);
+    const sourcePath = "/tmp/legacy-source.md";
+    const legacyKey = createHash("sha256")
+      .update(`${vaultRootKey}\0${sourcePath}`, "utf8")
+      .digest("hex");
+    const canonicalKey = resolveStateEntryKey(vaultRootKey, "bridge", sourcePath);
+    const legacyRow = {
+      group: "bridge" as const,
+      pagePath: "sources/legacy.md",
+      sourcePath,
+      sourceUpdatedAtMs: 42,
+      sourceSize: 7,
+      renderFingerprint: "legacy-fp",
+      vaultRootKey,
+      syncKey: sourcePath,
+    };
+
+    const rawStore = createPluginStateKeyedStoreForTests("memory-wiki", {
+      namespace: MEMORY_WIKI_SOURCE_SYNC_STATE_NAMESPACE,
+      maxEntries: MEMORY_WIKI_SOURCE_SYNC_STATE_MAX_ENTRIES,
+      overflowPolicy: "reject-new",
+      env: params.env,
+    });
+    await rawStore.register(legacyKey, legacyRow);
+
+    await expect(migration.detectLegacyState(params)).resolves.toEqual({
+      preview: [expect.stringContaining("rewrite 1 legacy ownership key(s)")],
+    });
+
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
+      changes: [
+        `Rewrote 1 Memory Wiki source-sync ownership key(s) to group-scoped keys for ${vaultRoot}`,
+      ],
+      warnings: [],
+    });
+
+    // The legacy bare key is gone; only the canonical group-scoped key remains.
+    const rows = await rawStore.entries();
+    expect(rows.map((row) => row.key)).toEqual([canonicalKey]);
+
+    const store = createMemoryWikiSourceSyncStateStore(params.context.openPluginStateKeyedStore);
+    await expect(readMemoryWikiSourceSyncState(vaultRoot, store)).resolves.toMatchObject({
+      entries: {
+        [`bridge\0${sourcePath}`]: { group: "bridge", pagePath: "sources/legacy.md" },
+      },
+    });
+
+    // Idempotent: a second detect/migrate pass finds nothing to rewrite.
+    await expect(migration.detectLegacyState(params)).resolves.toBeNull();
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
+      changes: [],
+      warnings: [],
+    });
   });
 });

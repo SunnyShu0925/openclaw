@@ -47,6 +47,7 @@ export async function writeImportedSourcePage(params: {
 }): Promise<{ pagePath: string; changed: boolean; created: boolean }> {
   const shouldSkip = await shouldSkipImportedSourceWrite({
     vaultRoot: params.vaultRoot,
+    group: params.group,
     syncKey: params.syncKey,
     expectedPagePath: params.pagePath,
     expectedSourcePath: params.sourcePath,

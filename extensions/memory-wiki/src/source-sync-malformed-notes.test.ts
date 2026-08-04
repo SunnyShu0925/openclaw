@@ -27,8 +27,9 @@ async function makeTempDir(): Promise<string> {
 function createImportedSourceState(pagePath: string, group: MemoryWikiImportedSourceGroup) {
   return {
     version: 1 as const,
+    // Entries are keyed by `${group}\0${syncKey}` (#118370).
     entries: {
-      "sync-key": {
+      [`${group}\0sync-key`]: {
         group,
         pagePath,
         sourcePath: "/tmp/source.md",
@@ -92,7 +93,7 @@ describe("memory wiki source sync malformed human Notes", () => {
       const initialState = createImportedSourceState(pagePath, group);
       await writeMemoryWikiSourceSyncState(vaultRoot, initialState, store);
       const state = await readMemoryWikiSourceSyncState(vaultRoot, store);
-      const entry = state.entries["sync-key"]!;
+      const entry = state.entries[`${group}\0sync-key`]!;
       const updatedEntry = { ...entry, sourceSize: entry.sourceSize + 1 };
       setImportedSourceEntry({ state, syncKey: "sync-key", entry: updatedEntry });
       const expectedMissingMarker =
@@ -109,7 +110,7 @@ describe("memory wiki source sync malformed human Notes", () => {
         }),
       ).rejects.toThrow(expectedMissingMarker);
 
-      expect(state.entries["sync-key"]).toEqual(updatedEntry);
+      expect(state.entries[`${group}\0sync-key`]).toEqual(updatedEntry);
       await expect(readMemoryWikiSourceSyncState(vaultRoot, store)).resolves.toEqual(initialState);
       await expect(fs.readFile(pageAbsPath, "utf8")).resolves.toBe(pageContent);
       await expect(fs.access(path.join(vaultRoot, ".salvage"))).rejects.toMatchObject({
@@ -118,7 +119,7 @@ describe("memory wiki source sync malformed human Notes", () => {
 
       await writeMemoryWikiSourceSyncState(vaultRoot, state, store);
       await expect(readMemoryWikiSourceSyncState(vaultRoot, store)).resolves.toMatchObject({
-        entries: { "sync-key": updatedEntry },
+        entries: { [`${group}\0sync-key`]: updatedEntry },
       });
     },
   );
@@ -154,7 +155,7 @@ describe("memory wiki source sync malformed human Notes", () => {
       }),
     ).rejects.toThrow("<!-- openclaw:human:end -->");
 
-    expect(state.entries["sync-key"]).toBeDefined();
+    expect(state.entries["bridge\0sync-key"]).toBeDefined();
     await expect(fs.stat(pageAbsPath)).resolves.toSatisfy((stat) => stat.isFile());
     await expect(fs.access(path.join(vaultRoot, ".salvage"))).rejects.toMatchObject({
       code: "ENOENT",

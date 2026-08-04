@@ -19,6 +19,7 @@ import {
   pruneImportedSourceEntries,
   readLegacyMemoryWikiSourceSyncState,
   readMemoryWikiSourceSyncState,
+  resolveEntrySyncKey,
   resolveMemoryWikiSourceSyncStatePath,
   setImportedSourceEntry,
   writeMemoryWikiSourceSyncState,
@@ -56,7 +57,7 @@ function createImportedSourceState(pagePath: string, group: "bridge" | "unsafe-l
 
 function createCountingStore(options?: { maxEntries?: number }) {
   const values = new Map<string, unknown>();
-  const calls = { register: 0, delete: 0, entries: 0 };
+  const calls = { register: 0, delete: 0, deleteIf: 0, entries: 0 };
   let openOptions: OpenKeyedStoreOptions | undefined;
   const openKeyedStore = <T>(storeOptions: OpenKeyedStoreOptions): PluginStateKeyedStore<T> => {
     openOptions = storeOptions;
@@ -90,6 +91,14 @@ function createCountingStore(options?: { maxEntries?: number }) {
         calls.delete += 1;
         return values.delete(key);
       },
+      async deleteIf(key, predicate) {
+        calls.deleteIf += 1;
+        const current = values.get(key);
+        if (current === undefined || !predicate(current as T)) {
+          return false;
+        }
+        return values.delete(key);
+      },
       async entries() {
         calls.entries += 1;
         return [...values.entries()].map(([key, value]) => ({
@@ -112,6 +121,7 @@ function createCountingStore(options?: { maxEntries?: number }) {
     resetCalls() {
       calls.register = 0;
       calls.delete = 0;
+      calls.deleteIf = 0;
       calls.entries = 0;
     },
   };
@@ -141,7 +151,7 @@ describe("memory wiki source sync state", () => {
       {
         version: 1,
         entries: {
-          alpha: {
+          "bridge\0alpha": {
             group: "bridge",
             pagePath: "sources/alpha.md",
             sourcePath: "/tmp/source.md",
@@ -157,7 +167,7 @@ describe("memory wiki source sync state", () => {
     await expect(readMemoryWikiSourceSyncState(vaultRoot, store)).resolves.toEqual({
       version: 1,
       entries: {
-        alpha: {
+        "bridge\0alpha": {
           group: "bridge",
           pagePath: "sources/alpha.md",
           sourcePath: "/tmp/source.md",
@@ -194,9 +204,9 @@ describe("memory wiki source sync state", () => {
     const state = await readMemoryWikiSourceSyncState(vaultRoot, counting.store);
     counting.resetCalls();
     await writeMemoryWikiSourceSyncState(vaultRoot, state, counting.store);
-    expect(counting.calls).toEqual({ register: 0, delete: 0, entries: 0 });
+    expect(counting.calls).toEqual({ register: 0, delete: 0, deleteIf: 0, entries: 0 });
 
-    const changed = state.entries["source-0"];
+    const changed = state.entries["bridge\0source-0"];
     expect(changed).toBeDefined();
     setImportedSourceEntry({
       state,
@@ -204,21 +214,30 @@ describe("memory wiki source sync state", () => {
       entry: { ...changed!, sourceSize: changed!.sourceSize + 1 },
     });
     await writeMemoryWikiSourceSyncState(vaultRoot, state, counting.store);
-    expect(counting.calls).toEqual({ register: 1, delete: 0, entries: 0 });
+    // Runtime incremental writes are canonical-only: no `entries()` scan for
+    // legacy migration (the Doctor migration owns that rewrite). See #118370.
+    expect(counting.calls).toEqual({ register: 1, delete: 0, deleteIf: 0, entries: 0 });
 
     counting.resetCalls();
     await pruneImportedSourceEntries({
       vaultRoot,
       group: "bridge",
-      activeKeys: new Set(Object.keys(state.entries).filter((key) => key !== "source-1")),
+      activeKeys: new Set(
+        Object.keys(state.entries)
+          .map(resolveEntrySyncKey)
+          .filter((key) => key !== "source-1"),
+      ),
       state,
     });
     await writeMemoryWikiSourceSyncState(vaultRoot, state, counting.store);
-    expect(counting.calls).toEqual({ register: 0, delete: 1, entries: 0 });
+    // The incremental delete drops both the canonical key and the pre-#118370
+    // bare key for the pruned syncKey (idempotent: the bare key is absent here,
+    // so the second delete is a no-op but still counts as a store call).
+    expect(counting.calls).toEqual({ register: 0, delete: 1, deleteIf: 1, entries: 0 });
 
     const persisted = await readMemoryWikiSourceSyncState(vaultRoot, counting.store);
-    expect(persisted.entries["source-0"]?.sourceSize).toBe(1);
-    expect(persisted.entries["source-1"]).toBeUndefined();
+    expect(persisted.entries["bridge\0source-0"]?.sourceSize).toBe(1);
+    expect(persisted.entries["bridge\0source-1"]).toBeUndefined();
     expect(Object.keys(persisted.entries)).toHaveLength(1_913);
   });
 
@@ -256,7 +275,7 @@ describe("memory wiki source sync state", () => {
     });
     await writeMemoryWikiSourceSyncState(vaultRoot, tracked, counting.store);
     await expect(readMemoryWikiSourceSyncState(vaultRoot, counting.store)).resolves.toMatchObject({
-      entries: { "source-0": makeEntry(0), "source-2": makeEntry(2) },
+      entries: { "bridge\0source-0": makeEntry(0), "bridge\0source-2": makeEntry(2) },
     });
 
     await writeMemoryWikiSourceSyncState(
@@ -268,7 +287,7 @@ describe("memory wiki source sync state", () => {
       counting.store,
     );
     await expect(readMemoryWikiSourceSyncState(vaultRoot, counting.store)).resolves.toMatchObject({
-      entries: { "source-0": makeEntry(0), "source-3": makeEntry(3) },
+      entries: { "bridge\0source-0": makeEntry(0), "bridge\0source-3": makeEntry(3) },
     });
   });
 
@@ -300,7 +319,7 @@ describe("memory wiki source sync state", () => {
     await expect(readLegacyMemoryWikiSourceSyncState(vaultRoot)).resolves.toEqual({
       version: 1,
       entries: {
-        beta: {
+        "unsafe-local\0beta": {
           group: "unsafe-local",
           pagePath: "sources/beta.md",
           sourcePath: "/tmp/beta.md",

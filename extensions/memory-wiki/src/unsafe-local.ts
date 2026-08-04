@@ -20,6 +20,7 @@ import {
   assertMemoryWikiSourceSyncStateCapacity,
   pruneImportedSourceEntries,
   readMemoryWikiSourceSyncState,
+  resolveEntrySyncKey,
   writeMemoryWikiSourceSyncState,
 } from "./source-sync-state.js";
 import { initializeMemoryWikiVault } from "./vault.js";
@@ -236,7 +237,7 @@ export async function syncMemoryWikiUnsafeLocalSources(
   );
   const state = await readMemoryWikiSourceSyncState(config.vault.path);
   const activeKeys = new Set<string>();
-  for (const [syncKey, entry] of Object.entries(state.entries)) {
+  for (const [entryKey, entry] of Object.entries(state.entries)) {
     if (
       entry.group === "unsafe-local" &&
       unavailableConfiguredPaths.some((configuredPath) =>
@@ -245,7 +246,8 @@ export async function syncMemoryWikiUnsafeLocalSources(
     ) {
       // A configured source scope remains authoritative until it is readable again or removed
       // from config. Treating an unreadable mount as empty would permanently delete human notes.
-      activeKeys.add(syncKey);
+      // Entries are keyed by `${group}\0${syncKey}` (#118370), so recover the bare syncKey.
+      activeKeys.add(resolveEntrySyncKey(entryKey));
     }
   }
   assertMemoryWikiSourceSyncStateCapacity({
