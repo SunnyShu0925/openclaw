@@ -182,6 +182,19 @@ export type ContextEngineInfo = {
   /** True when the engine manages its own compaction lifecycle. */
   ownsCompaction?: boolean;
   /**
+   * True when the engine's `compact()` delegates to OpenClaw's native
+   * per-candidate fallback chain via {@link delegateCompactionToRuntime}.
+   *
+   * This is an explicit, narrow delegation contract: set it ONLY when
+   * `compact()` actually calls `delegateCompactionToRuntime(...)`, so the host
+   * can give each fallback candidate its own independent timeout window
+   * instead of a shared whole-operation deadline. Engines that leave it unset
+   * or false (including custom `compact()` implementations) keep the finite
+   * host watchdog, so a hung or non-delegating engine cannot stall `/compact`
+   * or overflow recovery indefinitely.
+   */
+  delegatesCompaction?: boolean;
+  /**
    * Controls how turn-triggered maintenance should be executed.
    *
    * Engines remain compatible by default unless the host explicitly opts into

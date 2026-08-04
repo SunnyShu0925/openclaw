@@ -969,12 +969,13 @@ export async function loadCompactHooksHarness(): Promise<{
           params: Record<string, unknown>,
           opts: {
             legacyDelegating?: boolean;
+            delegatesCompaction?: boolean;
             ownsCompaction?: boolean;
             pluginTimeoutMs?: number;
             abortSignal?: AbortSignal;
           },
         ) => {
-          if (opts.legacyDelegating && !opts.ownsCompaction) {
+          if ((opts.legacyDelegating || opts.delegatesCompaction) && !opts.ownsCompaction) {
             return compactWithSafetyTimeoutMock(
               () =>
                 contextEngine.compact(

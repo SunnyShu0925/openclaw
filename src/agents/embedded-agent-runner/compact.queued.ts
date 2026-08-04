@@ -690,6 +690,7 @@ async function compactResolvedContextEngine(
             {
               pluginTimeoutMs: resolveCompactionTimeoutMs(params.config),
               legacyDelegating: resolveContextEngineIsTrustedLegacy(contextEngine),
+              delegatesCompaction: contextEngine.info.delegatesCompaction === true,
               ownsCompaction: contextEngine.info.ownsCompaction === true,
               abortSignal: params.abortSignal,
             },

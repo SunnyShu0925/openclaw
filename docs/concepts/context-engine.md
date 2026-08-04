@@ -340,11 +340,15 @@ That means there are two valid plugin patterns:
     Implement your own compaction algorithm and set `ownsCompaction: true`.
   </Tab>
   <Tab title="Delegating mode">
-    Set `ownsCompaction: false` and have `compact()` call `delegateCompactionToRuntime(...)` from `openclaw/plugin-sdk/core` to use OpenClaw's built-in compaction behavior.
+    Set `ownsCompaction: false` **and** `delegatesCompaction: true` and have `compact()` call `delegateCompactionToRuntime(...)` from `openclaw/plugin-sdk/core` to use OpenClaw's built-in compaction behavior. The explicit `delegatesCompaction` declaration lets the host give each native fallback candidate its own independent timeout window instead of a shared whole-operation deadline; engines that do not declare it keep the finite host watchdog.
   </Tab>
 </Tabs>
 
 A no-op `compact()` is unsafe for an active non-owning engine because it disables the normal `/compact` and overflow-recovery compaction path for that engine slot.
+
+<Warning>
+`delegatesCompaction: true` is a narrow contract: set it ONLY when `compact()` actually calls `delegateCompactionToRuntime(...)`. A custom `compact()` implementation that does not delegate must leave it unset so the host keeps the finite timeout watchdog.
+</Warning>
 
 ## Configuration reference
 

@@ -219,10 +219,12 @@ export function compactContextEngineWithSafetyTimeout(
 }
 
 /**
- * Unexported helper for the trusted built-in legacy context engine only.
+ * Unexported helper for engines that delegate compaction to the runtime native
+ * per-candidate fallback chain — the trusted built-in legacy engine (registry
+ * identity) and plugins that explicitly declare `info.delegatesCompaction`.
  *
- * `compact()` on the legacy engine delegates to the model-fallback candidate
- * chain internally, so each candidate is bounded by its own independent
+ * `compact()` on these engines delegates to the model-fallback candidate chain
+ * internally, so each candidate is bounded by its own independent
  * {@link resolveCompactionTimeoutMs} watchdog. The wrapper therefore arms NO
  * chain-wide timer — doing so would recreate #115546 (a slow candidate-1 erodes
  * candidate-2's window via the shared deadline). It threads only the raw caller
@@ -232,13 +234,15 @@ export function compactContextEngineWithSafetyTimeout(
  * `timeoutSeconds` window.
  *
  * This is intentionally NOT exported: a third-party plugin harness must not be
- * able to reach the no-watchdog branch by passing a flag. Callers verify trusted
- * core-legacy registry identity (via {@link resolveContextEngineIsTrustedLegacy},
- * never `info.id` which is spoofable display metadata) before invoking this
- * helper (ClawSweeper P1: keep the legacy watchdog bypass private). A
- * runtime-delegating plugin whose `ownsCompaction` is unset or false does NOT
- * prove it delegates to the native fallback chain, so it keeps the finite host
- * watchdog.
+ * able to reach the no-watchdog branch by passing a flag. Callers select this
+ * path from a trusted core-legacy registry identity (via
+ * {@link resolveContextEngineIsTrustedLegacy}, never `info.id` which is
+ * spoofable display metadata) or the engine's explicit
+ * `info.delegatesCompaction === true` declaration, and only when
+ * `info.ownsCompaction !== true` (ClawSweeper P1: keep the delegating-engine
+ * watchdog bypass private). A plugin that merely omits `ownsCompaction` or
+ * leaves `delegatesCompaction` unset does NOT prove it delegates to the native
+ * fallback chain, so it keeps the finite host watchdog.
  */
 function compactDelegatingContextEngineWithSafetyTimeout(
   contextEngine: Pick<ContextEngine, "compact">,
@@ -270,9 +274,10 @@ function compactDelegatingContextEngineWithSafetyTimeout(
 
 /**
  * Internal entry point for host compaction call sites. Selects between the
- * trusted-legacy no-chain-deadline path and the public finite-watchdog path,
- * based on trusted core-legacy registry identity AND `info.ownsCompaction`.
- * Not exported: the public SDK surface is
+ * delegating-engine no-chain-deadline path and the public finite-watchdog path,
+ * based on trusted core-legacy registry identity or the explicit
+ * `info.delegatesCompaction` declaration, AND `info.ownsCompaction`. Not
+ * exported: the public SDK surface is
  * {@link compactContextEngineWithSafetyTimeout} (finite watchdog always on).
  */
 export function compactContextEngineWithSafetyTimeoutInternal(
@@ -281,22 +286,25 @@ export function compactContextEngineWithSafetyTimeoutInternal(
   opts: {
     /** Trusted core-legacy registry identity (resolveContextEngineIsTrustedLegacy). */
     legacyDelegating: boolean;
+    /** contextEngine.info.delegatesCompaction === true (explicit delegation contract). */
+    delegatesCompaction: boolean;
     /** contextEngine.info.ownsCompaction === true. */
     ownsCompaction: boolean;
     pluginTimeoutMs?: number;
     abortSignal?: AbortSignal;
   },
 ): Promise<CompactResult> {
-  if (opts.legacyDelegating && !opts.ownsCompaction) {
-    // Trusted built-in legacy delegates compact() to the runtime native
-    // per-candidate fallback chain, where each candidate is bounded by its own
-    // independent resolveCompactionTimeoutMs watchdog. Arm no wrapper timer — a
-    // chain-wide deadline would recreate #115546 (slow candidate-1 erodes
-    // candidate-2's window). Caller cancellation still threads through
-    // params.abortSignal. Engines that merely omit ownsCompaction (or a
-    // runtime-delegating plugin that is not the trusted built-in legacy) do NOT
-    // prove they delegate, so they keep the finite host watchdog (ClawSweeper
-    // P1: keep the watchdog for unproven delegation).
+  if ((opts.legacyDelegating || opts.delegatesCompaction) && !opts.ownsCompaction) {
+    // Engines proven to delegate compact() to the runtime native per-candidate
+    // fallback chain (trusted built-in legacy via registry identity, or a
+    // plugin that explicitly declares info.delegatesCompaction: true) get no
+    // wrapper timer — each candidate is bounded by its own independent
+    // resolveCompactionTimeoutMs watchdog. A chain-wide deadline would recreate
+    // #115546 (slow candidate-1 erodes candidate-2's window). Caller
+    // cancellation still threads through params.abortSignal. Engines that
+    // merely omit ownsCompaction, or declare neither legacy identity nor
+    // delegatesCompaction, do NOT prove they delegate, so they keep the finite
+    // host watchdog (ClawSweeper P1: keep the watchdog for unproven delegation).
     return compactDelegatingContextEngineWithSafetyTimeout(
       contextEngine,
       params,

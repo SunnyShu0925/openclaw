@@ -173,6 +173,7 @@ export async function compactEmbeddedRunForRecovery(
     {
       pluginTimeoutMs: resolveCompactionTimeoutMs(runParams.config),
       legacyDelegating: resolveContextEngineIsTrustedLegacy(input.contextEngine),
+      delegatesCompaction: input.contextEngine.info.delegatesCompaction === true,
       ownsCompaction: input.contextEngine.info.ownsCompaction === true,
       abortSignal: runParams.abortSignal,
     },

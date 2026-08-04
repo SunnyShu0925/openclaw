@@ -340,6 +340,7 @@ describe("compactContextEngineWithSafetyTimeout", () => {
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
       legacyDelegating: true,
+      delegatesCompaction: false,
       ownsCompaction: false,
       abortSignal: controller.signal,
     });
@@ -372,6 +373,7 @@ describe("compactContextEngineWithSafetyTimeout", () => {
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
       legacyDelegating: true,
+      delegatesCompaction: false,
       ownsCompaction: false,
       abortSignal: controller.signal,
     });
@@ -437,6 +439,7 @@ describe("compactContextEngineWithSafetyTimeout", () => {
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
       legacyDelegating: true,
+      delegatesCompaction: false,
       ownsCompaction: false,
       abortSignal: controller.signal,
     });
@@ -451,23 +454,24 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     await expect(pending).rejects.toBe(abortError);
   });
 
-  it("keeps the finite watchdog for a runtime-delegating plugin engine without trusted-core identity (ClawSweeper P1)", async () => {
+  it("keeps the finite watchdog for a non-delegating plugin engine that does not declare delegatesCompaction (ClawSweeper P1)", async () => {
     // ClawSweeper P1: ownsCompaction false-or-unset does NOT prove the engine
-    // delegates compact() to the runtime native fallback chain. The documented
-    // runtime-delegating plugin pattern sets ownsCompaction: false and calls
-    // delegateCompactionToRuntime, but a plugin cannot be trusted by identity
-    // (owner is plugin:xxx, not "core") — so it must keep the finite host
-    // watchdog. Only the trusted built-in legacy engine (registry identity,
-    // legacyDelegating) receives the no-chain per-candidate path. This guards a
-    // hung non-delegating plugin from blocking /compact indefinitely.
+    // delegates compact() to the runtime native fallback chain. A plugin that
+    // merely sets ownsCompaction: false without the explicit
+    // `delegatesCompaction: true` declaration must keep the finite host
+    // watchdog — otherwise a hung custom compact() blocks /compact or overflow
+    // recovery indefinitely. Only engines proven to delegate (trusted built-in
+    // legacy via registry identity, or an explicit delegatesCompaction
+    // declaration) receive the no-chain per-candidate path.
     vi.useFakeTimers();
-    // Simulated runtime-delegating plugin engine: ownsCompaction: false and
-    // legacyDelegating: false (not trusted core). A hung compact() must still be
-    // bounded by the finite host watchdog.
+    // Simulated plugin engine: ownsCompaction: false, legacyDelegating: false
+    // (not trusted core), delegatesCompaction NOT declared. A hung compact()
+    // must still be bounded by the finite host watchdog.
     const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
       legacyDelegating: false,
+      delegatesCompaction: false,
       ownsCompaction: false,
       pluginTimeoutMs: resolveCompactionTimeoutMs(),
     });
@@ -478,8 +482,45 @@ describe("compactContextEngineWithSafetyTimeout", () => {
     expect(compact).toHaveBeenCalledTimes(1);
 
     // …but it does fire at the finite watchdog, even though ownsCompaction is
-    // false — proving delegation alone is not trusted without core identity.
+    // false — proving delegation alone is not trusted without an explicit
+    // declaration or core identity.
     await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("applies no chain deadline for a plugin engine that explicitly declares delegatesCompaction (ClawSweeper P1)", async () => {
+    // ClawSweeper P1 (current review): the documented runtime-delegating plugin
+    // pattern (`ownsCompaction: false` + `compact()` calling
+    // delegateCompactionToRuntime) enters the SAME native per-candidate
+    // fallback chain as the trusted built-in legacy engine, so it must also get
+    // independent candidate windows — an outer shared deadline would let a slow
+    // candidate-1 erode candidate-2's window (#115546 regression). The explicit
+    // `info.delegatesCompaction: true` declaration is the narrow trusted signal
+    // that admits this path; engines without it keep the finite host watchdog.
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const abortError = new Error("run aborted");
+    // Simulated runtime-delegating plugin engine: ownsCompaction: false,
+    // legacyDelegating: false (not trusted core), delegatesCompaction: true
+    // (explicit declaration that compact() calls delegateCompactionToRuntime).
+    const compact = vi.fn<CompactFn>(() => new Promise<CompactResult>(() => {}));
+
+    const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
+      legacyDelegating: false,
+      delegatesCompaction: true,
+      ownsCompaction: false,
+      abortSignal: controller.signal,
+    });
+    const assertion = expect(pending).rejects.toBe(abortError);
+
+    // No chain timer is armed — advancing time does not abort on its own; only
+    // caller cancellation can abort the in-flight delegate.
+    await vi.advanceTimersByTimeAsync(EMBEDDED_COMPACTION_TIMEOUT_MS * 2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(compact).toHaveBeenCalledTimes(1);
+
+    controller.abort(abortError);
     await assertion;
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -547,6 +588,7 @@ describe("compactContextEngineWithSafetyTimeout", () => {
 
     const pending = compactContextEngineWithSafetyTimeoutInternal({ compact }, baseParams, {
       legacyDelegating: false,
+      delegatesCompaction: false,
       ownsCompaction: false,
       pluginTimeoutMs: resolveCompactionTimeoutMs(),
     });

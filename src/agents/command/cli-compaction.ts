@@ -343,6 +343,7 @@ async function compactCliTranscript(params: {
       {
         pluginTimeoutMs: resolveCompactionTimeoutMs(params.cfg),
         legacyDelegating: resolveContextEngineIsTrustedLegacy(params.contextEngine),
+        delegatesCompaction: params.contextEngine.info.delegatesCompaction === true,
         ownsCompaction: params.contextEngine.info.ownsCompaction === true,
       },
     );

@@ -1095,6 +1095,7 @@ export default function (api) {
       id: "my-memory-engine",
       name: "My Memory Engine",
       ownsCompaction: false,
+      delegatesCompaction: true,
     },
     async ingest() {
       return { ingested: true };

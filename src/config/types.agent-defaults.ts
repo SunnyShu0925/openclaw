@@ -400,11 +400,12 @@ export type AgentCompactionConfig = {
    * When set, compaction uses this model instead of the agent's primary model.
    * Falls back to the primary model when unset. */
   model?: string;
-  /** Compaction timeout in seconds (default: 180). For the trusted built-in legacy
-   * engine (which delegates to the native per-candidate fallback chain), this is
-   * the maximum seconds for a single candidate attempt; for engines that own
-   * their compaction (`ownsCompaction: true`), this is a whole-operation outer
-   * watchdog. */
+  /** Compaction timeout in seconds (default: 180). For engines proven to delegate
+   * `compact()` to the native per-candidate fallback chain (the trusted built-in
+   * legacy engine, or a plugin declaring `delegatesCompaction: true`), this is the
+   * maximum seconds for a single candidate attempt; for every other engine
+   * (engine-owned compaction or a non-declaring custom engine), this is a
+   * whole-operation outer watchdog. */
   timeoutSeconds?: number;
   /**
    * Id of a registered compaction provider plugin.

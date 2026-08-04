@@ -142,6 +142,12 @@ function buildCompactionResultSessionTarget(params: {
  * not own the compaction algorithm but still need `/compact` and overflow
  * recovery to use the stock runtime behavior.
  *
+ * Engines that delegate here MUST also declare `info.delegatesCompaction:
+ * true` so the host gives each native fallback candidate its own independent
+ * timeout window instead of a shared whole-operation deadline; without the
+ * declaration the host keeps the finite watchdog (see
+ * {@link ContextEngineInfo.delegatesCompaction}).
+ *
  * Note: `compactionTarget` is part of the public `compact()` contract, but the
  * built-in runtime compaction path does not expose that knob. This helper
  * ignores it to preserve legacy behavior; engines that need target-specific
