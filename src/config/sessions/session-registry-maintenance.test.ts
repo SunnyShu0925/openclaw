@@ -4,7 +4,11 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import { createFixtureSuite } from "../../test-utils/fixture-suite.js";
-import { loadSessionEntry, replaceSessionEntry } from "./session-accessor.js";
+import {
+  appendTranscriptEventSync,
+  loadSessionEntry,
+  replaceSessionEntry,
+} from "./session-accessor.js";
 import { runSessionRegistryMaintenanceForStore } from "./session-registry-maintenance.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import type { SessionEntry } from "./types.js";
@@ -40,6 +44,23 @@ function resolveRequiredSqlitePath(storePath: string): string {
     throw new Error(`Expected a SQLite target for ${storePath}`);
   }
   return sqlitePath;
+}
+
+async function listDeletedArchiveFiles(root: string): Promise<string[]> {
+  const archives: string[] = [];
+  const walk = async (dir: string) => {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.name.includes(".deleted.") && entry.name.endsWith(".zst")) {
+        archives.push(fullPath);
+      }
+    }
+  };
+  await walk(root);
+  return archives;
 }
 
 describe("runSessionRegistryMaintenanceForStore", () => {
@@ -141,6 +162,53 @@ describe("runSessionRegistryMaintenanceForStore", () => {
     expect(
       loadSessionEntry({ sessionKey: "agent:main:cron:done-job:run:recent-run", storePath }),
     ).toEqual(sessionEntry("recent-run", now));
+  });
+
+  it("archives the transcript when pruning stale cron-run sessions", async () => {
+    const now = Date.now();
+    const sessionKey = "agent:main:cron:done-job:run:old-run";
+    const sessionId = "run-1";
+    const storePath = await createStore({
+      [sessionKey]: sessionEntry(sessionId, now - 8 * DAY_MS),
+    });
+    appendTranscriptEventSync(
+      { sessionKey, sessionId, storePath },
+      { type: "proof-event", data: "cron transcript must survive pruning" },
+    );
+
+    const result = await runSessionRegistryMaintenanceForStore({
+      apply: true,
+      retentionMs: 7 * DAY_MS,
+      runningCronJobIds: new Set(),
+      storePath,
+    });
+
+    expect(result).toEqual({
+      beforeCount: 1,
+      afterCount: 0,
+      preservedRunning: 0,
+      pruned: 1,
+    });
+    expect(loadSessionEntry({ sessionKey, storePath })).toBeUndefined();
+    const archives = await listDeletedArchiveFiles(path.dirname(storePath));
+    expect(archives.length).toBeGreaterThan(0);
+  });
+
+  it("does not write transcript archives during preview", async () => {
+    const now = Date.now();
+    const storePath = await createStore({
+      "agent:main:cron:done-job:run:old-run": sessionEntry("run-1", now - 8 * DAY_MS),
+    });
+
+    const result = await runSessionRegistryMaintenanceForStore({
+      apply: false,
+      retentionMs: 7 * DAY_MS,
+      runningCronJobIds: new Set(),
+      storePath,
+    });
+
+    expect(result.pruned).toBe(1);
+    expect(await listDeletedArchiveFiles(path.dirname(storePath))).toStrictEqual([]);
   });
 
   it("applies pruning to stale cron-run descendant rows", async () => {
