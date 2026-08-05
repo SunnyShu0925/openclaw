@@ -734,7 +734,11 @@ describe("loadPluginManifestRegistry", () => {
     });
 
     const registry = loadRegistry([
-      createPluginCandidate({ idHint: "broken-schema-plugin", rootDir: brokenDir, origin: "global" }),
+      createPluginCandidate({
+        idHint: "broken-schema-plugin",
+        rootDir: brokenDir,
+        origin: "global",
+      }),
       createPluginCandidate({ idHint: "healthy-plugin", rootDir: healthyDir, origin: "global" }),
     ]);
 
