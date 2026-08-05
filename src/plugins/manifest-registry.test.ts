@@ -690,6 +690,66 @@ describe("loadPluginManifestRegistry", () => {
     ]);
   });
 
+  it("rejects a manifest whose configSchema is structurally invalid", () => {
+    const rootDir = makeTempDir();
+    writeManifest(rootDir, {
+      id: "broken-schema-plugin",
+      configSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: { mode: { $ref: "#/$defs/Mode" } },
+        definitions: { Mode: { type: "string", enum: ["fast", "slow"] } },
+      },
+    });
+
+    const registry = loadRegistry([
+      createPluginCandidate({ idHint: "broken-schema-plugin", rootDir, origin: "global" }),
+    ]);
+
+    expect(registry.plugins).toStrictEqual([]);
+    expect(registry.diagnostics).toEqual([
+      expect.objectContaining({
+        level: "error",
+        pluginId: "broken-schema-plugin",
+        message: expect.stringContaining(
+          "plugin manifest configSchema is invalid: <schema>.properties.mode.$ref: unresolved ref",
+        ),
+      }),
+    ]);
+  });
+
+  it("isolates a plugin with a structurally invalid configSchema while healthy siblings load", () => {
+    const brokenDir = makeTempDir();
+    writeManifest(brokenDir, {
+      id: "broken-schema-plugin",
+      configSchema: {
+        type: "object",
+        properties: { name: { type: "str" } },
+      },
+    });
+    const healthyDir = makeTempDir();
+    writeManifest(healthyDir, {
+      id: "healthy-plugin",
+      configSchema: { type: "object", additionalProperties: false },
+    });
+
+    const registry = loadRegistry([
+      createPluginCandidate({ idHint: "broken-schema-plugin", rootDir: brokenDir, origin: "global" }),
+      createPluginCandidate({ idHint: "healthy-plugin", rootDir: healthyDir, origin: "global" }),
+    ]);
+
+    expect(registry.plugins.map((plugin) => plugin.id)).toEqual(["healthy-plugin"]);
+    expect(registry.diagnostics).toEqual([
+      expect.objectContaining({
+        level: "error",
+        pluginId: "broken-schema-plugin",
+        message: expect.stringContaining(
+          "plugin manifest configSchema is invalid: <schema>.properties.name.type: unsupported JSON Schema type",
+        ),
+      }),
+    ]);
+  });
+
   it("keeps configured same-name default-entry manifest failures distinct by full root", () => {
     const root = makeTempDir();
     const candidates = ["first", "second"].map((parent) => {

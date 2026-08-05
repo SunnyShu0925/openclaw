@@ -5,6 +5,7 @@ import { normalizeModelCatalog } from "@openclaw/model-catalog-core/model-catalo
 import { normalizeOptionalString } from "../../packages/normalization-core/src/string-coerce.js";
 import { normalizeTrimmedStringList } from "../../packages/normalization-core/src/string-normalization.js";
 import { matchRootFileOpenFailure, openRootFileSync } from "../infra/boundary-file-read.js";
+import { findJsonSchemaShapeError } from "../shared/json-schema-defaults.js";
 import { isRecord } from "../utils.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import * as capabilityNormalizers from "./manifest-capability-normalizers.js";
@@ -197,6 +198,14 @@ export function loadPluginManifest(
   const configSchema = isRecord(raw.configSchema) ? raw.configSchema : null;
   if (!configSchema) {
     return cacheResult({ ok: false, error: "plugin manifest requires configSchema", manifestPath });
+  }
+  const configSchemaShapeError = findJsonSchemaShapeError(configSchema);
+  if (configSchemaShapeError) {
+    return cacheResult({
+      ok: false,
+      error: `plugin manifest configSchema is invalid: ${configSchemaShapeError}`,
+      manifestPath,
+    });
   }
 
   const requiresPlugins = normalizeTrimmedStringList(raw.requiresPlugins);
