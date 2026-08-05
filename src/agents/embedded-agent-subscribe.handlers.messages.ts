@@ -1340,8 +1340,8 @@ export function handleMessageEnd(
     : visibleText;
 
   // Exact NO_REPLY stays silent. The legacy rewrite (silentReplyRewrite) was
-  // removed by contract; mirroring messaging-tool text here leaked internal
-  // sessions_send bodies into the originating user channel (#119383).
+  // removed by contract; global messaging-tool send evidence is not a
+  // user-route reply and must never be mirrored into the final payload.
   const text = finalVisibleText;
   const rawThinking =
     ctx.state.includeReasoning || ctx.state.streamReasoning

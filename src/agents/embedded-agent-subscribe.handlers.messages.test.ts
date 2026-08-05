@@ -1671,10 +1671,7 @@ describe("handleMessageEnd", () => {
         blockBuffer: "",
         deltaBuffer: "",
         messagingToolSentTexts: ["<user-facing reply>", "<internal escalation note>"],
-        messagingToolSentTextsNormalized: [
-          "<user-facing reply>",
-          "<internal escalation note>",
-        ],
+        messagingToolSentTextsNormalized: ["<user-facing reply>", "<internal escalation note>"],
         messagingToolSentTargets: [
           {
             tool: "message",
