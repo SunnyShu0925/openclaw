@@ -459,21 +459,28 @@ function resolvePluginConfigEnablement(params: {
     config: params.config,
     installRecords: params.installRecords,
   });
-  // A manifest admission failure (e.g. structurally invalid configSchema) keeps the
-  // plugin out of `registry.plugins` but records it as an error diagnostic. Mapping
-  // that absence to `ready` would persist a malformed plugin as a successful install,
-  // so surface the admission failure as an invalid enablement that blocks install.
-  const admissionError = registry.diagnostics.find(
-    (diagnostic) =>
-      diagnostic.level === "error" &&
-      diagnostic.pluginId === params.pluginId &&
-      typeof diagnostic.message === "string",
-  );
-  if (admissionError) {
-    return { mode: "invalid", error: admissionError.message };
-  }
   const manifest = registry.plugins.find((plugin) => plugin.id === params.pluginId);
-  if (!manifest?.configSchema) {
+  if (!manifest) {
+    // No admitted manifest for this id. A plugin can land here for two reasons:
+    // a manifest admission failure (e.g. structurally invalid configSchema), or a
+    // discovery/registration error that also kept it out of the registry. Other
+    // setup-resolution errors (e.g. missing runtime setup entry) leave the plugin
+    // admitted in `registry.plugins` with a coexisting error diagnostic, so they
+    // take the `manifest` branch below instead. Only when the manifest is genuinely
+    // absent do we surface the matching error diagnostic as an invalid enablement
+    // that blocks install, rather than mapping the absence to `ready`.
+    const admissionError = registry.diagnostics.find(
+      (diagnostic) =>
+        diagnostic.level === "error" &&
+        diagnostic.pluginId === params.pluginId &&
+        typeof diagnostic.message === "string",
+    );
+    if (admissionError) {
+      return { mode: "invalid", error: admissionError.message };
+    }
+    return { mode: "ready" };
+  }
+  if (!manifest.configSchema) {
     return { mode: "ready" };
   }
   const entry = params.config.plugins?.entries?.[params.pluginId];
