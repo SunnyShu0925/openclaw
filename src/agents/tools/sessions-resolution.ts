@@ -15,6 +15,7 @@ import { logWarn } from "../../logger.js";
 import {
   listSpawnedSessionKeysWithResult,
   lookupFailedDenialSuffix,
+  type LookupFailureKind,
 } from "../../plugin-sdk/session-visibility-internal.js";
 import { createSessionVisibilityChecker } from "../../plugin-sdk/session-visibility.js";
 import {
@@ -93,7 +94,7 @@ export function resolveCurrentSessionClientAlias(params: {
 type SpawnedVisibilityOutcome =
   | { kind: "visible" }
   | { kind: "not-owned" }
-  | { kind: "lookup-failed"; retryable: boolean };
+  | { kind: "lookup-failed"; failureKind: LookupFailureKind };
 
 /**
  * Detects the expected "No session found" miss from the speculative
@@ -160,12 +161,10 @@ async function isRequesterSpawnedSessionVisible(params: {
     requesterSessionKey: params.requesterSessionKey,
     callGateway: gatewayCall,
   });
-  // A failed lookup fail-closes as a distinct outcome carrying retryability, so
-  // a transient transport failure (retry) is distinguishable from a permanent
-  // credential/configuration failure (do not retry); it must not collapse into
-  // the generic sandboxed-session denial (review P1: classify before prescribing retry).
+  // A failed lookup fail-closes as a distinct outcome carrying only guidance
+  // supported by the caught error; it must not collapse into a policy denial.
   if (!result.ok) {
-    return { kind: "lookup-failed", retryable: result.retryable };
+    return { kind: "lookup-failed", failureKind: result.failureKind };
   }
   return (!params.targetAgentId || params.targetAgentId === params.requesterAgentId) &&
     result.keys.has(params.targetSessionKey)
@@ -523,7 +522,7 @@ export async function resolveVisibleSessionReference(params: {
       return {
         ok: false,
         status: "forbidden",
-        error: `${resolutionActionPrefix(params.action)} denied because ${lookupFailedDenialSuffix(spawnedOutcome.retryable)}`,
+        error: `${resolutionActionPrefix(params.action)} denied because ${lookupFailedDenialSuffix(spawnedOutcome.failureKind)}`,
         displayKey,
       };
     }
