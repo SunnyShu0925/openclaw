@@ -455,10 +455,24 @@ function resolvePluginConfigEnablement(params: {
   pluginId: string;
   installRecords: Record<string, PluginInstallRecord>;
 }): PluginConfigEnablement {
-  const manifest = loadPluginManifestRegistry({
+  const registry = loadPluginManifestRegistry({
     config: params.config,
     installRecords: params.installRecords,
-  }).plugins.find((plugin) => plugin.id === params.pluginId);
+  });
+  // A manifest admission failure (e.g. structurally invalid configSchema) keeps the
+  // plugin out of `registry.plugins` but records it as an error diagnostic. Mapping
+  // that absence to `ready` would persist a malformed plugin as a successful install,
+  // so surface the admission failure as an invalid enablement that blocks install.
+  const admissionError = registry.diagnostics.find(
+    (diagnostic) =>
+      diagnostic.level === "error" &&
+      diagnostic.pluginId === params.pluginId &&
+      typeof diagnostic.message === "string",
+  );
+  if (admissionError) {
+    return { mode: "invalid", error: admissionError.message };
+  }
+  const manifest = registry.plugins.find((plugin) => plugin.id === params.pluginId);
   if (!manifest?.configSchema) {
     return { mode: "ready" };
   }
