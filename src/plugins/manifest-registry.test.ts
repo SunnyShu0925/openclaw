@@ -788,6 +788,41 @@ describe("loadPluginManifestRegistry", () => {
     }
   });
 
+  it("isolates a plugin whose configSchema exceeds the maximum structural depth", () => {
+    // A manifest under the 256 KiB size limit can still encode a deeply nested schema
+    // (e.g. a properties chain) that would overflow the shape walker's call stack. The
+    // walker must return a controlled error instead of throwing, so the manifest is
+    // isolated as a diagnostic and healthy siblings keep loading.
+    let deepSchema: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 200; i += 1) {
+      deepSchema = { type: "object", properties: { n: deepSchema } };
+    }
+    const brokenDir = makeTempDir();
+    writeManifest(brokenDir, {
+      id: "deep-schema-plugin",
+      configSchema: deepSchema,
+    });
+    const healthyDir = makeTempDir();
+    writeManifest(healthyDir, {
+      id: "healthy-plugin",
+      configSchema: { type: "object", additionalProperties: false },
+    });
+
+    const registry = loadRegistry([
+      createPluginCandidate({ idHint: "deep-schema-plugin", rootDir: brokenDir, origin: "global" }),
+      createPluginCandidate({ idHint: "healthy-plugin", rootDir: healthyDir, origin: "global" }),
+    ]);
+
+    expect(registry.plugins.map((plugin) => plugin.id)).toEqual(["healthy-plugin"]);
+    expect(registry.diagnostics).toEqual([
+      expect.objectContaining({
+        level: "error",
+        pluginId: "deep-schema-plugin",
+        message: expect.stringContaining("exceeds maximum depth"),
+      }),
+    ]);
+  });
+
   it("keeps configured same-name default-entry manifest failures distinct by full root", () => {
     const root = makeTempDir();
     const candidates = ["first", "second"].map((parent) => {

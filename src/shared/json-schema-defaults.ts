@@ -17,6 +17,14 @@ type LocalRefResolution =
   | { found: false };
 const schemaResourceIds = new WeakMap<object, number>();
 let nextSchemaResourceId = 1;
+/**
+ * Maximum structural depth the shape walker will descend before returning a controlled
+ * error. A manifest under the 256 KiB admission limit can still encode thousands of
+ * nested schema layers (e.g. a `properties` chain), which would overflow the call stack
+ * and bypass the manifest-registry isolation path. 100 is far below Node's stack limit
+ * (each level costs 2-3 frames) while comfortably exceeding real-world schema depth.
+ */
+const MAX_SCHEMA_SHAPE_DEPTH = 100;
 const schemaMapKeywords = new Set([
   "$defs",
   "definitions",
@@ -484,7 +492,11 @@ function findJsonSchemaNodeError(
   root: JsonSchemaValue,
   resourceRoot: JsonSchemaValue,
   resourceBaseId: string | undefined,
+  depth: number,
 ): string | undefined {
+  if (depth > MAX_SCHEMA_SHAPE_DEPTH) {
+    return `${path}: schema exceeds maximum depth of ${MAX_SCHEMA_SHAPE_DEPTH}`;
+  }
   if (typeof schema === "boolean") {
     return undefined;
   }
@@ -539,6 +551,7 @@ function findJsonSchemaNodeError(
         root,
         currentResourceRoot,
         currentResourceBaseId,
+        depth + 1,
       );
       if (error) {
         return error;
@@ -556,6 +569,7 @@ function findJsonSchemaNodeError(
         root,
         currentResourceRoot,
         currentResourceBaseId,
+        depth + 1,
       );
       if (error) {
         return error;
@@ -578,6 +592,7 @@ function findJsonSchemaNodeError(
           root,
           currentResourceRoot,
           currentResourceBaseId,
+          depth + 1,
         );
         if (error) {
           return error;
@@ -591,6 +606,7 @@ function findJsonSchemaNodeError(
       root,
       currentResourceRoot,
       currentResourceBaseId,
+      depth + 1,
     );
     if (error) {
       return error;
@@ -611,6 +627,7 @@ function findJsonSchemaNodeError(
         root,
         currentResourceRoot,
         currentResourceBaseId,
+        depth + 1,
       );
       if (error) {
         return error;
@@ -622,7 +639,7 @@ function findJsonSchemaNodeError(
 
 /** Return the first structural JSON Schema error that would make validation/defaulting unsafe. */
 export function findJsonSchemaShapeError(schema: JsonSchemaValue): string | undefined {
-  return findJsonSchemaNodeError(schema, "<schema>", schema, schema, undefined);
+  return findJsonSchemaNodeError(schema, "<schema>", schema, schema, undefined, 0);
 }
 
 function cloneDefault<T>(value: T): T {
