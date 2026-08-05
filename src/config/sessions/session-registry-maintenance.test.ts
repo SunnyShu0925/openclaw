@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import { createFixtureSuite } from "../../test-utils/fixture-suite.js";
+import { isRetainedSessionTranscriptArchiveName } from "./artifacts.js";
 import {
   appendTranscriptEventSync,
   loadSessionEntry,
@@ -54,7 +55,7 @@ async function listDeletedArchiveFiles(root: string): Promise<string[]> {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(fullPath);
-      } else if (entry.name.includes(".deleted.") && entry.name.endsWith(".zst")) {
+      } else if (isRetainedSessionTranscriptArchiveName(entry.name)) {
         archives.push(fullPath);
       }
     }
