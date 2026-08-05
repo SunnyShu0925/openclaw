@@ -788,19 +788,24 @@ describe("loadPluginManifestRegistry", () => {
     }
   });
 
-  it("isolates a plugin whose configSchema exceeds the maximum structural depth", () => {
-    // A manifest under the 256 KiB size limit can still encode a deeply nested schema
-    // (e.g. a properties chain) that would overflow the shape walker's call stack. The
-    // walker must return a controlled error instead of throwing, so the manifest is
-    // isolated as a diagnostic and healthy siblings keep loading.
-    let deepSchema: Record<string, unknown> = { type: "string" };
-    for (let i = 0; i < 200; i += 1) {
-      deepSchema = { type: "object", properties: { n: deepSchema } };
-    }
+  it("walks a deeply nested configSchema without overflowing the call stack", () => {
+    // A manifest under the 256 KiB size limit can encode a deeply nested schema (e.g. a
+    // properties chain) that would overflow the shape walker's call stack if it recursed.
+    // The walker is stack-safe (iterative with a visited set), so a deep but otherwise valid
+    // schema loads normally instead of throwing a RangeError that would bypass isolation.
+    const buildDeepSchema = (depth: number): Record<string, unknown> => {
+      let deepSchema: Record<string, unknown> = { type: "string" };
+      for (let i = 0; i < depth; i += 1) {
+        deepSchema = { type: "object", properties: { n: deepSchema } };
+      }
+      return deepSchema;
+    };
+    // 6000 levels overflows Node's default call stack when the walker recurses 2-3 frames
+    // per level; the iterative walker must traverse it in constant stack space.
     const brokenDir = makeTempDir();
     writeManifest(brokenDir, {
       id: "deep-schema-plugin",
-      configSchema: deepSchema,
+      configSchema: buildDeepSchema(6000),
     });
     const healthyDir = makeTempDir();
     writeManifest(healthyDir, {
@@ -813,14 +818,79 @@ describe("loadPluginManifestRegistry", () => {
       createPluginCandidate({ idHint: "healthy-plugin", rootDir: healthyDir, origin: "global" }),
     ]);
 
-    expect(registry.plugins.map((plugin) => plugin.id)).toEqual(["healthy-plugin"]);
-    expect(registry.diagnostics).toEqual([
-      expect.objectContaining({
-        level: "error",
-        pluginId: "deep-schema-plugin",
-        message: expect.stringContaining("exceeds maximum depth"),
-      }),
+    expect(registry.plugins.map((plugin) => plugin.id).sort()).toEqual([
+      "deep-schema-plugin",
+      "healthy-plugin",
     ]);
+    expect(registry.diagnostics).toEqual([]);
+  });
+
+  it("resolves a $ref to a deeply nested $anchor without overflowing the stack", () => {
+    // The shape checker resolves $ref before recursing into nodes; local-anchor resolution
+    // is a separate recursive search (resolveLocalAnchor). A $ref pointing at an anchor
+    // buried under thousands of properties layers must resolve in constant stack space,
+    // otherwise the RangeError bypasses manifest isolation and aborts the whole load.
+    let deepNode: Record<string, unknown> = { type: "string", $anchor: "deep" };
+    for (let i = 0; i < 6000; i += 1) {
+      deepNode = { type: "object", properties: { n: deepNode } };
+    }
+    const brokenDir = makeTempDir();
+    writeManifest(brokenDir, {
+      id: "deep-anchor-plugin",
+      configSchema: { $ref: "#deep", ...deepNode },
+    });
+    const healthyDir = makeTempDir();
+    writeManifest(healthyDir, {
+      id: "healthy-plugin",
+      configSchema: { type: "object", additionalProperties: false },
+    });
+
+    const registry = loadRegistry([
+      createPluginCandidate({ idHint: "deep-anchor-plugin", rootDir: brokenDir, origin: "global" }),
+      createPluginCandidate({ idHint: "healthy-plugin", rootDir: healthyDir, origin: "global" }),
+    ]);
+
+    expect(registry.plugins.map((plugin) => plugin.id).sort()).toEqual([
+      "deep-anchor-plugin",
+      "healthy-plugin",
+    ]);
+    expect(registry.diagnostics).toEqual([]);
+  });
+
+  it("resolves a $ref to a deeply nested resource $id without overflowing the stack", () => {
+    // Resource-reference resolution (resolveSchemaResourceRef.visit) is a third recursive
+    // search separate from the node walker. A $ref targeting a resource $id buried under
+    // thousands of layers must resolve in constant stack space, otherwise the RangeError
+    // escapes isolation.
+    let deepNode: Record<string, unknown> = { type: "string", $id: "https://example.test/deep" };
+    for (let i = 0; i < 6000; i += 1) {
+      deepNode = { type: "object", properties: { n: deepNode } };
+    }
+    const brokenDir = makeTempDir();
+    writeManifest(brokenDir, {
+      id: "deep-resource-plugin",
+      configSchema: { $ref: "https://example.test/deep", ...deepNode },
+    });
+    const healthyDir = makeTempDir();
+    writeManifest(healthyDir, {
+      id: "healthy-plugin",
+      configSchema: { type: "object", additionalProperties: false },
+    });
+
+    const registry = loadRegistry([
+      createPluginCandidate({
+        idHint: "deep-resource-plugin",
+        rootDir: brokenDir,
+        origin: "global",
+      }),
+      createPluginCandidate({ idHint: "healthy-plugin", rootDir: healthyDir, origin: "global" }),
+    ]);
+
+    expect(registry.plugins.map((plugin) => plugin.id).sort()).toEqual([
+      "deep-resource-plugin",
+      "healthy-plugin",
+    ]);
+    expect(registry.diagnostics).toEqual([]);
   });
 
   it("keeps configured same-name default-entry manifest failures distinct by full root", () => {

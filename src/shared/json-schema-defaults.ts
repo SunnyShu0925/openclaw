@@ -17,14 +17,6 @@ type LocalRefResolution =
   | { found: false };
 const schemaResourceIds = new WeakMap<object, number>();
 let nextSchemaResourceId = 1;
-/**
- * Maximum structural depth the shape walker will descend before returning a controlled
- * error. A manifest under the 256 KiB admission limit can still encode thousands of
- * nested schema layers (e.g. a `properties` chain), which would overflow the call stack
- * and bypass the manifest-registry isolation path. 100 is far below Node's stack limit
- * (each level costs 2-3 frames) while comfortably exceeding real-world schema depth.
- */
-const MAX_SCHEMA_SHAPE_DEPTH = 100;
 const schemaMapKeywords = new Set([
   "$defs",
   "definitions",
@@ -150,66 +142,71 @@ function resolveLocalAnchor(
   anchor: string,
   isRoot = true,
 ): JsonSchemaValue | undefined {
-  if (!isRecord(schema)) {
-    return undefined;
-  }
-  if (!isRoot && typeof schema.$id === "string") {
-    return undefined;
-  }
-  if (schema.$anchor === anchor || schema.$dynamicAnchor === anchor) {
-    return schema;
-  }
-  for (const key of schemaMapKeywords) {
-    const value = schema[key];
-    if (!isRecord(value)) {
+  // Iterative DFS so a deep or cyclic schema graph cannot overflow the call stack. A
+  // `visited` set guards cycles (e.g. a `$ref`-rooted properties loop); the 256 KiB
+  // manifest admission limit bounds the acyclic case to a few tens of thousands of nodes.
+  const visited = new Set<object>();
+  const stack: Array<{ schema: JsonSchemaValue; isRoot: boolean }> = [{ schema, isRoot }];
+  while (stack.length > 0) {
+    const item = stack.pop() as { schema: JsonSchemaValue; isRoot: boolean };
+    const { schema: current, isRoot: currentIsRoot } = item;
+    if (!isRecord(current)) {
       continue;
     }
-    for (const entry of Object.values(value)) {
-      const resolved = resolveLocalAnchor(entry as JsonSchemaValue, anchor, false);
-      if (resolved !== undefined) {
-        return resolved;
-      }
+    if (!currentIsRoot && typeof current.$id === "string") {
+      // A nested `$id` starts a new resource; local anchors do not cross resource boundaries.
+      continue;
     }
-  }
-  if (isRecord(schema.dependencies)) {
-    for (const entry of Object.values(schema.dependencies)) {
-      if (isStringArray(entry)) {
+    if (visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+    if (current.$anchor === anchor || current.$dynamicAnchor === anchor) {
+      return current;
+    }
+    // Push children in reverse iteration order so they are popped in source order, matching
+    // the previous recursive left-to-right search.
+    const children: JsonSchemaValue[] = [];
+    for (const key of schemaMapKeywords) {
+      const value = current[key];
+      if (!isRecord(value)) {
         continue;
       }
-      const resolved = resolveLocalAnchor(entry as JsonSchemaValue, anchor, false);
-      if (resolved !== undefined) {
-        return resolved;
+      for (const entry of Object.values(value)) {
+        children.push(entry as JsonSchemaValue);
       }
     }
-  }
-  for (const key of schemaValueKeywords) {
-    const value = schema[key];
-    if (typeof value === "boolean" || isRecord(value)) {
-      const resolved = resolveLocalAnchor(value as JsonSchemaValue, anchor, false);
-      if (resolved !== undefined) {
-        return resolved;
+    if (isRecord(current.dependencies)) {
+      for (const entry of Object.values(current.dependencies)) {
+        if (isStringArray(entry)) {
+          continue;
+        }
+        children.push(entry as JsonSchemaValue);
       }
-      continue;
     }
-    if (key === "items" && Array.isArray(value)) {
-      for (const entry of value) {
-        const resolved = resolveLocalAnchor(entry as JsonSchemaValue, anchor, false);
-        if (resolved !== undefined) {
-          return resolved;
+    for (const key of schemaValueKeywords) {
+      const value = current[key];
+      if (typeof value === "boolean" || isRecord(value)) {
+        children.push(value as JsonSchemaValue);
+        continue;
+      }
+      if (key === "items" && Array.isArray(value)) {
+        for (const entry of value) {
+          children.push(entry as JsonSchemaValue);
         }
       }
     }
-  }
-  for (const key of schemaArrayKeywords) {
-    const value = schema[key];
-    if (!Array.isArray(value)) {
-      continue;
-    }
-    for (const entry of value) {
-      const resolved = resolveLocalAnchor(entry as JsonSchemaValue, anchor, false);
-      if (resolved !== undefined) {
-        return resolved;
+    for (const key of schemaArrayKeywords) {
+      const value = current[key];
+      if (!Array.isArray(value)) {
+        continue;
       }
+      for (const entry of value) {
+        children.push(entry as JsonSchemaValue);
+      }
+    }
+    for (let index = children.length - 1; index >= 0; index--) {
+      stack.push({ schema: children[index], isRoot: false });
     }
   }
   return undefined;
@@ -301,9 +298,14 @@ function resolveSchemaResourceRef(
   const resolvedRefResource =
     refParts.resource === "" ? refParts.resource : resolveSchemaId(refParts.resource, baseId);
   const seen = new Set<object>();
-  const visit = (current: JsonSchemaValue, baseIdLocal: string | undefined): LocalRefResolution => {
+  const stack: Array<{ schema: JsonSchemaValue; baseId: string | undefined }> = [
+    { schema, baseId: undefined },
+  ];
+  while (stack.length > 0) {
+    const item = stack.pop() as { schema: JsonSchemaValue; baseId: string | undefined };
+    const { schema: current, baseId: baseIdLocal } = item;
     if (!isRecord(current) || seen.has(current)) {
-      return { found: false };
+      continue;
     }
     seen.add(current);
 
@@ -318,16 +320,16 @@ function resolveSchemaResourceRef(
       }
     }
 
+    // Collect children, then push in reverse so they are popped in source order, matching the
+    // previous recursive left-to-right search.
+    const children: JsonSchemaValue[] = [];
     for (const key of schemaMapKeywords) {
       const value = current[key];
       if (!isRecord(value)) {
         continue;
       }
       for (const entry of Object.values(value)) {
-        const resolved = visit(entry as JsonSchemaValue, currentBaseId);
-        if (resolved.found) {
-          return resolved;
-        }
+        children.push(entry as JsonSchemaValue);
       }
     }
     if (isRecord(current.dependencies)) {
@@ -335,27 +337,18 @@ function resolveSchemaResourceRef(
         if (isStringArray(entry)) {
           continue;
         }
-        const resolved = visit(entry as JsonSchemaValue, currentBaseId);
-        if (resolved.found) {
-          return resolved;
-        }
+        children.push(entry as JsonSchemaValue);
       }
     }
     for (const key of schemaValueKeywords) {
       const value = current[key];
       if (typeof value === "boolean" || isRecord(value)) {
-        const resolved = visit(value as JsonSchemaValue, currentBaseId);
-        if (resolved.found) {
-          return resolved;
-        }
+        children.push(value as JsonSchemaValue);
         continue;
       }
       if (key === "items" && Array.isArray(value)) {
         for (const entry of value) {
-          const resolved = visit(entry as JsonSchemaValue, currentBaseId);
-          if (resolved.found) {
-            return resolved;
-          }
+          children.push(entry as JsonSchemaValue);
         }
       }
     }
@@ -365,16 +358,14 @@ function resolveSchemaResourceRef(
         continue;
       }
       for (const entry of value) {
-        const resolved = visit(entry as JsonSchemaValue, currentBaseId);
-        if (resolved.found) {
-          return resolved;
-        }
+        children.push(entry as JsonSchemaValue);
       }
     }
-    return { found: false };
-  };
-
-  return visit(schema, undefined);
+    for (let index = children.length - 1; index >= 0; index--) {
+      stack.push({ schema: children[index], baseId: currentBaseId });
+    }
+  }
+  return { found: false };
 }
 
 function resolveSchemaRef(
@@ -486,151 +477,156 @@ function validateSchemaKeywordShapes(
   return undefined;
 }
 
-function findJsonSchemaNodeError(
-  schema: unknown,
-  path: string,
+type NodeWorkItem = {
+  schema: unknown;
+  path: string;
+  resourceRoot: JsonSchemaValue;
+  resourceBaseId: string | undefined;
+};
+
+/**
+ * Walk every schema node reachable from `schema` without recursing on the call stack.
+ *
+ * Each reachable node is handed to `visit`, which may return a shape-error string to short-
+ * circuit the walk. A `visited` set guards against cyclic schema graphs (a `$ref`-rooted
+ * cycle, or a `properties` chain that loops back) so the walk always terminates; the 256 KiB
+ * manifest admission limit bounds the acyclic case to a few tens of thousands of nodes, which
+ * an explicit work stack traverses in constant call-stack space with no depth ceiling.
+ */
+function walkSchemaNodes(
   root: JsonSchemaValue,
-  resourceRoot: JsonSchemaValue,
-  resourceBaseId: string | undefined,
-  depth: number,
+  start: unknown,
+  startPath: string,
+  startResourceRoot: JsonSchemaValue,
+  startResourceBaseId: string | undefined,
 ): string | undefined {
-  if (depth > MAX_SCHEMA_SHAPE_DEPTH) {
-    return `${path}: schema exceeds maximum depth of ${MAX_SCHEMA_SHAPE_DEPTH}`;
-  }
-  if (typeof schema === "boolean") {
-    return undefined;
-  }
-  if (!isRecord(schema)) {
-    return `${path}: schema must be an object or boolean`;
-  }
-  if (Object.hasOwn(schema, "type")) {
-    const typeError = validateTypeKeyword(schema.type, path);
-    if (typeError) {
-      return typeError;
-    }
-  }
-  if (schema.nullable !== undefined) {
-    if (typeof schema.nullable !== "boolean") {
-      return `${path}.nullable: expected boolean`;
-    }
-    if (!Object.hasOwn(schema, "type")) {
-      return `${path}.nullable: expected type`;
-    }
-  }
-  const keywordError = validateSchemaKeywordShapes(schema, path);
-  if (keywordError) {
-    return keywordError;
-  }
-  const currentResourceRoot = typeof schema.$id === "string" ? schema : resourceRoot;
-  const currentResourceBaseId =
-    typeof schema.$id === "string" ? resolveSchemaId(schema.$id, resourceBaseId) : resourceBaseId;
-  if (typeof schema.$ref === "string") {
-    if (!resolveSchemaRef(root, currentResourceRoot, schema.$ref, currentResourceBaseId).found) {
-      return `${path}.$ref: unresolved ref`;
-    }
-  }
-  if (typeof schema.$dynamicRef === "string") {
-    if (
-      !resolveSchemaRef(root, currentResourceRoot, schema.$dynamicRef, currentResourceBaseId).found
-    ) {
-      return `${path}.$dynamicRef: unresolved ref`;
-    }
-  }
-  for (const key of schemaMapKeywords) {
-    const value = schema[key];
-    if (value === undefined) {
+  const visited = new Set<object>();
+  const stack: NodeWorkItem[] = [
+    {
+      schema: start,
+      path: startPath,
+      resourceRoot: startResourceRoot,
+      resourceBaseId: startResourceBaseId,
+    },
+  ];
+  while (stack.length > 0) {
+    const item = stack.pop() as NodeWorkItem;
+    const { schema, path, resourceRoot, resourceBaseId } = item;
+    if (typeof schema === "boolean") {
       continue;
     }
-    if (!isRecord(value)) {
-      return `${path}.${key}: expected schema map`;
+    if (!isRecord(schema)) {
+      return `${path}: schema must be an object or boolean`;
     }
-    for (const [entryKey, entry] of Object.entries(value)) {
-      const error = findJsonSchemaNodeError(
-        entry,
-        `${path}.${key}.${entryKey}`,
-        root,
-        currentResourceRoot,
-        currentResourceBaseId,
-        depth + 1,
-      );
-      if (error) {
-        return error;
+    if (visited.has(schema)) {
+      continue;
+    }
+    visited.add(schema);
+    if (Object.hasOwn(schema, "type")) {
+      const typeError = validateTypeKeyword(schema.type, path);
+      if (typeError) {
+        return typeError;
       }
     }
-  }
-  if (isRecord(schema.dependencies)) {
-    for (const [key, value] of Object.entries(schema.dependencies)) {
-      if (isStringArray(value)) {
+    if (schema.nullable !== undefined) {
+      if (typeof schema.nullable !== "boolean") {
+        return `${path}.nullable: expected boolean`;
+      }
+      if (!Object.hasOwn(schema, "type")) {
+        return `${path}.nullable: expected type`;
+      }
+    }
+    const keywordError = validateSchemaKeywordShapes(schema, path);
+    if (keywordError) {
+      return keywordError;
+    }
+    const currentResourceRoot = typeof schema.$id === "string" ? schema : resourceRoot;
+    const currentResourceBaseId =
+      typeof schema.$id === "string" ? resolveSchemaId(schema.$id, resourceBaseId) : resourceBaseId;
+    if (typeof schema.$ref === "string") {
+      if (!resolveSchemaRef(root, currentResourceRoot, schema.$ref, currentResourceBaseId).found) {
+        return `${path}.$ref: unresolved ref`;
+      }
+    }
+    if (typeof schema.$dynamicRef === "string") {
+      if (
+        !resolveSchemaRef(root, currentResourceRoot, schema.$dynamicRef, currentResourceBaseId)
+          .found
+      ) {
+        return `${path}.$dynamicRef: unresolved ref`;
+      }
+    }
+    for (const key of schemaMapKeywords) {
+      const value = schema[key];
+      if (value === undefined) {
         continue;
       }
-      const error = findJsonSchemaNodeError(
-        value,
-        `${path}.dependencies.${key}`,
-        root,
-        currentResourceRoot,
-        currentResourceBaseId,
-        depth + 1,
-      );
-      if (error) {
-        return error;
+      if (!isRecord(value)) {
+        return `${path}.${key}: expected schema map`;
+      }
+      for (const [entryKey, entry] of Object.entries(value)) {
+        stack.push({
+          schema: entry,
+          path: `${path}.${key}.${entryKey}`,
+          resourceRoot: currentResourceRoot,
+          resourceBaseId: currentResourceBaseId,
+        });
       }
     }
-  }
-  for (const key of schemaValueKeywords) {
-    const value = schema[key];
-    if (value === undefined || typeof value === "boolean") {
-      continue;
+    if (isRecord(schema.dependencies)) {
+      for (const [key, value] of Object.entries(schema.dependencies)) {
+        if (isStringArray(value)) {
+          continue;
+        }
+        stack.push({
+          schema: value,
+          path: `${path}.dependencies.${key}`,
+          resourceRoot: currentResourceRoot,
+          resourceBaseId: currentResourceBaseId,
+        });
+      }
     }
-    if (Array.isArray(value)) {
-      if (key !== "items") {
-        return `${path}.${key}: expected schema`;
+    for (const key of schemaValueKeywords) {
+      const value = schema[key];
+      if (value === undefined || typeof value === "boolean") {
+        continue;
+      }
+      if (Array.isArray(value)) {
+        if (key !== "items") {
+          return `${path}.${key}: expected schema`;
+        }
+        for (const [index, entry] of value.entries()) {
+          stack.push({
+            schema: entry,
+            path: `${path}.${key}.${index}`,
+            resourceRoot: currentResourceRoot,
+            resourceBaseId: currentResourceBaseId,
+          });
+        }
+        continue;
+      }
+      stack.push({
+        schema: value,
+        path: `${path}.${key}`,
+        resourceRoot: currentResourceRoot,
+        resourceBaseId: currentResourceBaseId,
+      });
+    }
+    for (const key of schemaArrayKeywords) {
+      const value = schema[key];
+      if (value === undefined) {
+        continue;
+      }
+      if (!Array.isArray(value)) {
+        return `${path}.${key}: expected schema array`;
       }
       for (const [index, entry] of value.entries()) {
-        const error = findJsonSchemaNodeError(
-          entry,
-          `${path}.${key}.${index}`,
-          root,
-          currentResourceRoot,
-          currentResourceBaseId,
-          depth + 1,
-        );
-        if (error) {
-          return error;
-        }
-      }
-      continue;
-    }
-    const error = findJsonSchemaNodeError(
-      value,
-      `${path}.${key}`,
-      root,
-      currentResourceRoot,
-      currentResourceBaseId,
-      depth + 1,
-    );
-    if (error) {
-      return error;
-    }
-  }
-  for (const key of schemaArrayKeywords) {
-    const value = schema[key];
-    if (value === undefined) {
-      continue;
-    }
-    if (!Array.isArray(value)) {
-      return `${path}.${key}: expected schema array`;
-    }
-    for (const [index, entry] of value.entries()) {
-      const error = findJsonSchemaNodeError(
-        entry,
-        `${path}.${key}.${index}`,
-        root,
-        currentResourceRoot,
-        currentResourceBaseId,
-        depth + 1,
-      );
-      if (error) {
-        return error;
+        stack.push({
+          schema: entry,
+          path: `${path}.${key}.${index}`,
+          resourceRoot: currentResourceRoot,
+          resourceBaseId: currentResourceBaseId,
+        });
       }
     }
   }
@@ -639,7 +635,7 @@ function findJsonSchemaNodeError(
 
 /** Return the first structural JSON Schema error that would make validation/defaulting unsafe. */
 export function findJsonSchemaShapeError(schema: JsonSchemaValue): string | undefined {
-  return findJsonSchemaNodeError(schema, "<schema>", schema, schema, undefined, 0);
+  return walkSchemaNodes(schema, schema, "<schema>", schema, undefined);
 }
 
 function cloneDefault<T>(value: T): T {
@@ -954,46 +950,52 @@ function applyObjectConditionalDefaults(
 }
 
 function countSchemaNodes(schema: JsonSchemaValue, seen = new Set<object>()): number {
-  if (typeof schema === "boolean" || !isRecord(schema) || seen.has(schema)) {
-    return 1;
-  }
-  seen.add(schema);
-  let count = 1;
-  for (const key of schemaMapKeywords) {
-    const value = schema[key];
-    if (!isRecord(value)) {
+  // Iterative DFS so a deep schema graph cannot overflow the call stack. `seen` guards cycles.
+  let count = 0;
+  const stack: JsonSchemaValue[] = [schema];
+  while (stack.length > 0) {
+    const current = stack.pop() as JsonSchemaValue;
+    count += 1;
+    if (typeof current === "boolean" || !isRecord(current) || seen.has(current)) {
       continue;
     }
-    for (const entry of Object.values(value)) {
-      count += countSchemaNodes(entry as JsonSchemaValue, seen);
-    }
-  }
-  if (isRecord(schema.dependencies)) {
-    for (const entry of Object.values(schema.dependencies)) {
-      if (!isStringArray(entry)) {
-        count += countSchemaNodes(entry as JsonSchemaValue, seen);
+    seen.add(current);
+    for (const key of schemaMapKeywords) {
+      const value = current[key];
+      if (!isRecord(value)) {
+        continue;
+      }
+      for (const entry of Object.values(value)) {
+        stack.push(entry as JsonSchemaValue);
       }
     }
-  }
-  for (const key of schemaValueKeywords) {
-    const value = schema[key];
-    if (typeof value === "boolean" || isRecord(value)) {
-      count += countSchemaNodes(value as JsonSchemaValue, seen);
-      continue;
+    if (isRecord(current.dependencies)) {
+      for (const entry of Object.values(current.dependencies)) {
+        if (!isStringArray(entry)) {
+          stack.push(entry as JsonSchemaValue);
+        }
+      }
     }
-    if (key === "items" && Array.isArray(value)) {
+    for (const key of schemaValueKeywords) {
+      const value = current[key];
+      if (typeof value === "boolean" || isRecord(value)) {
+        stack.push(value as JsonSchemaValue);
+        continue;
+      }
+      if (key === "items" && Array.isArray(value)) {
+        for (const entry of value) {
+          stack.push(entry as JsonSchemaValue);
+        }
+      }
+    }
+    for (const key of schemaArrayKeywords) {
+      const value = current[key];
+      if (!Array.isArray(value)) {
+        continue;
+      }
       for (const entry of value) {
-        count += countSchemaNodes(entry as JsonSchemaValue, seen);
+        stack.push(entry as JsonSchemaValue);
       }
-    }
-  }
-  for (const key of schemaArrayKeywords) {
-    const value = schema[key];
-    if (!Array.isArray(value)) {
-      continue;
-    }
-    for (const entry of value) {
-      count += countSchemaNodes(entry as JsonSchemaValue, seen);
     }
   }
   return count;
