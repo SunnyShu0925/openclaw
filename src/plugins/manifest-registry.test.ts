@@ -754,6 +754,40 @@ describe("loadPluginManifestRegistry", () => {
     ]);
   });
 
+  it("strips terminal control characters from a schema-key-driven configSchema diagnostic", () => {
+    const rootDir = makeTempDir();
+    // A malformed manifest can encode ANSI/control characters in a schema property key; the
+    // shape-error path interpolates that key, so the manifest result must sanitize it before
+    // the registry forwards the diagnostic to CLI/terminal output.
+    const ansiRed = "\u001b[31m";
+    const ansiReset = "\u001b[0m";
+    writeManifest(rootDir, {
+      id: "terminal-escape-schema-plugin",
+      configSchema: {
+        type: "object",
+        properties: { [`${ansiRed}evil${ansiReset}`]: { type: "str" } },
+      },
+    });
+
+    const registry = loadRegistry([
+      createPluginCandidate({ idHint: "terminal-escape-schema-plugin", rootDir, origin: "global" }),
+    ]);
+
+    expect(registry.plugins).toStrictEqual([]);
+    expect(registry.diagnostics).toEqual([
+      expect.objectContaining({
+        level: "error",
+        pluginId: "terminal-escape-schema-plugin",
+        message: expect.stringContaining(
+          "plugin manifest configSchema is invalid: <schema>.properties.evil.type: unsupported JSON Schema type",
+        ),
+      }),
+    ]);
+    for (const diagnostic of registry.diagnostics) {
+      expect(diagnostic.message).not.toContain("\u001b");
+    }
+  });
+
   it("keeps configured same-name default-entry manifest failures distinct by full root", () => {
     const root = makeTempDir();
     const candidates = ["first", "second"].map((parent) => {

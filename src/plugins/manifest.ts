@@ -7,6 +7,7 @@ import { normalizeTrimmedStringList } from "../../packages/normalization-core/sr
 import { matchRootFileOpenFailure, openRootFileSync } from "../infra/boundary-file-read.js";
 import { findJsonSchemaShapeError } from "../shared/json-schema-defaults.js";
 import { isRecord } from "../utils.js";
+import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import * as capabilityNormalizers from "./manifest-capability-normalizers.js";
 import { normalizeManifestCommandAliases } from "./manifest-command-aliases.js";
@@ -203,7 +204,9 @@ export function loadPluginManifest(
   if (configSchemaShapeError) {
     return cacheResult({
       ok: false,
-      error: `plugin manifest configSchema is invalid: ${configSchemaShapeError}`,
+      error: sanitizeTerminalText(
+        `plugin manifest configSchema is invalid: ${configSchemaShapeError}`,
+      ),
       manifestPath,
     });
   }
