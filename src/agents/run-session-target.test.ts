@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
 import { upsertSessionEntry } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -70,6 +70,54 @@ describe("agent run session target", () => {
       sessionKey: "agent:main:compat-session",
       storePath,
     });
+  });
+
+  it("resolves a unique stored session key when callers omit sessionKey", async () => {
+    const storePath = path.join(tempDir, "keyed", "sessions.json");
+    await upsertSessionEntry(
+      { agentId: "main", sessionKey: "agent:main:keyed-123", storePath },
+      { sessionId: "s2", updatedAt: 1 },
+    );
+
+    await expect(
+      resolveAgentRunSessionTarget({
+        config: { session: { store: storePath } } as OpenClawConfig,
+        agentId: "main",
+        sessionId: "s2",
+      }),
+    ).resolves.toMatchObject({
+      sessionKey: "agent:main:keyed-123",
+      storePath,
+    });
+  });
+
+  it("keeps the session id fallback when the stored sessionId match is ambiguous", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T00:00:00Z"));
+    try {
+      const storePath = path.join(tempDir, "ambiguous", "sessions.json");
+      await upsertSessionEntry(
+        { agentId: "main", sessionKey: "agent:main:amb-1", storePath },
+        { sessionId: "dup-session" },
+      );
+      await upsertSessionEntry(
+        { agentId: "main", sessionKey: "agent:main:amb-2", storePath },
+        { sessionId: "dup-session" },
+      );
+
+      await expect(
+        resolveAgentRunSessionTarget({
+          config: { session: { store: storePath } } as OpenClawConfig,
+          agentId: "main",
+          sessionId: "dup-session",
+        }),
+      ).resolves.toMatchObject({
+        sessionKey: "agent:main:dup-session",
+        storePath,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("round-trips a plain compatibility key through sessionFile", async () => {

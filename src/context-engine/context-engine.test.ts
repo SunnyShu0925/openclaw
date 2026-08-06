@@ -61,13 +61,22 @@ function registerTestContextEngine(id: string, factory: ContextEngineFactory) {
   });
 }
 
-const { compactEmbeddedAgentSessionDirectMock } = vi.hoisted(() => ({
+const { compactEmbeddedAgentSessionDirectMock, runtimeConfigMock } = vi.hoisted(() => ({
   compactEmbeddedAgentSessionDirectMock: vi.fn(),
+  runtimeConfigMock: vi.fn(),
 }));
 
 vi.mock("../agents/embedded-agent-runner/compact.runtime.js", () => ({
   compactEmbeddedAgentSessionDirect: compactEmbeddedAgentSessionDirectMock,
 }));
+
+vi.mock("../config/config.js", async (importOriginal) => {
+  const original = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...original,
+    getRuntimeConfig: runtimeConfigMock,
+  };
+});
 
 function installCompactRuntimeSpy() {
   return compactEmbeddedAgentSessionDirectMock.mockResolvedValue({
@@ -226,6 +235,7 @@ describe("Engine contract tests", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     compactEmbeddedAgentSessionDirectMock.mockReset();
+    runtimeConfigMock.mockReturnValue({});
     clearMemoryPluginState();
   });
 
@@ -296,6 +306,112 @@ describe("Engine contract tests", () => {
         details: undefined,
         sessionTarget,
       },
+    });
+  });
+
+  it("delegates undeclared-engine projected params without a session key", async () => {
+    const receivedByEngine: Array<Record<string, unknown>> = [];
+    const engineId = "proof-delegate-projection";
+    registerTestContextEngine(engineId, () => ({
+      info: { id: engineId, name: "Proof Delegate Projection" },
+      async ingest() {
+        return { ingested: true };
+      },
+      async assemble(callParams) {
+        return { messages: callParams.messages as AgentMessage[], estimatedTokens: 0 };
+      },
+      async compact(callParams) {
+        receivedByEngine.push({ ...callParams });
+        return delegateCompactionToRuntime(callParams as Parameters<ContextEngine["compact"]>[0]);
+      },
+    }));
+    installCompactRuntimeSpy();
+    const engine = await resolveContextEngine(configWithSlot(engineId));
+    const runtimeSettings = {};
+
+    await engine.compact({
+      agentId: "main",
+      sessionId: "s2",
+      sessionKey: "agent:main:keyed-123",
+      sessionTarget: {
+        agentId: "main",
+        sessionId: "s2",
+        sessionKey: "agent:main:keyed-123",
+      },
+      runtimeSettings,
+      runtimeContext: { tokenBudget: 1000 },
+    } as Parameters<ContextEngine["compact"]>[0]);
+
+    // The undeclared engine received only the projected identity…
+    expect(receivedByEngine[0]).toMatchObject({ agentId: "main", sessionId: "s2" });
+    expect(receivedByEngine[0]).not.toHaveProperty("sessionKey");
+    expect(receivedByEngine[0]).not.toHaveProperty("sessionTarget");
+    // …and the delegate re-attached the authoritative configured store identity
+    // (the projection stripped sessionTarget, but the delegate resolves the
+    // store path from config + agentId so the runtime resolver searches the
+    // store the session actually lives in instead of a fabricated key).
+    const runtimeParams = requireCompactRuntimeParams(0);
+    expect(runtimeParams).toMatchObject({ agentId: "main", sessionId: "s2" });
+    expect(runtimeParams).not.toHaveProperty("sessionKey");
+    expect(runtimeParams.sessionTarget).toMatchObject({
+      agentId: "main",
+      storePath: expect.stringContaining("agents/main/sessions/sessions.json"),
+    });
+    expect(runtimeParams.sessionTarget).not.toHaveProperty("sessionKey");
+  });
+
+  it("delegateCompactionToRuntime resolves the configured custom store for projected delegates", async () => {
+    // Regression for installs with a non-default session.store: the projection
+    // strips sessionTarget and runtimeContext for undeclared engines, so the
+    // delegate must re-attach the authoritative store path from config + agentId
+    // rather than let the resolver fall back to the default per-agent store.
+    const customStore = "/custom/state/{agentId}/sessions.json";
+    runtimeConfigMock.mockReturnValue({ session: { store: customStore } });
+    installCompactRuntimeSpy();
+
+    await delegateCompactionToRuntime({
+      // Projected delegate call: only agentId + sessionId survive the host-param
+      // projection for an undeclared engine.
+      agentId: "main",
+      sessionId: "s2",
+      tokenBudget: 4096,
+    } as Parameters<ContextEngine["compact"]>[0]);
+
+    const runtimeParams = requireCompactRuntimeParams(0);
+    expect(runtimeParams).toMatchObject({ agentId: "main", sessionId: "s2" });
+    // The store path comes from the configured custom store, not the default
+    // ~/.openclaw/agents/main/sessions/sessions.json.
+    expect(runtimeParams.sessionTarget).toMatchObject({
+      agentId: "main",
+      storePath: "/custom/state/main/sessions.json",
+    });
+    expect(runtimeParams.sessionTarget).not.toHaveProperty("sessionKey");
+  });
+
+  it("delegateCompactionToRuntime preserves a caller-supplied storePath over the configured store", async () => {
+    // When the caller already carries a storePath (e.g. post-window full params
+    // or a typed sessionTarget), the delegate must not overwrite it.
+    runtimeConfigMock.mockReturnValue({
+      session: { store: "/should/not/be/used/{agentId}/sessions.json" },
+    });
+    installCompactRuntimeSpy();
+    const callerStorePath = "/explicit/store/main/sessions.json";
+
+    await delegateCompactionToRuntime({
+      agentId: "main",
+      sessionId: "s2",
+      sessionTarget: {
+        agentId: "main",
+        sessionId: "s2",
+        storePath: callerStorePath,
+      },
+      tokenBudget: 4096,
+    } as Parameters<ContextEngine["compact"]>[0]);
+
+    const runtimeParams = requireCompactRuntimeParams(0);
+    expect(runtimeParams.sessionTarget).toMatchObject({
+      agentId: "main",
+      storePath: callerStorePath,
     });
   });
 

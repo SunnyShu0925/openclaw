@@ -108,11 +108,36 @@ export async function resolveAgentRunSessionTarget(params: {
   ) {
     throw new Error("Legacy SQLite transcript marker session key is ambiguous");
   }
+  // A delegated context-engine compaction can reach this resolver with only the
+  // host-projected sessionId (the compatibility projection strips sessionKey and
+  // sessionTarget for engines without declared host params). Resolve a unique
+  // stored session key from agentId + sessionId before falling back to treating
+  // the sessionId as the key, so the keyed SQLite transcript row is found. The
+  // legacy fallback stays intact for zero or ambiguous store matches.
+  const storeResolvedSessionKey =
+    agentId &&
+    sessionId &&
+    !targetSessionKey &&
+    !suppliedSessionKey &&
+    !compatibilitySessionKey &&
+    !markerSessionKey
+      ? resolvePreferredSessionKeyForSessionIdMatches(
+          listSessionEntries({
+            agentId,
+            storePath:
+              targetStorePath ?? resolveStorePath(params.config?.session?.store, { agentId }),
+          })
+            .filter(({ entry }) => entry.sessionId === sessionId)
+            .map(({ sessionKey: entryKey, entry }) => [entryKey, entry]),
+          sessionId,
+        )
+      : undefined;
   const sessionKey =
     targetSessionKey ??
     suppliedSessionKey ??
     compatibilitySessionKey ??
     markerSessionKey ??
+    storeResolvedSessionKey ??
     normalizeOptionalString(sessionId);
   const compatibilitySessionKeySelected =
     !targetSessionKey && !suppliedSessionKey && sessionKey === compatibilitySessionKey;

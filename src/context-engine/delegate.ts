@@ -2,7 +2,9 @@
 import path from "node:path";
 import { normalizeStructuredPromptSection } from "@openclaw/ai/internal/shared";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { getRuntimeConfig } from "../config/config.js";
 import { parseSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
+import { resolveStorePath } from "../config/sessions/paths.js";
 import { listSessionEntries, loadSessionEntry } from "../config/sessions/session-accessor.js";
 import {
   buildMemoryPromptSection,
@@ -172,12 +174,34 @@ export async function delegateCompactionToRuntime(
       ? Math.floor(runtimeContext.currentTokenCount)
       : undefined);
 
+  // A delegated compaction can reach here with the host-projected sessionId
+  // only: the compatibility projection strips sessionTarget and runtimeContext
+  // for engines without declared host params during the legacy window
+  // (context-engine-legacy-host-param-default, removeAfter 2026-08-12). Without
+  // the configured store path, the runtime resolver falls back to the default
+  // per-agent store, misses the real row for installs using a custom
+  // session.store, and reverts to treating the sessionId UUID as the session
+  // key. Re-attach the authoritative configured store identity here so the
+  // resolver searches the store the session actually lives in. The legacy
+  // window expires after 2026-08-12 (projection then keeps full params), but
+  // this stays correct afterwards: a caller-supplied storePath short-circuits
+  // this lookup, and a missing one is still resolved from config.
+  const resolvedSessionTarget = sessionTarget?.storePath
+    ? sessionTarget
+    : agentId
+      ? {
+          ...sessionTarget,
+          agentId,
+          storePath: resolveStorePath(getRuntimeConfig().session?.store, { agentId }),
+        }
+      : sessionTarget;
+
   const result = await compactEmbeddedAgentSessionDirect({
     ...runtimeContextParams,
     ...(agentId ? { agentId } : {}),
     sessionId: params.sessionId,
     ...(sessionKey ? { sessionKey } : {}),
-    ...(sessionTarget ? { sessionTarget } : {}),
+    ...(resolvedSessionTarget ? { sessionTarget: resolvedSessionTarget } : {}),
     tokenBudget: params.tokenBudget,
     ...(currentTokenCount !== undefined ? { currentTokenCount } : {}),
     force: params.force,
