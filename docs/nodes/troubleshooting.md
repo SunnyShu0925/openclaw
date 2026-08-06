@@ -37,8 +37,12 @@ openclaw nodes status
 
 `openclaw node install` prints a warning with this recovery command when it
 detects lingering is disabled. Don't mix a user-level service with a
-system-level one for the same node — they conflict and can crash-loop. Fully
-remove one before switching.
+system-level one for the same node. The duplicate-scope guard that prevents
+two managers from running the same unit name is enforced for gateway units
+(two supervisors on the same port SIGTERM each other in a restart loop); for
+node services the installer does not raise this guard, so a leftover unit in
+the other scope can leave the node in an ambiguous state. Fully remove one
+before switching.
 
 ## Command ladder
 
