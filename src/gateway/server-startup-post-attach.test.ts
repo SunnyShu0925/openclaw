@@ -18,6 +18,7 @@ import {
 } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import "./server-startup-outcomes.test-support.js";
 
 const hoisted = vi.hoisted(() => {
   const startPluginServices = vi.fn<() => Promise<PluginServicesHandle | null>>(async () => null);
@@ -66,7 +67,7 @@ const hoisted = vi.hoisted(() => {
     async (_cfg?: unknown, _options?: unknown) => {},
   );
   const loadAgentRuntimePluginRegistryHandle = vi.fn();
-  const ensureContextWindowCacheLoaded = vi.fn(async () => {});
+  const prewarmContextWindowCacheAfterReady = vi.fn(async () => {});
   const scheduleGatewayHandlerPrewarm = vi.fn(() => ({ stop: vi.fn() }));
   const clearCurrentProviderAuthState = vi.fn();
   const warmCurrentProviderAuthStateOffMainThread = vi.fn(
@@ -106,7 +107,7 @@ const hoisted = vi.hoisted(() => {
     prepareModelRuntimeSnapshot,
     refreshPreparedModelRuntimeSnapshots,
     loadAgentRuntimePluginRegistryHandle,
-    ensureContextWindowCacheLoaded,
+    prewarmContextWindowCacheAfterReady,
     scheduleGatewayHandlerPrewarm,
     clearCurrentProviderAuthState,
     warmCurrentProviderAuthStateOffMainThread,
@@ -216,7 +217,7 @@ vi.mock("../agents/runtime-plugins.js", () => ({
 }));
 
 vi.mock("../agents/context.js", () => ({
-  ensureContextWindowCacheLoaded: hoisted.ensureContextWindowCacheLoaded,
+  prewarmContextWindowCacheAfterReady: hoisted.prewarmContextWindowCacheAfterReady,
 }));
 
 vi.mock("./server-startup-handler-prewarm.js", () => ({
@@ -367,8 +368,8 @@ describe("startGatewayPostAttachRuntime", () => {
     hoisted.refreshPreparedModelRuntimeSnapshots.mockReset();
     hoisted.refreshPreparedModelRuntimeSnapshots.mockResolvedValue(undefined);
     hoisted.loadAgentRuntimePluginRegistryHandle.mockReset();
-    hoisted.ensureContextWindowCacheLoaded.mockReset();
-    hoisted.ensureContextWindowCacheLoaded.mockResolvedValue(undefined);
+    hoisted.prewarmContextWindowCacheAfterReady.mockReset();
+    hoisted.prewarmContextWindowCacheAfterReady.mockResolvedValue(undefined);
     hoisted.scheduleGatewayHandlerPrewarm.mockClear();
     hoisted.clearCurrentProviderAuthState.mockClear();
     hoisted.warmCurrentProviderAuthStateOffMainThread.mockReset();
@@ -1257,32 +1258,34 @@ describe("startGatewayPostAttachRuntime", () => {
 
   it("defers context-window cache prewarm to a post-ready sidecar", async () => {
     vi.useFakeTimers();
-    const cfg = { agents: { defaults: { model: "openai/gpt-5.5" } } } as never;
+    const startupConfig = { agents: { defaults: { model: "openai/gpt-5.5" } } };
+    const currentConfig = { ...startupConfig };
     const admission = tryBeginGatewayRootWorkAdmission();
     if (!admission) {
       throw new Error("Expected request work admission");
     }
     const sidecar = scheduleContextCachePrewarm({
-      cfgAtStart: cfg,
+      getConfig: () => currentConfig,
       log: { warn: vi.fn() },
     });
 
     try {
-      // Earlier gateway lifetimes may finish during the fake-clock window;
-      // this sidecar's captured config identifies its own prewarm precisely.
-      expect(hoisted.ensureContextWindowCacheLoaded).not.toHaveBeenCalledWith(cfg);
+      expect(hoisted.prewarmContextWindowCacheAfterReady).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(4_999);
-      expect(hoisted.ensureContextWindowCacheLoaded).not.toHaveBeenCalledWith(cfg);
+      expect(hoisted.prewarmContextWindowCacheAfterReady).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expect(hoisted.ensureContextWindowCacheLoaded).not.toHaveBeenCalledWith(cfg);
+      expect(hoisted.prewarmContextWindowCacheAfterReady).not.toHaveBeenCalled();
 
       admission.release();
       await vi.advanceTimersByTimeAsync(249);
-      expect(hoisted.ensureContextWindowCacheLoaded).not.toHaveBeenCalledWith(cfg);
+      expect(hoisted.prewarmContextWindowCacheAfterReady).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       await vi.dynamicImportSettled();
       await waitForGatewayTestState(() => {
-        expect(hoisted.ensureContextWindowCacheLoaded).toHaveBeenCalledWith(cfg);
+        expect(hoisted.prewarmContextWindowCacheAfterReady).toHaveBeenCalledWith({
+          config: currentConfig,
+          isCancelled: expect.any(Function),
+        });
       });
     } finally {
       admission.release();
@@ -1293,13 +1296,13 @@ describe("startGatewayPostAttachRuntime", () => {
   it("cancels context-window cache prewarm when the gateway stops first", async () => {
     vi.useFakeTimers();
     const sidecar = scheduleContextCachePrewarm({
-      cfgAtStart: {} as never,
+      getConfig: () => ({}) as never,
       log: { warn: vi.fn() },
     });
 
     await sidecar.stop();
     await vi.runAllTimersAsync();
-    expect(hoisted.ensureContextWindowCacheLoaded).not.toHaveBeenCalled();
+    expect(hoisted.prewarmContextWindowCacheAfterReady).not.toHaveBeenCalled();
   });
 
   it("keeps provider auth prewarm alive when Gmail post-ready sidecars stop", async () => {
@@ -2267,7 +2270,7 @@ describe("startGatewayPostAttachRuntime", () => {
       tickInterval: setInterval(() => {}, 1 << 30),
       healthInterval: setInterval(() => {}, 1 << 30),
       dedupeCleanup: setInterval(() => {}, 1 << 30),
-      mediaCleanup: null,
+      stopMediaCleanup: vi.fn(async () => "drained" as const),
       worktreeCleanup: null,
       skillCuratorCleanup: vi.fn(),
       agentUnsub: null,

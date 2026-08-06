@@ -7,8 +7,10 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +41,24 @@ const defaultProviderHelp =
 const brokerProviderHelp = "provider: aws, azure, blacksmith-testbox, or daytona\n";
 const azureProviderHelp =
   "provider: hetzner, aws, azure, local-container, blacksmith-testbox, or cloudflare\n";
+const fakeRunValueOptionHelp = [
+  "artifact-glob value",
+  "blacksmith-ref string",
+  "capture-stderr string",
+  "capture-stdout string",
+  "download value",
+  "id string",
+  "idle-timeout duration",
+  "label string",
+  "market string",
+  "provider string",
+  "script string",
+  "target string",
+  "ttl duration",
+  "windows-mode string",
+]
+  .map((option) => `  -${option}\n`)
+  .join("");
 const defaultGitResponses: Record<string, { status?: number; stdout?: string; stderr?: string }> = {
   [GIT_CONFIG_SPARSE_KEY]: { stdout: "false\n" },
   [GIT_SPARSE_LIST_KEY]: { status: 1 },
@@ -72,7 +92,7 @@ function writeFakeCrabbox(binDir: string, helpText: string): string {
   // guard; both must chdir away before deleting the temporary checkout.
   const script = String.raw`
 const fs = require("node:fs"); const path = require("node:path"); const { spawn } = require("node:child_process");
-const args = process.argv.slice(2); const helpText = ${JSON.stringify(helpText)};
+const args = process.argv.slice(2); const helpText = ${JSON.stringify(`${helpText}${fakeRunValueOptionHelp}`)};
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const optionValue = (name) => {
   const index = args.findIndex((arg) => arg === "--" + name || arg === "-" + name); const assigned = args.find((arg) => arg.startsWith("--" + name + "=") || arg.startsWith("-" + name + "="));
@@ -152,14 +172,15 @@ function makeSlowCrabbox(helpText: string, mode: "help" | "version", delayMs: nu
   const binDir = mkdtempSync(path.join(tmpdir(), `openclaw-slow-${mode}-crabbox-`));
   tempDirs.push(binDir);
   const crabboxPath = path.join(binDir, "crabbox");
+  const runHelpText = `${helpText}${fakeRunValueOptionHelp}`;
   const script = String.raw`
 const args = process.argv.slice(2); const mode = ${JSON.stringify(mode)};
 if (args[0] === "--version") {
   if (mode === "version") setTimeout(() => process.exit(0), ${delayMs});
   else console.log(process.env.OPENCLAW_FAKE_CRABBOX_VERSION || "crabbox 0.22.1");
 } else if (args[0] === "run" && args[1] === "--help") {
-  if (mode === "help") setTimeout(() => { process.stderr.write(${JSON.stringify(helpText)}); process.exit(0); }, ${delayMs});
-  else process.stdout.write(${JSON.stringify(helpText)});
+  if (mode === "help") setTimeout(() => { process.stderr.write(${JSON.stringify(runHelpText)}); process.exit(0); }, ${delayMs});
+  else process.stdout.write(${JSON.stringify(runHelpText)});
 }`;
   writeNodeCommand(crabboxPath, script);
   return binDir;
@@ -588,7 +609,23 @@ function runSuccessfulMacosScript(script: string, trailingArgs: string[] = []): 
 }
 
 function runDelegatedBlacksmith(args: string[], env: Record<string, string>) {
-  return runDefaultWrapper(args, { ...cleanSparseSyncOptions, env });
+  if (process.platform === "win32") {
+    return runDefaultWrapper(args, { ...cleanSparseSyncOptions, env });
+  }
+  const physicalSyncRoot = mkdtempSync(path.join(tmpdir(), "openclaw-crabbox-sync-physical-"));
+  const syncRootAlias = `${physicalSyncRoot}-alias`;
+  symlinkSync(physicalSyncRoot, syncRootAlias, "dir");
+  tempDirs.push(syncRootAlias, physicalSyncRoot);
+  const result = runDefaultWrapper(args, {
+    ...cleanSparseSyncOptions,
+    env: { ...env, OPENCLAW_CRABBOX_SYNC_TMPDIR: syncRootAlias },
+  });
+  if (result.stdout.trim()) {
+    expect(
+      parseFakeCrabboxOutput(result).cwd.startsWith(`${realpathSync(physicalSyncRoot)}${path.sep}`),
+    ).toBe(true);
+  }
+  return result;
 }
 
 const remoteChangedGateEnvPrefix =
@@ -644,6 +681,11 @@ function expectChangedGateGitBootstrap(remoteCommand: string): void {
   );
   expect(remoteCommand).toContain("mktemp /tmp/openclaw-changed-gate.XXXXXX");
   expect(remoteCommand).toContain('cp "$openclaw_changed_gate_bundle"');
+  const cleanupIndex = remoteCommand.indexOf(
+    'rm -rf -- "$openclaw_changed_gate_bundle" "$openclaw_changed_gate_bundle".* || exit 2',
+  );
+  expect(cleanupIndex).toBeGreaterThanOrEqual(0);
+  expect(cleanupIndex).toBeLessThan(remoteCommand.indexOf("rm -rf .git || exit 2"));
   expect(remoteCommand).toContain("git init -q || exit 2");
   expect(remoteCommand).toContain(`${remoteChangedGateFetch} || exit 2`);
   expect(remoteCommand).toContain(
@@ -735,6 +777,87 @@ describe("scripts/crabbox-wrapper", () => {
     });
     expect(output.args).not.toContain("--provider");
     expect(result.stderr).not.toContain("route workload=");
+  });
+
+  it("derives run option arity from the probed Crabbox help", () => {
+    const helpText = `${defaultProviderHelp}${[
+      "sandbox-session-timeout duration",
+      "sandbox-memory float",
+      "sandbox-retries int",
+      "sandbox-setting string",
+      "sandbox-attachment value",
+    ]
+      .map((option) => `  -${option}\n`)
+      .join("")}`;
+    const { output } = runSuccessfulWrapper(helpText, [
+      "run",
+      "--sandbox-session-timeout",
+      "30s",
+      "--sandbox-memory",
+      "1.5",
+      "--sandbox-retries",
+      "2",
+      "--sandbox-setting",
+      "safe",
+      "--sandbox-attachment",
+      "name=proof",
+      "--provider",
+      "local-container",
+      "--",
+      "echo",
+      "ok",
+    ]);
+
+    expect(output.args).toEqual([
+      "run",
+      "--sandbox-session-timeout",
+      "30s",
+      "--sandbox-memory",
+      "1.5",
+      "--sandbox-retries",
+      "2",
+      "--sandbox-setting",
+      "safe",
+      "--sandbox-attachment",
+      "name=proof",
+      "--provider",
+      "local-container",
+      "--",
+      "echo",
+      "ok",
+    ]);
+  });
+
+  it("routes the provider-neutral changed gate without consuming its run option values", () => {
+    const { output, result } = runSuccessfulBrokerWrapper(
+      [
+        "run",
+        "--workload",
+        "ci-fast",
+        "--idle-timeout",
+        "90m",
+        "--ttl",
+        "240m",
+        "--timing-json",
+        "--",
+        "env",
+        "OPENCLAW_CHECK_CHANGED_REMOTE_CHILD=1",
+        "OPENCLAW_CHANGED_LANES_RAW_SYNC=1",
+        "CI=1",
+        "PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false",
+        "corepack",
+        "pnpm",
+        "check:changed",
+      ],
+      { env: { OPENCLAW_FAKE_CRABBOX_UNREADY_PROVIDERS: "blacksmith-testbox" } },
+    );
+
+    expect(output.args).toContain("daytona");
+    expect(output.args).not.toContain("blacksmith-testbox");
+    expect(output.args).toContain("90m");
+    expect(output.args).toContain("240m");
+    expect(output.args.slice(-3)).toEqual(["corepack", "pnpm", "check:changed"]);
+    expect(result.stderr).toContain("route workload=ci-fast selected=daytona");
   });
 
   it("requires the originating provider when reusing a workload-routed lease", () => {
