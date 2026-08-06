@@ -19,6 +19,7 @@ import type { GatewayServiceRuntime } from "../../daemon/service-runtime.js";
 import {
   isSystemdUserServiceAvailable,
   readSystemdUserLingerStatus,
+  resolveSystemdUserServiceAccount,
 } from "../../daemon/systemd.js";
 import { loadNodeHostConfig } from "../../node-host/config.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -94,7 +95,11 @@ async function warnIfSystemdUserLingerDisabled(warn: (message: string) => void):
   if (!(await isSystemdUserServiceAvailable())) {
     return;
   }
-  const status = await readSystemdUserLingerStatus(process.env);
+  const user = resolveSystemdUserServiceAccount(process.env);
+  if (!user) {
+    return;
+  }
+  const status = await readSystemdUserLingerStatus({ env: process.env, user });
   if (!status || status.linger === "yes") {
     return;
   }

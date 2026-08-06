@@ -311,7 +311,7 @@ async function detectSystemdLingerFindings(
   if (!(await isSystemdUserServiceAvailable(process.env))) {
     return [];
   }
-  const status = await readSystemdUserLingerStatus(process.env);
+  const status = await readSystemdUserLingerStatus({ env: process.env });
   if (!status || status.linger === "yes") {
     return [];
   }

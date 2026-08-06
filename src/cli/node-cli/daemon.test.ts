@@ -33,8 +33,12 @@ const mocks = vi.hoisted(() => {
     })),
     loadNodeHostConfig: vi.fn(),
     isSystemdUserServiceAvailable: vi.fn(async () => true),
-    readSystemdUserLingerStatus: vi.fn<() => Promise<{ user: string; linger: "yes" | "no" }>>(
-      async () => ({ user: "pi", linger: "no" }),
+    resolveSystemdUserServiceAccount: vi.fn(() => "pi"),
+    readSystemdUserLingerStatus: vi.fn(
+      async (): Promise<{ user: string; linger: "yes" | "no" }> => ({
+        user: "pi",
+        linger: "no",
+      }),
     ),
   };
 });
@@ -69,6 +73,7 @@ vi.mock("../../daemon/systemd.js", async () => {
   return {
     ...actual,
     isSystemdUserServiceAvailable: mocks.isSystemdUserServiceAvailable,
+    resolveSystemdUserServiceAccount: mocks.resolveSystemdUserServiceAccount,
     readSystemdUserLingerStatus: mocks.readSystemdUserLingerStatus,
   };
 });
@@ -126,6 +131,7 @@ describe("runNodeDaemonInstall", () => {
       },
     });
     mocks.isSystemdUserServiceAvailable.mockReset().mockResolvedValue(true);
+    mocks.resolveSystemdUserServiceAccount.mockReset().mockReturnValue("pi");
     mocks.readSystemdUserLingerStatus.mockReset().mockResolvedValue({
       user: "pi",
       linger: "no",
@@ -208,6 +214,23 @@ describe("runNodeDaemonInstall", () => {
     expect(mocks.readSystemdUserLingerStatus).toHaveBeenCalled();
     expect(mocks.runtime.log).toHaveBeenCalledWith(
       expect.stringContaining("sudo loginctl enable-linger pi"),
+    );
+  });
+
+  it("checks lingering for the same sudo target user as the systemd service", async () => {
+    mocks.service.isLoaded.mockResolvedValue(true);
+    mocks.resolveSystemdUserServiceAccount.mockReturnValue("debian");
+    mocks.readSystemdUserLingerStatus.mockResolvedValue({ user: "debian", linger: "no" });
+
+    await runNodeDaemonInstall({ force: true });
+
+    expect(mocks.resolveSystemdUserServiceAccount).toHaveBeenCalledWith(process.env);
+    expect(mocks.readSystemdUserLingerStatus).toHaveBeenCalledWith({
+      env: process.env,
+      user: "debian",
+    });
+    expect(mocks.runtime.log).toHaveBeenCalledWith(
+      expect.stringContaining("sudo loginctl enable-linger debian"),
     );
   });
 
