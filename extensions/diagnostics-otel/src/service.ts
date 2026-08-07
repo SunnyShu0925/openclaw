@@ -1,5 +1,6 @@
 // Diagnostics Otel plugin module implements service behavior.
 import { metrics, trace, type SpanContext } from "@opentelemetry/api";
+import { getBooleanFromEnv } from "@opentelemetry/core";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
 import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
@@ -397,7 +398,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const metricHttpAgentOptions = metricsToOtlp
         ? resolveOtelHttpAgentOptions({ url: metricUrl, signalIdentifier: "METRICS" })
         : undefined;
-      if (!ownedNodeSdkDisabled && (tracesToOtlp || metricsToOtlp)) {
+      if (tracesToOtlp || metricsToOtlp) {
         const traceExporter = tracesToOtlp
           ? observeOtlpExporterHealth(
               new OTLPTraceExporter({

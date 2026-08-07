@@ -13,6 +13,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { startLocalOtlpReceiver } from "../../../test/e2e/qa-lab/runtime/otel-test-support.js";
 import {
   getReportedExporterHealth,
+  emitRealSdkSignals,
   startOtelService,
   stopStartedOtelServices,
 } from "./service.test-helpers.js";
@@ -107,20 +108,6 @@ afterEach(async () => {
   resetDiagnosticEventsForTest();
 });
 
-async function emitOpenClawSignals() {
-  trace.getTracer("openclaw-otel-disabled-test").startSpan("disabled-test").end();
-  metrics.getMeter("openclaw-otel-disabled-test").createCounter("disabled.test").add(1);
-  emitTrustedDiagnosticEventWithPrivateData(
-    {
-      type: "log.record",
-      level: "INFO",
-      message: "disabled route test",
-    },
-    {},
-  );
-  await waitForDiagnosticEventsDrained();
-}
-
 test("disables every OpenClaw route while preserving W3C propagation", async () => {
   const receiver = startLocalOtlpReceiver();
   const port = await receiver.listen();
@@ -139,7 +126,7 @@ test("disables every OpenClaw route while preserving W3C propagation", async () 
   });
 
   try {
-    await emitOpenClawSignals();
+    await emitRealSdkSignals();
     const incoming = {
       baggage: "tenant=example",
       traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
@@ -296,7 +283,7 @@ test("cleans disabled globals before starting the enabled NodeSDK", async () => 
     expect(propagation.fields()).toEqual(["traceparent", "tracestate", "baggage"]);
     process.env.OTEL_SDK_DISABLED = "false";
     await service.start(ctx);
-    await emitOpenClawSignals();
+    await emitRealSdkSignals();
     await service.stop?.(ctx);
 
     expect(new Set(receiver.capturedRequests.map((request) => request.signal))).toEqual(
