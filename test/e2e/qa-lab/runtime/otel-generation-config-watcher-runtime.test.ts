@@ -32,8 +32,12 @@ describe("OTEL generation config watcher runtime", () => {
         readyAfterMutation: true,
         restartLogObserved: true,
       });
-      for (const collector of [summary.collectorA, summary.collectorB]) {
+      for (const [collector, parentSpanId] of [
+        [summary.collectorA, "1111111111111111"],
+        [summary.collectorB, "2222222222222222"],
+      ] as const) {
         expect(collector).toMatchObject({
+          externalParentSpanIds: [parentSpanId],
           failedRequestCount: 0,
           logCorrelationValid: true,
           parentGraphValid: true,
@@ -82,8 +86,9 @@ describe("OTEL generation config watcher runtime", () => {
     expect(failure).not.toContain(localEndpoint);
   });
 
-  it("accepts one external parent and rejects cyclic exported spans", () => {
+  it("requires every exported span chain to terminate at the injected parent", () => {
     const externalParentSpanId = "1111111111111111";
+    const unrelatedParentSpanId = "2222222222222222";
     const rootSpanId = "aaaaaaaaaaaaaaaa";
     const childSpanId = "bbbbbbbbbbbbbbbb";
     const base = {
@@ -92,8 +97,10 @@ describe("OTEL generation config watcher runtime", () => {
       parent: true,
       traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     };
+    const inspect = (spans: Parameters<typeof testing.inspectParentGraph>[0]) =>
+      testing.inspectParentGraph(spans, externalParentSpanId);
     expect(
-      testing.inspectParentGraph([
+      inspect([
         { ...base, parentSpanId: externalParentSpanId, spanId: rootSpanId },
         { ...base, parentSpanId: rootSpanId, spanId: childSpanId },
       ]),
@@ -101,11 +108,21 @@ describe("OTEL generation config watcher runtime", () => {
       externalParentSpanIds: [externalParentSpanId],
       valid: true,
     });
-    expect(
-      testing.inspectParentGraph([
+    for (const spans of [
+      [
+        { ...base, parentSpanId: unrelatedParentSpanId, spanId: rootSpanId },
+        { ...base, parentSpanId: rootSpanId, spanId: childSpanId },
+      ],
+      [
+        { ...base, parentSpanId: externalParentSpanId, spanId: rootSpanId },
+        { ...base, parentSpanId: undefined, spanId: childSpanId },
+      ],
+      [
         { ...base, parentSpanId: childSpanId, spanId: rootSpanId },
         { ...base, parentSpanId: rootSpanId, spanId: childSpanId },
-      ]),
-    ).toMatchObject({ valid: false });
+      ],
+    ]) {
+      expect(inspect(spans)).toMatchObject({ valid: false });
+    }
   });
 });

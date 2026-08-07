@@ -356,7 +356,10 @@ function isSpanId(value: string | undefined): value is string {
   return typeof value === "string" && /^[0-9a-f]{16}$/u.test(value);
 }
 
-function inspectParentGraph(spans: readonly CapturedSpan[]): {
+function inspectParentGraph(
+  spans: readonly CapturedSpan[],
+  expectedExternalParentSpanId: string,
+): {
   externalParentSpanIds: string[];
   valid: boolean;
 } {
@@ -368,29 +371,37 @@ function inspectParentGraph(spans: readonly CapturedSpan[]): {
   }
   const externalParentSpanIds = new Set<string>();
   for (const span of spans) {
-    if (span.parentSpanId && !spansById.has(span.parentSpanId)) {
-      externalParentSpanIds.add(span.parentSpanId);
-    }
     const visited = new Set<string>();
     let current: CapturedSpan | undefined = span;
-    while (current?.parentSpanId && spansById.has(current.parentSpanId)) {
+    while (current) {
+      if (!isSpanId(current.parentSpanId)) {
+        return { externalParentSpanIds: [...externalParentSpanIds].toSorted(), valid: false };
+      }
       if (visited.has(current.parentSpanId)) {
         return { externalParentSpanIds: [...externalParentSpanIds].toSorted(), valid: false };
       }
       visited.add(current.parentSpanId);
-      current = spansById.get(current.parentSpanId);
+      const parent = spansById.get(current.parentSpanId);
+      if (!parent) {
+        externalParentSpanIds.add(current.parentSpanId);
+        if (current.parentSpanId !== expectedExternalParentSpanId) {
+          return { externalParentSpanIds: [...externalParentSpanIds].toSorted(), valid: false };
+        }
+      }
+      current = parent;
     }
   }
   return {
     externalParentSpanIds: [...externalParentSpanIds].toSorted(),
-    valid: externalParentSpanIds.size === 1,
+    valid:
+      externalParentSpanIds.size === 1 && externalParentSpanIds.has(expectedExternalParentSpanId),
   };
 }
 
 function inspectGeneration(receiver: LocalReceiver, target: GenerationTarget): GenerationEvidence {
   const spans = receiver.capturedSpans.filter((span) => span.traceId === target.traceId);
   const logs = receiver.capturedLogRecords.filter((record) => record.traceId === target.traceId);
-  const graph = inspectParentGraph(spans);
+  const graph = inspectParentGraph(spans, target.parentSpanId);
   const spanNames = [...new Set(spans.map((span) => span.name))].toSorted();
   const metricNames = [
     ...new Set(
@@ -419,10 +430,7 @@ function inspectGeneration(receiver: LocalReceiver, target: GenerationTarget): G
     spanCount: spans.length,
     spanNames,
     traceId: target.traceId,
-    traceparentAccepted:
-      spans.length > 0 &&
-      spans.every((span) => span.traceId === target.traceId) &&
-      graph.externalParentSpanIds.length === 1,
+    traceparentAccepted: spans.length > 0 && graph.valid,
   };
 }
 
@@ -551,7 +559,7 @@ async function probeOtelGenerationConfigWatcher(
     assertContract(typeof pidBefore === "number", "QA Gateway did not expose its PID");
 
     await runTracedTurn(gateway, GENERATION_A);
-    const collectorA = await waitForGeneration(receiverA, GENERATION_A);
+    await waitForGeneration(receiverA, GENERATION_A);
 
     const restartLogOffset = gateway.logs().length;
     await updateWatchedEndpoint(gateway.configPath, receiverB.baseUrl);
@@ -585,12 +593,14 @@ async function probeOtelGenerationConfigWatcher(
     const pidAfter = gateway.pid;
 
     await runTracedTurn(gateway, GENERATION_B);
-    const collectorB = await waitForGeneration(receiverB, GENERATION_B);
+    await waitForGeneration(receiverB, GENERATION_B);
     await sleep(1_000);
     await gateway.stop();
     gatewayStopped = true;
     await sleep(POST_STOP_SETTLE_MS);
 
+    const collectorA = inspectGeneration(receiverA, GENERATION_A);
+    const collectorB = inspectGeneration(receiverB, GENERATION_B);
     const postReadyByCursor = receiverA.capturedRequests.slice(collectorARequestCountAtReady);
     const postReadyByTimestamp = receiverA.capturedRequests.filter(
       (request) => (request.receivedAtMs ?? 0) > readyAtMs,
@@ -600,6 +610,12 @@ async function probeOtelGenerationConfigWatcher(
       postReadyByTimestamp.length,
     );
     const failures: string[] = [];
+    if (!generationReady(collectorA)) {
+      failures.push("collector A final OTLP evidence failed the generation contract");
+    }
+    if (!generationReady(collectorB)) {
+      failures.push("collector B final OTLP evidence failed the generation contract");
+    }
     if (pidAfter !== pidBefore) {
       failures.push(`Gateway PID changed across in-process restart: ${pidBefore} -> ${pidAfter}`);
     }
