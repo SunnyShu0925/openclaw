@@ -459,7 +459,7 @@ function withOtelEndpoint(config: OpenClawConfig, endpoint: string): OpenClawCon
     ...config,
     gateway: {
       ...config.gateway,
-      reload: { mode: "restart" },
+      reload: { mode: "hybrid" },
     },
     logging: {
       ...config.logging,
