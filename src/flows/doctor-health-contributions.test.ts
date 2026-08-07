@@ -170,10 +170,14 @@ const mocks = vi.hoisted(() => ({
   shortenHomePath: vi.fn((p: string) => p),
   formatCliCommand: vi.fn((cmd: string) => cmd),
   isSystemdUserServiceAvailable: vi.fn(async () => true),
-  readSystemdUserLingerStatus: vi.fn(async (_params?: { user?: string }) => ({
-    user: "alice",
-    linger: "no" as const,
-  })),
+  readSystemdUserLingerStatus: vi.fn(
+    async (
+      _params: { env: Record<string, string | undefined>; user?: string },
+    ): Promise<{ user: string; linger: "yes" | "no" } | null> => ({
+      user: "alice",
+      linger: "no",
+    }),
+  ),
   resolveSystemdUserServiceAccount: vi.fn(() => "alice" as string | null),
   gatewayServiceIsLoaded: vi.fn(async () => true),
   resolveGatewayService: vi.fn(),
