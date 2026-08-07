@@ -95,9 +95,9 @@ async function runCleanup(
         clearTimeout(timer);
         resolve();
       },
-      (error) => {
+      (error: unknown) => {
         clearTimeout(timer);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       },
     );
   });
@@ -199,7 +199,7 @@ async function startRegistry(repoRoot: string, scratch: string, tarball: string)
     });
     return { baseUrl: `http://127.0.0.1:${port}`, child };
   } catch (error) {
-    await stopChild(child).catch((stopError) => {
+    await stopChild(child).catch((stopError: unknown) => {
       throw new Error(
         `fixture npm registry startup cleanup failed: ${
           stopError instanceof Error ? stopError.message : String(stopError)

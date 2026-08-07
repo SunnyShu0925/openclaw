@@ -74,7 +74,7 @@ describe("OTEL generation config watcher runtime", () => {
 
   it("redacts local failure details before writing artifacts", () => {
     const localEndpoint = `http://${["127", "0", "0", "1"].join(".")}:4318`;
-    const gatewayToken = `qa-suite-${"12345678-1234-1234-1234-123456789abc"}`;
+    const gatewayToken = "qa-suite-12345678-1234-1234-1234-123456789abc";
     const failure = testing.sanitizeProofFailure(
       new Error(
         `failed at /workspace/repo/test.ts via ${localEndpoint} in /tmp/openclaw-qa-suite-private with ${gatewayToken}`,

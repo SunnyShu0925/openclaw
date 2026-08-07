@@ -136,14 +136,21 @@ async function captureNodeSdkSpans(emit: (tracer: Tracer) => void) {
   });
   sdk.start();
   emit(trace.getTracer("openclaw-node-sdk-parity"));
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
   const spans = [...exporter.getFinishedSpans()];
   await sdk.shutdown();
   clearGlobalProviders();
   return spans;
 }
 
-const SAMPLER_CASES = [
+const SAMPLER_CASES: ReadonlyArray<{
+  label: string;
+  sampler?: string;
+  arg?: string;
+  expected: number;
+}> = [
   { label: "default", expected: 1 },
   { label: "always_on", sampler: "always_on", expected: 1 },
   { label: "always_off", sampler: "always_off", expected: 0 },
@@ -165,7 +172,7 @@ const SAMPLER_CASES = [
   },
   { label: "invalid sampler", sampler: "invalid", expected: 1 },
   { label: "invalid ratio", sampler: "traceidratio", arg: "-1", expected: 1 },
-] as const;
+];
 
 test.each(SAMPLER_CASES)(
   "matches NodeSDK sampler behavior for $label",
@@ -234,6 +241,9 @@ test("matches NodeSDK behavior for all six OTEL_SPAN_* limit variables", async (
 
   const [nodeSdkSpan] = await captureNodeSdkSpans(emitLimitProbe);
   const [privateProviderSpan] = await capturePrivateProviderSpans(emitLimitProbe);
+  if (!nodeSdkSpan || !privateProviderSpan) {
+    throw new Error("expected both providers to export the limit probe");
+  }
   const expectedShape = {
     attributes: { first: "abc" },
     events: [{ first: "abc" }],

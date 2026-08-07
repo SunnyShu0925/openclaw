@@ -192,7 +192,8 @@ async function waitForFrame(
 }
 
 async function closeRawGatewayClient(client: RawGatewayClient): Promise<void> {
-  if (client.socket.readyState === WebSocket.CLOSED) {
+  const isClosed = () => client.socket.readyState === WebSocket.CLOSED;
+  if (isClosed()) {
     return;
   }
   const closed = new Promise<void>((resolve) => {
@@ -202,7 +203,7 @@ async function closeRawGatewayClient(client: RawGatewayClient): Promise<void> {
     client.socket.close();
   }
   await Promise.race([closed, sleep(1_000)]);
-  if (client.socket.readyState !== WebSocket.CLOSED) {
+  if (!isClosed()) {
     client.socket.terminate();
   }
 }
@@ -374,14 +375,14 @@ function inspectParentGraph(spans: readonly CapturedSpan[]): {
     let current: CapturedSpan | undefined = span;
     while (current?.parentSpanId && spansById.has(current.parentSpanId)) {
       if (visited.has(current.parentSpanId)) {
-        return { externalParentSpanIds: [...externalParentSpanIds].sort(), valid: false };
+        return { externalParentSpanIds: [...externalParentSpanIds].toSorted(), valid: false };
       }
       visited.add(current.parentSpanId);
       current = spansById.get(current.parentSpanId);
     }
   }
   return {
-    externalParentSpanIds: [...externalParentSpanIds].sort(),
+    externalParentSpanIds: [...externalParentSpanIds].toSorted(),
     valid: externalParentSpanIds.size === 1,
   };
 }
@@ -390,14 +391,14 @@ function inspectGeneration(receiver: LocalReceiver, target: GenerationTarget): G
   const spans = receiver.capturedSpans.filter((span) => span.traceId === target.traceId);
   const logs = receiver.capturedLogRecords.filter((record) => record.traceId === target.traceId);
   const graph = inspectParentGraph(spans);
-  const spanNames = [...new Set(spans.map((span) => span.name))].sort();
+  const spanNames = [...new Set(spans.map((span) => span.name))].toSorted();
   const metricNames = [
     ...new Set(
       receiver.capturedMetrics
         .map((metric) => metric.name)
         .filter((name) => name.startsWith("openclaw.")),
     ),
-  ].sort();
+  ].toSorted();
   const requiredSpanNames = ["openclaw.model.call", "openclaw.run"].filter((name) =>
     spanNames.includes(name),
   );
@@ -504,11 +505,11 @@ async function stopResources(params: {
 }): Promise<void> {
   const failures: unknown[] = [];
   if (params.gateway && !params.gatewayStopped) {
-    await params.gateway.stop().catch((error) => failures.push(error));
+    await params.gateway.stop().catch((error: unknown) => failures.push(error));
   }
-  await params.mock?.stop().catch((error) => failures.push(error));
-  await params.receiverA?.close().catch((error) => failures.push(error));
-  await params.receiverB?.close().catch((error) => failures.push(error));
+  await params.mock?.stop().catch((error: unknown) => failures.push(error));
+  await params.receiverA?.close().catch((error: unknown) => failures.push(error));
+  await params.receiverB?.close().catch((error: unknown) => failures.push(error));
   if (failures.length > 0) {
     throw new AggregateError(failures, "OTEL generation watcher cleanup failed");
   }
