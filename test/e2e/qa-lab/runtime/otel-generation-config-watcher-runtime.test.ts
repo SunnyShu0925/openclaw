@@ -1,27 +1,20 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../helpers/temp-dir.js";
 import {
   runOtelGenerationConfigWatcherRuntime,
   testing,
 } from "./otel-generation-config-watcher-runtime.js";
 
-const tempDirs: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { force: true, recursive: true })));
-});
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("OTEL generation config watcher runtime", () => {
   it(
     "keeps all three signals on the active same-PID provider generation",
     { timeout: 300_000 },
     async () => {
-      const artifactBase = await fs.mkdtemp(
-        path.join(os.tmpdir(), "otel-generation-config-watcher-"),
-      );
-      tempDirs.push(artifactBase);
+      const artifactBase = tempDirs.make("otel-generation-config-watcher-");
 
       const { evidence, summary } = await runOtelGenerationConfigWatcherRuntime({
         artifactBase,
