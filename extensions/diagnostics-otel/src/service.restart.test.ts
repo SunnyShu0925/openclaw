@@ -19,10 +19,10 @@ const PRELOAD_ENV = "OPENCLAW_OTEL_PRELOADED";
 const OTEL_GLOBAL_API_KEY = Symbol.for("opentelemetry.js.api.1");
 
 type OtelGlobalRegistrations = {
-  context?: unknown;
-  metrics?: unknown;
-  propagation?: unknown;
-  trace?: unknown;
+  context?: Parameters<typeof context.setGlobalContextManager>[0];
+  metrics?: Parameters<typeof metrics.setGlobalMeterProvider>[0];
+  propagation?: Parameters<typeof propagation.setGlobalPropagator>[0];
+  trace?: Parameters<typeof trace.setGlobalTracerProvider>[0];
 };
 
 function registeredOtelGlobals(): OtelGlobalRegistrations | undefined {
@@ -30,6 +30,9 @@ function registeredOtelGlobals(): OtelGlobalRegistrations | undefined {
     OTEL_GLOBAL_API_KEY
   ];
 }
+
+const ORIGINAL_OPENCLAW_OTEL_PRELOADED = process.env[PRELOAD_ENV];
+const ORIGINAL_OTEL_GLOBALS = { ...registeredOtelGlobals() };
 
 function releasePreloadedOtelGlobals() {
   context.disable();
@@ -43,6 +46,27 @@ const emit = (event: Parameters<typeof emitTrustedDiagnosticEventWithPrivateData
   emitTrustedDiagnosticEventWithPrivateData(event, {});
 
 afterEach(() => {
+  context.disable();
+  metrics.disable();
+  propagation.disable();
+  trace.disable();
+  if (ORIGINAL_OTEL_GLOBALS.context) {
+    context.setGlobalContextManager(ORIGINAL_OTEL_GLOBALS.context);
+  }
+  if (ORIGINAL_OTEL_GLOBALS.propagation) {
+    propagation.setGlobalPropagator(ORIGINAL_OTEL_GLOBALS.propagation);
+  }
+  if (ORIGINAL_OTEL_GLOBALS.metrics) {
+    metrics.setGlobalMeterProvider(ORIGINAL_OTEL_GLOBALS.metrics);
+  }
+  if (ORIGINAL_OTEL_GLOBALS.trace) {
+    trace.setGlobalTracerProvider(ORIGINAL_OTEL_GLOBALS.trace);
+  }
+  if (ORIGINAL_OPENCLAW_OTEL_PRELOADED === undefined) {
+    delete process.env[PRELOAD_ENV];
+  } else {
+    process.env[PRELOAD_ENV] = ORIGINAL_OPENCLAW_OTEL_PRELOADED;
+  }
   resetDiagnosticEventsForTest();
 });
 
