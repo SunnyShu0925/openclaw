@@ -2,12 +2,12 @@
 import { metrics, trace, type SpanContext } from "@opentelemetry/api";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
-import { resourceFromAttributes } from "@opentelemetry/resources";
+import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
 import type { LoggerProvider } from "@opentelemetry/sdk-logs";
-import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
-import { NodeSDK } from "@opentelemetry/sdk-node";
+import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import {
   BatchSpanProcessor,
+  BasicTracerProvider,
   ParentBasedSampler,
   TraceIdRatioBasedSampler,
 } from "@opentelemetry/sdk-trace-base";
@@ -55,6 +55,7 @@ import { createModelRecorders } from "./service-recorders-model.js";
 import { createOperationsRecorders } from "./service-recorders-operations.js";
 import { createToolAndSystemRecorders } from "./service-recorders-tools.js";
 import { createUsageRecorders } from "./service-recorders-usage.js";
+import { resolveResourceDetectors } from "./service-resource-detectors.js";
 import { createDiagnosticsTraceRuntime } from "./service-traces.js";
 import type { OtelLogsExporter, TelemetryExporterDiagnosticEvent } from "./service-types.js";
 
@@ -145,7 +146,8 @@ function diagnosticTraceContextFromSpanContext(spanContext: SpanContext): Diagno
 }
 
 export function createDiagnosticsOtelService(): OpenClawPluginService {
-  let sdk: NodeSDK | null = null;
+  let traceProvider: BasicTracerProvider | null = null;
+  let meterProvider: MeterProvider | null = null;
   let logProvider: LoggerProvider | null = null;
   let unsubscribe: (() => void) | null = null;
   let unregisterTracePropagationBridge: (() => void) | null = null;
@@ -159,7 +161,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
     const currentUnsubscribe = unsubscribe;
     const currentUnregisterTracePropagationBridge = unregisterTracePropagationBridge;
     const currentLogProvider = logProvider;
-    const currentSdk = sdk;
+    const currentTraceProvider = traceProvider;
+    const currentMeterProvider = meterProvider;
     const currentStopActiveTrustedSpans = stopActiveTrustedSpans;
     const currentUnregisterDisabledSdkRuntime = unregisterDisabledSdkRuntime;
     const currentUnregisterUnhandledRejectionHandler = unregisterUnhandledRejectionHandler;
@@ -168,7 +171,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
     unsubscribe = null;
     unregisterTracePropagationBridge = null;
     logProvider = null;
-    sdk = null;
+    traceProvider = null;
+    meterProvider = null;
     stopActiveTrustedSpans = null;
     unregisterDisabledSdkRuntime = null;
     unregisterUnhandledRejectionHandler = null;
@@ -187,7 +191,8 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
     );
     const providerFailures = await settle(
       currentLogProvider ? () => currentLogProvider.shutdown() : null,
-      currentSdk ? () => currentSdk.shutdown() : null,
+      currentTraceProvider ? () => currentTraceProvider.shutdown() : null,
+      currentMeterProvider ? () => currentMeterProvider.shutdown() : null,
     );
     failures.push(...providerFailures);
     if (!options?.preserveExporterRoutes) {
@@ -392,7 +397,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const metricHttpAgentOptions = metricsToOtlp
         ? resolveOtelHttpAgentOptions({ url: metricUrl, signalIdentifier: "METRICS" })
         : undefined;
-      if (tracesToOtlp || metricsToOtlp) {
+      if (!ownedNodeSdkDisabled && (tracesToOtlp || metricsToOtlp)) {
         const traceExporter = tracesToOtlp
           ? observeOtlpExporterHealth(
               new OTLPTraceExporter({
@@ -432,28 +437,38 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
             })
           : undefined;
 
-        sdk = new NodeSDK({
-          resource,
-          // Empty arrays are required in mixed-signal cases too; omission lets NodeSDK
-          // restore a protocol-rejected exporter from ambient OTEL_* settings.
-          ...(spanProcessors
-            ? { spanProcessors }
-            : traceExporter
-              ? { traceExporter }
-              : { spanProcessors: [] }),
-          metricReaders: metricReader ? [metricReader] : [],
-          logRecordProcessors: [],
-          ...(sampleRate !== undefined
-            ? {
-                sampler: new ParentBasedSampler({
-                  root: new TraceIdRatioBasedSampler(sampleRate),
-                }),
-              }
-            : {}),
-        });
-
         try {
-          sdk.start();
+          const detectedResource = resource.merge(
+            detectResources({ detectors: resolveResourceDetectors() }),
+          );
+          // Keep trace and metric provider ownership private to this service
+          // generation. NodeSDK.start() registers providers globally and
+          // NodeSDK.shutdown() never unregisters them, so a second in-process
+          // generation cannot replace the first and silently exports through a
+          // shutdown provider. Private providers are restart-safe and never
+          // touch the global registrations.
+          if (metricReader) {
+            meterProvider = new MeterProvider({
+              resource: detectedResource,
+              readers: [metricReader],
+            });
+          }
+          if (traceExporter) {
+            traceProvider = new BasicTracerProvider({
+              resource: detectedResource,
+              spanProcessors: spanProcessors ?? [new BatchSpanProcessor(traceExporter)],
+              ...(sampleRate !== undefined
+                ? {
+                    sampler: new ParentBasedSampler({
+                      root: new TraceIdRatioBasedSampler(sampleRate),
+                    }),
+                  }
+                : {}),
+              ...(getBooleanFromEnv("OTEL_NODE_EXPERIMENTAL_SDK_METRICS") && meterProvider
+                ? { meterProvider }
+                : {}),
+            });
+          }
         } catch (err) {
           for (const [signal, url] of [
             ...(tracesToOtlp ? ([["traces", traceUrl]] as const) : []),
@@ -487,8 +502,12 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         ctx.logger.info("diagnostics-otel: using preloaded OpenTelemetry SDK");
       }
 
-      const meter = metrics.getMeter("openclaw");
-      const tracer = trace.getTracer("openclaw");
+      const meter = meterProvider
+        ? meterProvider.getMeter("openclaw")
+        : metrics.getMeter("openclaw");
+      const tracer = traceProvider
+        ? traceProvider.getTracer("openclaw")
+        : trace.getTracer("openclaw");
       const diagnosticsTrace = createDiagnosticsTraceRuntime(tracer);
       stopActiveTrustedSpans = diagnosticsTrace.stopActiveTrustedSpans;
       const diagnosticMetrics = createDiagnosticsMetrics(meter, otel.metricNamePrefix);
