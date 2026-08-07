@@ -994,6 +994,18 @@ export function createChannelIngressQueue<
                 : (a, b) =>
                     a.received_at - b.received_at || compareEventIdsBinary(a.event_id, b.event_id),
             );
+            // Restore main's global scan-limit contract on the non-degraded path.
+            // SQL still prunes blocked rows here (NOT IN retained), so the merged
+            // top-scanLimit rows are exactly what main's single ordered
+            // LIMIT scanLimit query would have materialized. Capping the merged
+            // traversal to scanLimit keeps write-transaction work bounded to the
+            // configured scan limit instead of chunkCount * scanLimit, matching
+            // main. The degraded path skips this cap: its NOT IN is dropped, so
+            // blocked rows reach the merge and the keyset continuation must walk
+            // past them (total work bounded by CLAIM_DEGRADED_BLOCKED_PAGES_MAX).
+            if (!blockedPredicateDropped && candidateRows.length > scanLimit) {
+              candidateRows.length = scanLimit;
+            }
             let tombstonedCorruptRow = false;
             let lastScannedRow: ChannelIngressRow | undefined;
             for (const row of candidateRows) {

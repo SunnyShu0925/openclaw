@@ -484,4 +484,42 @@ describe("channel ingress queue claim bounds", () => {
       expect(claimed?.id).toBe("free-a");
     });
   });
+
+  it("caps the merged candidate traversal to the scan limit on the non-degraded path", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue<{ text: string }>(stateDir);
+      // Non-degraded path: a small blockedLaneKeys set keeps the SQL NOT IN
+      // predicate, so blocked rows are pruned in SQL and the merged candidate
+      // list is capped to scanLimit before the scan loop. More than scanLimit
+      // free rows span two candidate chunks (chunk size is 1000); the claim
+      // must pick the global-order minimum free row and never traverse past
+      // the scanLimit window, matching main's single ordered LIMIT scanLimit.
+      const freeCount = 150;
+      for (let index = 0; index < freeCount; index += 1) {
+        await queue.enqueue(
+          `free-${index}`,
+          { text: `free-${index}` },
+          { laneKey: "free", receivedAt: index + 1 },
+        );
+      }
+      // One blocked row on a different lane; SQL NOT IN prunes it, so it never
+      // reaches the merged list and never consumes the scan budget.
+      await queue.enqueue("blocked", { text: "blocked" }, { laneKey: "blocked", receivedAt: 0 });
+      const candidateIds = [
+        ...Array.from({ length: freeCount }, (_, index) => `free-${index}`),
+        "blocked",
+      ];
+
+      const claimed = await queue.claimNext({
+        ownerId: "worker",
+        candidateIds,
+        blockedLaneKeys: ["blocked"],
+        scanLimit: 100,
+      });
+
+      // The global-order minimum free row (received_at=1) is claimed; the cap
+      // does not starve it. main's LIMIT scanLimit would select the same row.
+      expect(claimed?.id).toBe("free-0");
+    });
+  });
 });
