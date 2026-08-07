@@ -214,7 +214,7 @@ describe("resolved session visibility checks", () => {
         targetSessionKey: "agent:main:main",
         restrictToSpawned: true,
         resolvedViaSessionId: false,
-        expectsGateway: true,
+        expectsGateway: false,
       },
     ];
 
@@ -239,6 +239,8 @@ describe("resolved session visibility checks", () => {
         agentId: "main",
         key: testCase.targetSessionKey,
         displayKey: testCase.targetSessionKey,
+        requesterOwned:
+          testCase.restrictToSpawned || testCase.requesterSessionKey === testCase.targetSessionKey,
       });
       expect(callGatewayMock).toHaveBeenCalledTimes(testCase.expectsGateway ? 1 : 0);
       callGatewayMock.mockReset();
@@ -283,6 +285,7 @@ describe("resolved session visibility checks", () => {
       agentId: "main",
       key: "agent:main:subagent:worker-999",
       displayKey: "agent:main:subagent:worker-999",
+      requesterOwned: true,
     });
   });
 
@@ -346,12 +349,12 @@ describe("resolved session visibility checks", () => {
       ok: false,
       status: "forbidden",
       error:
-        "Session history denied because spawned-session ownership lookup failed (transient); retry the operation.",
+        "Session history denied because spawned-session ownership lookup failed (transient); retry once, then ask the operator to inspect OpenClaw logs.",
     });
 
     // The authoritative list failure must use the repository's redacting formatter.
     const warnText = loggerMocks.logWarn.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(warnText).toContain("listSpawnedSessionKeys failed");
+    expect(warnText).toContain("spawned-session ownership lookup failed");
     expect(warnText).not.toContain("sk-evidence-secret-9f3a2c");
   });
 
@@ -453,7 +456,7 @@ describe("resolved session visibility checks", () => {
     expect(loggerMocks.logWarn).not.toHaveBeenCalled();
   });
 
-  it("keeps the generic sandboxed denial when the lookup succeeds but the target is not owned", async () => {
+  it("keeps operational resolve failures distinct from successful non-ownership", async () => {
     callGatewayMock.mockImplementation(async (request: { method?: string }) => {
       if (request.method === "sessions.resolve") {
         throw new Error("resolve unavailable");
@@ -481,7 +484,8 @@ describe("resolved session visibility checks", () => {
     expect(result).toEqual({
       ok: false,
       status: "forbidden",
-      error: "Session not visible from this sandboxed agent session: agent:main:worker",
+      error:
+        "Session history denied because spawned-session ownership lookup failed; ask the operator to inspect OpenClaw logs.",
       displayKey: "agent:main:worker",
     });
   });
@@ -498,6 +502,7 @@ describe("resolveSessionReference", () => {
     );
 
     const result = await resolveSessionReference({
+      action: "history",
       sessionKey: "Agent:ops:main",
       keyAgentId: "main",
       agentId: "main",
@@ -516,6 +521,7 @@ describe("resolveSessionReference", () => {
 
   it("resolves current directly to the requester without probing another owner", async () => {
     const result = await resolveSessionReference({
+      action: "history",
       sessionKey: "current",
       alias: "main",
       mainKey: "main",
@@ -530,8 +536,36 @@ describe("resolveSessionReference", () => {
     expect(callGatewayMock).not.toHaveBeenCalled();
   });
 
+  it("does not reinterpret a failed custom-key lookup as a sessionId miss", async () => {
+    callGatewayMock.mockRejectedValueOnce(
+      new GatewayClientRequestError({
+        code: "UNAVAILABLE",
+        message: "gateway unavailable",
+        retryable: true,
+      }),
+    );
+
+    await expect(
+      resolveSessionReference({
+        action: "send",
+        sessionKey: "custom-selector",
+        alias: "main",
+        mainKey: "main",
+        requesterInternalKey: "agent:main:main",
+        restrictToSpawned: true,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      status: "forbidden",
+      error:
+        "Session send denied because spawned-session ownership lookup failed (transient); retry once, then ask the operator to inspect OpenClaw logs.",
+    });
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+  });
+
   it("treats the TUI client label as the requester session", async () => {
     const result = await resolveSessionReference({
+      action: "history",
       sessionKey: "openclaw-tui",
       alias: "main",
       mainKey: "main",

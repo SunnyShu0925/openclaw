@@ -515,11 +515,7 @@ describe("sessions_history redaction", () => {
         sessionKey: targetSessionKey,
         messages: [{ role: "assistant", content: "visible" }],
       });
-      expect(requests.map((request) => request.method)).toEqual([
-        "sessions.resolve",
-        "sessions.list",
-        "chat.history",
-      ]);
+      expect(requests.map((request) => request.method)).toEqual(["chat.history"]);
     } finally {
       unregister();
     }

@@ -30,12 +30,12 @@ import {
 import { resolveSessionToolTargetAgentId } from "./scoped-session-access.js";
 import {
   createAgentToAgentPolicy,
-  createSessionVisibilityGuard,
   createSessionVisibilityRowChecker,
   resolveDisplaySessionKey,
   resolveEffectiveSessionToolsVisibility,
   resolveSandboxedSessionToolContext,
   resolveSessionReference,
+  resolveSessionToolAccess,
   resolveVisibleSessionReference,
 } from "./sessions-helpers.js";
 
@@ -108,7 +108,7 @@ type SanitizedSearchHit = {
 
 type SearchSessionCandidate = {
   key: string;
-  access: "direct" | "row";
+  access: "authorized" | "row";
   agentId?: string;
   ownerSessionKey?: string;
   parentSessionKey?: string;
@@ -372,6 +372,7 @@ export function createSessionsSearchTool(opts?: {
 
       let sessionKey: string | undefined;
       let sessionAgentId: string | undefined;
+      let requesterOwned = false;
       if (requestedSessionKey) {
         const normalizedRequestedKey = requestedSessionKey.trim();
         const semanticTargetAgentId =
@@ -389,6 +390,7 @@ export function createSessionsSearchTool(opts?: {
                 })
               : undefined;
         const resolved = await resolveSessionReference({
+          action: "search",
           sessionKey: requestedSessionKey,
           keyAgentId: semanticTargetAgentId ?? requesterAgentId,
           alias,
@@ -401,7 +403,7 @@ export function createSessionsSearchTool(opts?: {
           return jsonResult({ status: resolved.status, error: resolved.error });
         }
         const visible = await resolveVisibleSessionReference({
-          action: "list",
+          action: "search",
           resolvedSession: resolved,
           requesterSessionKey: effectiveRequesterKey,
           requesterAgentId,
@@ -419,6 +421,7 @@ export function createSessionsSearchTool(opts?: {
           resolvedAgentId: visible.agentId ?? semanticTargetAgentId,
           requesterAgentId,
         });
+        requesterOwned = visible.requesterOwned;
       }
 
       const visibility = resolveEffectiveSessionToolsVisibility({
@@ -435,20 +438,27 @@ export function createSessionsSearchTool(opts?: {
         visibility,
         a2aPolicy,
       });
-      const directGuard = await createSessionVisibilityGuard({
-        action: "history",
-        defaultAgentId,
-        requesterAgentId,
-        requesterSessionKey: effectiveRequesterKey,
-        visibility,
-        a2aPolicy,
-        callGateway: gatewayCall,
-      });
       if (sessionKey) {
-        const parsedSessionKey = parseAgentSessionKey(sessionKey);
-        const access = parsedSessionKey
-          ? directGuard.check(sessionKey)
-          : rowGuard.check({ key: sessionKey, agentId: sessionAgentId });
+        const authorizationTargetSessionKey =
+          sessionAgentId &&
+          sessionAgentId !== requesterAgentId &&
+          !parseAgentSessionKey(sessionKey)
+            ? `agent:${sessionAgentId}:${sessionKey}`
+            : sessionKey;
+        const access = await resolveSessionToolAccess({
+          action: "history",
+          displayAction: "search",
+          defaultAgentId,
+          requesterAgentId,
+          requesterSessionKey: effectiveRequesterKey,
+          authorizationTargetSessionKey,
+          targetAgentId: sessionAgentId,
+          targetSessionKey: sessionKey,
+          requesterOwned,
+          visibility,
+          a2aPolicy,
+          callGateway: gatewayCall,
+        });
         if (!access.allowed) {
           return jsonResult({ status: access.status, error: access.error });
         }
@@ -458,7 +468,7 @@ export function createSessionsSearchTool(opts?: {
           ? [
               {
                 key: sessionKey,
-                access: "direct" as const,
+                access: "authorized" as const,
                 ...(!parseAgentSessionKey(sessionKey) && sessionAgentId
                   ? { agentId: sessionAgentId }
                   : {}),
@@ -529,10 +539,9 @@ export function createSessionsSearchTool(opts?: {
             }
             const { candidate, visibilityKey } = candidateMatch;
             const access =
-              candidate.access === "row" ||
-              (candidate.agentId !== undefined && !parseAgentSessionKey(candidate.key))
-                ? rowGuard.check(candidate)
-                : directGuard.check(visibilityKey);
+              candidate.access === "authorized"
+                ? { allowed: true as const }
+                : rowGuard.check(candidate);
             if (!access.allowed) {
               continue;
             }
