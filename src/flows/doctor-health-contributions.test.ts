@@ -171,9 +171,10 @@ const mocks = vi.hoisted(() => ({
   formatCliCommand: vi.fn((cmd: string) => cmd),
   isSystemdUserServiceAvailable: vi.fn(async () => true),
   readSystemdUserLingerStatus: vi.fn(
-    async (
-      _params: { env: Record<string, string | undefined>; user?: string },
-    ): Promise<{ user: string; linger: "yes" | "no" } | null> => ({
+    async (_params: {
+      env: Record<string, string | undefined>;
+      user?: string;
+    }): Promise<{ user: string; linger: "yes" | "no" } | null> => ({
       user: "alice",
       linger: "no",
     }),
