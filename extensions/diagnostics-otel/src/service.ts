@@ -1,9 +1,9 @@
 // Diagnostics Otel plugin module implements service behavior.
-import { metrics, trace, type SpanContext } from "@opentelemetry/api";
-import { getBooleanFromEnv } from "@opentelemetry/core";
+import { diag, metrics, trace, type SpanContext } from "@opentelemetry/api";
+import * as otelCore from "@opentelemetry/core";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
-import { detectResources, resourceFromAttributes } from "@opentelemetry/resources";
+import * as resources from "@opentelemetry/resources";
 import type { LoggerProvider } from "@opentelemetry/sdk-logs";
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import {
@@ -49,18 +49,24 @@ import {
 } from "./service-exporter.js";
 import { createDiagnosticsLogExporter } from "./service-logs.js";
 import { createDiagnosticsMetrics } from "./service-metrics.js";
-import { registerDisabledSdkRuntime } from "./service-propagation.js";
+import { registerOwnedSdkRuntime } from "./service-propagation.js";
 import { createDiagnosticsRecorderRuntime } from "./service-recorder-runtime.js";
 import { createHarnessRecorders } from "./service-recorders-harness.js";
 import { createModelRecorders } from "./service-recorders-model.js";
 import { createOperationsRecorders } from "./service-recorders-operations.js";
 import { createToolAndSystemRecorders } from "./service-recorders-tools.js";
 import { createUsageRecorders } from "./service-recorders-usage.js";
-import { resolveResourceDetectors } from "./service-resource-detectors.js";
 import { createDiagnosticsTraceRuntime } from "./service-traces.js";
 import type { OtelLogsExporter, TelemetryExporterDiagnosticEvent } from "./service-types.js";
 
 const OTLP_HTTP_PROTOBUF_PROTOCOL = "http/protobuf";
+const RESOURCE_DETECTORS = [
+  ["host", resources.hostDetector],
+  ["os", resources.osDetector],
+  ["serviceinstance", resources.serviceInstanceIdDetector],
+  ["process", resources.processDetector],
+  ["env", resources.envDetector],
+] as const;
 type ExporterTransport = "otlp-http-protobuf" | "stdout" | "external-sdk";
 type ExporterEndpointMode = "configured" | "default_endpoint";
 type ExporterRouteState = Pick<ExporterHealthUpdate, "signal" | "status" | "transport">;
@@ -91,6 +97,37 @@ function isOtelSdkDisabled(logger: { warn(message: string): void }): boolean {
 function readNonblankOtelEnv(name: string): string | undefined {
   const value = process.env[name];
   return value?.trim() ? value : undefined;
+}
+
+function readPositiveOtelNumber(name: string, fallback: number): number {
+  const value = otelCore.getNumberFromEnv(name);
+  if (value !== undefined && value <= 0) {
+    diag.warn(`${name} (${value}) is invalid, expected number greater than 0, using default.`);
+    return fallback;
+  }
+  return value ?? fallback;
+}
+
+function resolveResourceDetectors(): resources.ResourceDetector[] {
+  const names = otelCore.getStringListFromEnv("OTEL_NODE_RESOURCE_DETECTORS");
+  if (names === undefined) {
+    return [resources.envDetector, resources.processDetector, resources.hostDetector];
+  }
+  if (names.includes("all")) {
+    return RESOURCE_DETECTORS.map(([, detector]) => detector);
+  }
+  if (names.includes("none")) {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const detector = RESOURCE_DETECTORS.find(([candidate]) => candidate === name)?.[1];
+    if (!detector) {
+      diag.warn(
+        `Invalid resource detector "${name}" specified in the environment variable OTEL_NODE_RESOURCE_DETECTORS`,
+      );
+    }
+    return detector ? [detector] : [];
+  });
 }
 
 function resolveSignalProtocol(
@@ -153,7 +190,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
   let unsubscribe: (() => void) | null = null;
   let unregisterTracePropagationBridge: (() => void) | null = null;
   let stopActiveTrustedSpans: (() => void) | null = null;
-  let unregisterDisabledSdkRuntime: (() => void) | null = null;
+  let unregisterOwnedSdkRuntime: (() => void) | null = null;
   let unregisterUnhandledRejectionHandler: (() => void) | null = null;
   let retireExporterRoutes: ((preserveFailures?: boolean) => void) | null = null;
   let preserveExporterRoutesOnNextStop = false;
@@ -165,7 +202,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
     const currentTraceProvider = traceProvider;
     const currentMeterProvider = meterProvider;
     const currentStopActiveTrustedSpans = stopActiveTrustedSpans;
-    const currentUnregisterDisabledSdkRuntime = unregisterDisabledSdkRuntime;
+    const currentUnregisterOwnedSdkRuntime = unregisterOwnedSdkRuntime;
     const currentUnregisterUnhandledRejectionHandler = unregisterUnhandledRejectionHandler;
     const currentRetireExporterRoutes = retireExporterRoutes;
 
@@ -175,7 +212,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
     traceProvider = null;
     meterProvider = null;
     stopActiveTrustedSpans = null;
-    unregisterDisabledSdkRuntime = null;
+    unregisterOwnedSdkRuntime = null;
     unregisterUnhandledRejectionHandler = null;
     retireExporterRoutes = options?.preserveExporterRoutes ? currentRetireExporterRoutes : null;
 
@@ -188,7 +225,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       currentUnregisterTracePropagationBridge,
       currentUnsubscribe,
       currentStopActiveTrustedSpans,
-      currentUnregisterDisabledSdkRuntime,
+      currentUnregisterOwnedSdkRuntime,
     );
     const providerFailures = await settle(
       currentLogProvider ? () => currentLogProvider.shutdown() : null,
@@ -230,12 +267,10 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
 
       const sdkDisabled = isOtelSdkDisabled(ctx.logger);
       const sdkPreloaded = hasPreloadedOtelSdk();
+      if (!sdkPreloaded) {
+        unregisterOwnedSdkRuntime = registerOwnedSdkRuntime((message) => ctx.logger.warn(message));
+      }
       if (!sdkPreloaded && sdkDisabled) {
-        // sdk-node returns before installing context or propagation when disabled.
-        // Preserve both while admitting no OpenClaw telemetry lifecycle.
-        unregisterDisabledSdkRuntime = registerDisabledSdkRuntime((message) =>
-          ctx.logger.warn(message),
-        );
         return;
       }
       const exporterRoutes = new Map<string, ExporterRouteState>();
@@ -357,7 +392,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const sampleRate = resolveSampleRate(otel.sampleRate);
       const contentCapturePolicy = resolveContentCapturePolicy(otel.captureContent);
 
-      const resource = resourceFromAttributes({
+      const resource = resources.resourceFromAttributes({
         [ATTR_SERVICE_NAME]: serviceName,
       });
 
@@ -399,65 +434,82 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         ? resolveOtelHttpAgentOptions({ url: metricUrl, signalIdentifier: "METRICS" })
         : undefined;
       if (tracesToOtlp || metricsToOtlp) {
-        const traceExporter = tracesToOtlp
-          ? observeOtlpExporterHealth(
-              new OTLPTraceExporter({
-                ...(traceUrl ? { url: traceUrl } : {}),
-                ...(headers ? { headers } : {}),
-                ...(traceHttpAgentOptions ? { httpAgentOptions: traceHttpAgentOptions } : {}),
-              }),
-              { emitExporterEvent, signal: "traces" },
-            )
-          : undefined;
-        const spanProcessors =
-          traceExporter && typeof otel.flushIntervalMs === "number"
-            ? [
-                new BatchSpanProcessor(traceExporter, {
-                  scheduledDelayMillis: Math.max(1000, otel.flushIntervalMs),
-                }),
-              ]
-            : undefined;
-
-        const metricExporter = metricsToOtlp
-          ? observeOtlpExporterHealth(
-              new OTLPMetricExporter({
-                ...(metricUrl ? { url: metricUrl } : {}),
-                ...(headers ? { headers } : {}),
-                ...(metricHttpAgentOptions ? { httpAgentOptions: metricHttpAgentOptions } : {}),
-              }),
-              { emitExporterEvent, signal: "metrics" },
-            )
-          : undefined;
-
-        const metricReader = metricExporter
-          ? new PeriodicExportingMetricReader({
-              exporter: metricExporter,
-              ...(typeof otel.flushIntervalMs === "number"
-                ? { exportIntervalMillis: Math.max(1000, otel.flushIntervalMs) }
-                : {}),
-            })
-          : undefined;
-
         try {
-          const detectedResource = resource.merge(
-            detectResources({ detectors: resolveResourceDetectors() }),
+          // Trace and metric providers stay generation-private; only context and propagation
+          // use owner-checked globals so shutdown cannot strand a later generation.
+          const detectedResource = resources
+            .detectResources({
+              detectors: resolveResourceDetectors(),
+            })
+            .merge(resource);
+          const sdkMetricsEnabled = otelCore.getBooleanFromEnv(
+            "OTEL_NODE_EXPERIMENTAL_SDK_METRICS",
           );
-          // Keep trace and metric provider ownership private to this service
-          // generation. NodeSDK.start() registers providers globally and
-          // NodeSDK.shutdown() never unregisters them, so a second in-process
-          // generation cannot replace the first and silently exports through a
-          // shutdown provider. Private providers are restart-safe and never
-          // touch the global registrations.
+          const metricExporter = metricsToOtlp
+            ? observeOtlpExporterHealth(
+                new OTLPMetricExporter({
+                  ...(metricUrl ? { url: metricUrl } : {}),
+                  ...(headers ? { headers } : {}),
+                  ...(metricHttpAgentOptions ? { httpAgentOptions: metricHttpAgentOptions } : {}),
+                }),
+                { emitExporterEvent, signal: "metrics" },
+              )
+            : undefined;
+          const metricInterval =
+            typeof otel.flushIntervalMs === "number"
+              ? Math.max(1000, otel.flushIntervalMs)
+              : readPositiveOtelNumber("OTEL_METRIC_EXPORT_INTERVAL", 60_000);
+          let metricTimeout = readPositiveOtelNumber("OTEL_METRIC_EXPORT_TIMEOUT", 30_000);
+          if (metricTimeout > metricInterval) {
+            diag.warn(
+              `OTEL_METRIC_EXPORT_TIMEOUT (${metricTimeout}) is greater than the active metric export interval (${metricInterval}). Clamping timeout to interval value.`,
+            );
+            metricTimeout = metricInterval;
+          }
+          const metricReader = metricExporter
+            ? new PeriodicExportingMetricReader({
+                exporter: metricExporter,
+                exportIntervalMillis: metricInterval,
+                exportTimeoutMillis: metricTimeout,
+              })
+            : undefined;
           if (metricReader) {
             meterProvider = new MeterProvider({
               resource: detectedResource,
               readers: [metricReader],
+              sdkMetricsEnabled,
             });
           }
+          const traceExporter = tracesToOtlp
+            ? observeOtlpExporterHealth(
+                new OTLPTraceExporter({
+                  ...(traceUrl ? { url: traceUrl } : {}),
+                  ...(headers ? { headers } : {}),
+                  ...(traceHttpAgentOptions ? { httpAgentOptions: traceHttpAgentOptions } : {}),
+                }),
+                { emitExporterEvent, signal: "traces" },
+              )
+            : undefined;
           if (traceExporter) {
+            const maxQueueSize = readPositiveOtelNumber("OTEL_BSP_MAX_QUEUE_SIZE", 2048);
+            const spanProcessor = new BatchSpanProcessor(traceExporter, {
+              maxQueueSize,
+              maxExportBatchSize: Math.min(
+                readPositiveOtelNumber("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 512),
+                maxQueueSize,
+              ),
+              scheduledDelayMillis:
+                typeof otel.flushIntervalMs === "number"
+                  ? Math.max(1000, otel.flushIntervalMs)
+                  : readPositiveOtelNumber("OTEL_BSP_SCHEDULE_DELAY", 5000),
+              exportTimeoutMillis: readPositiveOtelNumber("OTEL_BSP_EXPORT_TIMEOUT", 30_000),
+              ...(sdkMetricsEnabled && meterProvider
+                ? { selfObsMeterProvider: meterProvider }
+                : {}),
+            });
             traceProvider = new BasicTracerProvider({
               resource: detectedResource,
-              spanProcessors: spanProcessors ?? [new BatchSpanProcessor(traceExporter)],
+              spanProcessors: [spanProcessor],
               ...(sampleRate !== undefined
                 ? {
                     sampler: new ParentBasedSampler({
@@ -465,9 +517,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
                     }),
                   }
                 : {}),
-              ...(getBooleanFromEnv("OTEL_NODE_EXPERIMENTAL_SDK_METRICS") && meterProvider
-                ? { meterProvider }
-                : {}),
+              ...(sdkMetricsEnabled && meterProvider ? { meterProvider } : {}),
             });
           }
         } catch (err) {

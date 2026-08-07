@@ -1,4 +1,5 @@
 import {
+  createChildDiagnosticTraceContext,
   createDiagnosticTraceContext,
   emitTrustedDiagnosticEventWithPrivateData,
   type DiagnosticEventPayload,
@@ -34,28 +35,43 @@ export const MODEL_CALL_FIXTURE = { ...RUN_FIXTURE, callId: "call-1" } as const;
 const emit = (event: Parameters<typeof emitTrustedDiagnosticEventWithPrivateData>[0]) =>
   emitTrustedDiagnosticEventWithPrivateData(event, {});
 
-export async function emitRealSdkSignals() {
+export async function emitRealSdkSignals(generation = "1") {
   // Owned mode keeps trace and metric providers private to the service, so the
   // global API is a no-op there. Emit through the diagnostic event recorders,
   // which create real SDK spans and metrics via the service's private handles.
   const traceContext = createDiagnosticTraceContext();
-  emit({ type: "run.started", ...RUN_FIXTURE, trace: traceContext });
+  const modelTraceContext = createChildDiagnosticTraceContext(traceContext);
+  const run = { ...RUN_FIXTURE, runId: `run-${generation}` };
+  emit({ type: "run.started", ...run, trace: traceContext });
+  emit({
+    type: "model.call.started",
+    ...run,
+    callId: `call-${generation}`,
+    trace: modelTraceContext,
+  });
   emit({
     type: "model.call.completed",
-    ...MODEL_CALL_FIXTURE,
+    ...run,
+    callId: `call-${generation}`,
     durationMs: 10,
     usage: { input: 5, output: 3, cacheRead: 0, cacheWrite: 0, total: 8 },
+    trace: modelTraceContext,
+  });
+  emit({
+    type: "log.record",
+    level: "INFO",
+    message: `OTLP routing test ${generation}`,
     trace: traceContext,
   });
   emit({
     type: "run.completed",
-    ...RUN_FIXTURE,
+    ...run,
     outcome: "completed",
     durationMs: 25,
     trace: traceContext,
   });
-  emit({ type: "log.record", level: "INFO", message: "OTLP routing test" });
   await waitForDiagnosticEventsDrained();
+  return traceContext;
 }
 type OtelConfig = NonNullable<
   NonNullable<OpenClawPluginServiceContext["config"]["diagnostics"]>["otel"]

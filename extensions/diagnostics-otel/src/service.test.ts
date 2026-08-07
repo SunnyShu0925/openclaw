@@ -60,11 +60,16 @@ const traceProviderCtor = vi.hoisted(() => vi.fn());
 const traceProviderShutdown = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const meterProviderCtor = vi.hoisted(() => vi.fn());
 const meterProviderShutdown = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-const disabledSdkRuntimeCleanup = vi.hoisted(() => vi.fn());
-const registerDisabledSdkRuntimeMock = vi.hoisted(() => vi.fn(() => disabledSdkRuntimeCleanup));
+const diagWarn = vi.hoisted(() => vi.fn());
 const detectResourcesMock = vi.hoisted(() =>
   vi.fn((_options: { detectors?: unknown[] }) => ({
     attributes: { "openclaw.test.detected": "1" },
+    merge: vi.fn((configured: { attributes?: Record<string, unknown> }) => ({
+      attributes: {
+        "openclaw.test.detected": "1",
+        ...configured.attributes,
+      },
+    })),
   })),
 );
 const logEmit = vi.hoisted(() => vi.fn());
@@ -81,6 +86,9 @@ const logExporterShutdown = vi.hoisted(() => vi.fn().mockResolvedValue(undefined
 const exporterForceFlush = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const logProcessorCtor = vi.hoisted(() => vi.fn());
 const spanProcessorCtor = vi.hoisted(() => vi.fn());
+const metricReaderCtor = vi.hoisted(() => vi.fn());
+const ownedSdkRuntimeCleanup = vi.hoisted(() => vi.fn());
+const registerOwnedSdkRuntimeMock = vi.hoisted(() => vi.fn(() => ownedSdkRuntimeCleanup));
 const nodeProxyAgent = vi.hoisted(() => ({ kind: "node-proxy-agent" }));
 const createNodeProxyAgentMock = vi.hoisted(() => vi.fn());
 const unhandledRejectionHandlerState = vi.hoisted(() => {
@@ -104,7 +112,7 @@ vi.mock("@opentelemetry/api", () => ({
     active: () => ({}),
   },
   diag: {
-    warn: vi.fn(),
+    warn: diagWarn,
   },
   metrics: {
     getMeter: () => telemetryState.meter,
@@ -127,7 +135,7 @@ vi.mock("@opentelemetry/api", () => ({
 }));
 
 vi.mock("./service-propagation.js", () => ({
-  registerDisabledSdkRuntime: registerDisabledSdkRuntimeMock,
+  registerOwnedSdkRuntime: registerOwnedSdkRuntimeMock,
 }));
 
 vi.mock("@opentelemetry/exporter-metrics-otlp-proto", () => ({
@@ -192,7 +200,9 @@ vi.mock("@opentelemetry/sdk-metrics", () => ({
     getMeter = () => telemetryState.meter;
     shutdown = meterProviderShutdown;
   },
-  PeriodicExportingMetricReader: function PeriodicExportingMetricReader() {},
+  PeriodicExportingMetricReader: function PeriodicExportingMetricReader(options?: unknown) {
+    metricReaderCtor(options);
+  },
 }));
 
 vi.mock("@opentelemetry/sdk-trace-base", () => ({
@@ -217,9 +227,9 @@ vi.mock("@opentelemetry/resources", () => ({
   hostDetector: { detector: "host" },
   osDetector: { detector: "os" },
   processDetector: { detector: "process" },
-  serviceInstanceIdDetector: { detector: "serviceinstanceid" },
+  serviceInstanceIdDetector: { detector: "serviceinstance" },
   resourceFromAttributes: vi.fn((attrs: Record<string, unknown>) => ({
-    ...attrs,
+    attributes: attrs,
     merge: vi.fn((other: unknown) => other ?? {}),
   })),
   Resource: function Resource(_value?: unknown) {
@@ -302,9 +312,31 @@ const OTEL_PROTOCOL_ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
   "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
 ] as const;
+const OTEL_PROVIDER_ENV_KEYS = [
+  "OTEL_BSP_EXPORT_TIMEOUT",
+  "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
+  "OTEL_BSP_MAX_QUEUE_SIZE",
+  "OTEL_BSP_SCHEDULE_DELAY",
+  "OTEL_METRIC_EXPORT_INTERVAL",
+  "OTEL_METRIC_EXPORT_TIMEOUT",
+  "OTEL_NODE_EXPERIMENTAL_SDK_METRICS",
+  "OTEL_NODE_RESOURCE_DETECTORS",
+  "OTEL_SERVICE_NAME",
+  "OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT",
+  "OTEL_SPAN_ATTRIBUTE_PER_EVENT_COUNT_LIMIT",
+  "OTEL_SPAN_ATTRIBUTE_PER_LINK_COUNT_LIMIT",
+  "OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+  "OTEL_SPAN_EVENT_COUNT_LIMIT",
+  "OTEL_SPAN_LINK_COUNT_LIMIT",
+  "OTEL_TRACES_SAMPLER",
+  "OTEL_TRACES_SAMPLER_ARG",
+] as const;
 const ORIGINAL_OTEL_PROTOCOL_ENV = Object.fromEntries(
   OTEL_PROTOCOL_ENV_KEYS.map((key) => [key, process.env[key]]),
 ) as Record<(typeof OTEL_PROTOCOL_ENV_KEYS)[number], string | undefined>;
+const ORIGINAL_OTEL_PROVIDER_ENV = Object.fromEntries(
+  OTEL_PROVIDER_ENV_KEYS.map((key) => [key, process.env[key]]),
+) as Record<(typeof OTEL_PROVIDER_ENV_KEYS)[number], string | undefined>;
 const OTEL_CERT_ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_CERTIFICATE",
   "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
@@ -413,8 +445,26 @@ function findCreateNodeProxyAgentCall(targetUrl: string) {
   return call;
 }
 
-function firstSpanProcessorOptions(): { scheduledDelayMillis?: number } {
-  return mockCallArg(spanProcessorCtor, 1) as { scheduledDelayMillis?: number };
+type TestSpanProcessorOptions = {
+  exportTimeoutMillis?: number;
+  maxExportBatchSize?: number;
+  maxQueueSize?: number;
+  scheduledDelayMillis?: number;
+  selfObsMeterProvider?: unknown;
+};
+
+function firstSpanProcessorOptions(): TestSpanProcessorOptions {
+  return mockCallArg(spanProcessorCtor, 1) as TestSpanProcessorOptions;
+}
+
+function firstMetricReaderOptions(): {
+  exportIntervalMillis?: number;
+  exportTimeoutMillis?: number;
+} {
+  return mockCallArg(metricReaderCtor, 0) as {
+    exportIntervalMillis?: number;
+    exportTimeoutMillis?: number;
+  };
 }
 
 function firstLogProcessorOptions(): { exporter?: unknown; scheduledDelayMillis?: number } {
@@ -655,7 +705,9 @@ describe("diagnostics-otel service", () => {
     for (const key of OTEL_PROTOCOL_ENV_KEYS) {
       delete process.env[key];
     }
-    delete process.env.OTEL_NODE_RESOURCE_DETECTORS;
+    for (const key of OTEL_PROVIDER_ENV_KEYS) {
+      delete process.env[key];
+    }
     delete process.env.OTEL_SEMCONV_STABILITY_OPT_IN;
     delete process.env.OTEL_SDK_DISABLED;
     delete process.env.OTEL_PROPAGATORS;
@@ -670,9 +722,7 @@ describe("diagnostics-otel service", () => {
     traceProviderShutdown.mockClear();
     meterProviderCtor.mockClear();
     meterProviderShutdown.mockClear();
-    disabledSdkRuntimeCleanup.mockClear();
-    registerDisabledSdkRuntimeMock.mockClear();
-    registerDisabledSdkRuntimeMock.mockReturnValue(disabledSdkRuntimeCleanup);
+    diagWarn.mockClear();
     logEmit.mockReset();
     logShutdown.mockClear();
     traceExporterCtor.mockClear();
@@ -691,6 +741,10 @@ describe("diagnostics-otel service", () => {
     exporterForceFlush.mockResolvedValue(undefined);
     logProcessorCtor.mockClear();
     spanProcessorCtor.mockClear();
+    metricReaderCtor.mockClear();
+    ownedSdkRuntimeCleanup.mockClear();
+    registerOwnedSdkRuntimeMock.mockClear();
+    registerOwnedSdkRuntimeMock.mockReturnValue(ownedSdkRuntimeCleanup);
     createNodeProxyAgentMock.mockReset();
     createNodeProxyAgentMock.mockReturnValue(undefined);
     unhandledRejectionHandlerState.reset();
@@ -719,6 +773,14 @@ describe("diagnostics-otel service", () => {
     }
     for (const key of OTEL_PROTOCOL_ENV_KEYS) {
       const value = ORIGINAL_OTEL_PROTOCOL_ENV[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    for (const key of OTEL_PROVIDER_ENV_KEYS) {
+      const value = ORIGINAL_OTEL_PROVIDER_ENV[key];
       if (value === undefined) {
         delete process.env[key];
       } else {
@@ -1681,10 +1743,10 @@ describe("diagnostics-otel service", () => {
       expect(meterProviderCtor).not.toHaveBeenCalled();
       expect(logEmit).not.toHaveBeenCalled();
       expect(unhandledRejectionHandlerState.register).not.toHaveBeenCalled();
-      expect(registerDisabledSdkRuntimeMock).toHaveBeenCalledOnce();
+      expect(registerOwnedSdkRuntimeMock).toHaveBeenCalledOnce();
 
       await service.stop?.(ctx);
-      expect(disabledSdkRuntimeCleanup).toHaveBeenCalledOnce();
+      expect(ownedSdkRuntimeCleanup).toHaveBeenCalledOnce();
       unsubscribe();
     },
   );
@@ -1703,7 +1765,7 @@ describe("diagnostics-otel service", () => {
     expect(traceExporterCtor).toHaveBeenCalledOnce();
     expect(metricExporterCtor).toHaveBeenCalledOnce();
     expect(logExporterCtor).toHaveBeenCalledOnce();
-    expect(registerDisabledSdkRuntimeMock).not.toHaveBeenCalled();
+    expect(registerOwnedSdkRuntimeMock).toHaveBeenCalledOnce();
 
     await service.stop?.(ctx);
   });
@@ -1725,7 +1787,7 @@ describe("diagnostics-otel service", () => {
     expect(traceExporterCtor).toHaveBeenCalledOnce();
     expect(metricExporterCtor).toHaveBeenCalledOnce();
     expect(logExporterCtor).toHaveBeenCalledOnce();
-    expect(registerDisabledSdkRuntimeMock).not.toHaveBeenCalled();
+    expect(registerOwnedSdkRuntimeMock).toHaveBeenCalledOnce();
 
     await service.stop?.(ctx);
   });
@@ -1762,31 +1824,84 @@ describe("diagnostics-otel service", () => {
     unsubscribe();
   });
 
-  test("does not construct owned SDK providers when OTEL_SDK_DISABLED", async () => {
+  test("preserves preloaded trace and metric ownership while disabling plugin logs", async () => {
     const events: TelemetryExporterEvent[] = [];
     const unsubscribe = onInternalDiagnosticEvent((event) => {
       if (event.type === "telemetry.exporter") {
         events.push(event);
       }
     });
+    process.env.OPENCLAW_OTEL_PRELOADED = "1";
     process.env.OTEL_SDK_DISABLED = "true";
-    const service = createDiagnosticsOtelService();
-    const ctx = createOtelContext(OTEL_TEST_ENDPOINT, {
+
+    const { service, ctx } = await startOtelService({
       traces: true,
       metrics: true,
-      logs: false,
+      logs: true,
+      logsExporter: "both",
     });
-
-    await expect(service.start(ctx)).resolves.toBeUndefined();
+    emitDiagnosticEvent({
+      type: "run.completed",
+      ...RUN_FIXTURE,
+      outcome: "completed",
+      durationMs: 100,
+    });
+    await emitAndFlush({
+      type: "log.record",
+      level: "INFO",
+      message: "disabled preloaded log",
+    });
     await waitForDiagnosticEventsDrained();
 
+    expect(events.map(({ signal, status }) => ({ signal, status }))).toEqual([
+      { signal: "traces", status: "started" },
+      { signal: "metrics", status: "started" },
+    ]);
+    expect(
+      getReportedExporterHealth(ctx).map(({ signal, transport, status }) => ({
+        signal,
+        transport,
+        status,
+      })),
+    ).toEqual([
+      {
+        signal: "traces",
+        transport: "external-sdk",
+        status: "started",
+      },
+      {
+        signal: "metrics",
+        transport: "external-sdk",
+        status: "started",
+      },
+    ]);
+    expect(traceExporterCtor).not.toHaveBeenCalled();
+    expect(metricExporterCtor).not.toHaveBeenCalled();
+    expect(logExporterCtor).not.toHaveBeenCalled();
     expect(traceProviderCtor).not.toHaveBeenCalled();
     expect(meterProviderCtor).not.toHaveBeenCalled();
-    expect(events).toEqual([]);
-    expect(getReportedExporterHealth(ctx)).toEqual([]);
-    await service.stop?.(ctx);
+    expect(unhandledRejectionHandlerState.register).not.toHaveBeenCalled();
+    expect(lastHistogramRecord("openclaw.run.duration_ms")?.[0]).toBe(100);
+    expect(startedSpanOptions("openclaw.run")?.attributes?.["openclaw.outcome"]).toBe("completed");
+    expect(logEmit).not.toHaveBeenCalled();
+    expect(registerOwnedSdkRuntimeMock).not.toHaveBeenCalled();
     await service.stop?.(ctx);
     unsubscribe();
+  });
+
+  test("releases each owned context and propagation generation across restart and stop", async () => {
+    process.env.OTEL_SDK_DISABLED = "true";
+    const service = createDiagnosticsOtelService();
+    const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { traces: true });
+
+    await service.start(ctx);
+    await service.start(ctx);
+    await service.stop?.(ctx);
+
+    expect(registerOwnedSdkRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(ownedSdkRuntimeCleanup).toHaveBeenCalledTimes(2);
+    expect(traceProviderCtor).not.toHaveBeenCalled();
+    expect(meterProviderCtor).not.toHaveBeenCalled();
   });
 
   test("records dependency-default, stdout, and external SDK ownership facts", async () => {
@@ -3176,6 +3291,144 @@ describe("diagnostics-otel service", () => {
     expect(firstSpanProcessorOptions().scheduledDelayMillis).toBe(1000);
   });
 
+  test("passes explicit NodeSDK batch and metric defaults to private providers", async () => {
+    await startOtelService({ traces: true, metrics: true });
+
+    expect(firstSpanProcessorOptions()).toMatchObject({
+      exportTimeoutMillis: 30_000,
+      maxExportBatchSize: 512,
+      maxQueueSize: 2048,
+      scheduledDelayMillis: 5000,
+    });
+    expect(firstMetricReaderOptions()).toMatchObject({
+      exportIntervalMillis: 60_000,
+      exportTimeoutMillis: 30_000,
+    });
+    expect((mockCallArg(meterProviderCtor, 0) as Record<string, unknown>).sdkMetricsEnabled).toBe(
+      false,
+    );
+    const traceOptions = mockCallArg(traceProviderCtor, 0) as Record<string, unknown>;
+    expect(traceOptions.meterProvider).toBeUndefined();
+    expect(traceOptions).not.toHaveProperty("sampler");
+    expect(traceOptions).not.toHaveProperty("spanLimits");
+    expect(firstSpanProcessorOptions().selfObsMeterProvider).toBeUndefined();
+  });
+
+  test("lets explicit OpenClaw sampling override the inherited sampler environment", async () => {
+    process.env.OTEL_TRACES_SAMPLER = "always_off";
+    await startOtelService({
+      traces: true,
+      configure: (ctx) => {
+        ctx.config.diagnostics!.otel!.sampleRate = 1;
+      },
+    });
+
+    const traceOptions = mockCallArg(traceProviderCtor, 0) as Record<string, unknown>;
+    expect(traceOptions.sampler).toBeDefined();
+    expect(traceOptions).not.toHaveProperty("spanLimits");
+  });
+
+  test("honors positive BSP and metric environment values", async () => {
+    process.env.OTEL_BSP_MAX_QUEUE_SIZE = "32";
+    process.env.OTEL_BSP_MAX_EXPORT_BATCH_SIZE = "16";
+    process.env.OTEL_BSP_SCHEDULE_DELAY = "1250";
+    process.env.OTEL_BSP_EXPORT_TIMEOUT = "2500";
+    process.env.OTEL_METRIC_EXPORT_INTERVAL = "4000";
+    process.env.OTEL_METRIC_EXPORT_TIMEOUT = "3000";
+
+    await startOtelService({ traces: true, metrics: true });
+
+    expect(firstSpanProcessorOptions()).toMatchObject({
+      exportTimeoutMillis: 2500,
+      maxExportBatchSize: 16,
+      maxQueueSize: 32,
+      scheduledDelayMillis: 1250,
+    });
+    expect(firstMetricReaderOptions()).toMatchObject({
+      exportIntervalMillis: 4000,
+      exportTimeoutMillis: 3000,
+    });
+  });
+
+  test.each(["0", "-1", "invalid"])(
+    "falls back from invalid positive-only OTel interval values: %s",
+    async (value) => {
+      process.env.OTEL_BSP_MAX_QUEUE_SIZE = value;
+      process.env.OTEL_BSP_MAX_EXPORT_BATCH_SIZE = value;
+      process.env.OTEL_BSP_SCHEDULE_DELAY = value;
+      process.env.OTEL_BSP_EXPORT_TIMEOUT = value;
+      process.env.OTEL_METRIC_EXPORT_INTERVAL = value;
+      process.env.OTEL_METRIC_EXPORT_TIMEOUT = value;
+
+      await startOtelService({ traces: true, metrics: true });
+
+      expect(firstSpanProcessorOptions()).toMatchObject({
+        exportTimeoutMillis: 30_000,
+        maxExportBatchSize: 512,
+        maxQueueSize: 2048,
+        scheduledDelayMillis: 5000,
+      });
+      expect(firstMetricReaderOptions()).toMatchObject({
+        exportIntervalMillis: 60_000,
+        exportTimeoutMillis: 30_000,
+      });
+    },
+  );
+
+  test("clamps metric timeout to interval and wires experimental SDK metrics", async () => {
+    process.env.OTEL_METRIC_EXPORT_INTERVAL = "2000";
+    process.env.OTEL_METRIC_EXPORT_TIMEOUT = "3000";
+    process.env.OTEL_NODE_EXPERIMENTAL_SDK_METRICS = "true";
+
+    await startOtelService({ traces: true, metrics: true });
+
+    expect(firstMetricReaderOptions()).toMatchObject({
+      exportIntervalMillis: 2000,
+      exportTimeoutMillis: 2000,
+    });
+    const meterOptions = mockCallArg(meterProviderCtor, 0) as Record<string, unknown>;
+    expect(meterOptions.sdkMetricsEnabled).toBe(true);
+    expect(
+      (mockCallArg(traceProviderCtor, 0) as Record<string, unknown>).meterProvider,
+    ).toBeDefined();
+    expect(firstSpanProcessorOptions().selfObsMeterProvider).toBeDefined();
+    expect(diagWarn).toHaveBeenCalledWith(
+      "OTEL_METRIC_EXPORT_TIMEOUT (3000) is greater than the active metric export interval (2000). Clamping timeout to interval value.",
+    );
+  });
+
+  test("clamps BSP export batches to the configured queue size", async () => {
+    process.env.OTEL_BSP_MAX_QUEUE_SIZE = "16";
+    process.env.OTEL_BSP_MAX_EXPORT_BATCH_SIZE = "32";
+
+    await startOtelService({ traces: true });
+
+    expect(firstSpanProcessorOptions()).toMatchObject({
+      maxExportBatchSize: 16,
+      maxQueueSize: 16,
+    });
+  });
+
+  test("merges configured service resource after detected environment attributes", async () => {
+    process.env.OTEL_SERVICE_NAME = "environment-service";
+    const { ctx } = await startOtelService({
+      traces: true,
+      configure: (serviceContext) => {
+        serviceContext.config.diagnostics!.otel!.serviceName = "configured-service";
+      },
+    });
+
+    expect(
+      (mockCallArg(traceProviderCtor, 0) as { resource?: { attributes?: unknown } }).resource,
+    ).toMatchObject({
+      attributes: {
+        "openclaw.test.detected": "1",
+        "service.name": "configured-service",
+      },
+    });
+    expect(ctx.logger.error).not.toHaveBeenCalled();
+  });
+
   test("applies flush interval to log batching", async () => {
     await startOtelService({
       logs: true,
@@ -3308,7 +3561,7 @@ describe("diagnostics-otel service", () => {
     {
       label: "all",
       env: "all",
-      expected: ["env", "host", "os", "process", "serviceinstanceid"],
+      expected: ["host", "os", "serviceinstance", "process", "env"],
     },
     {
       label: "subset with invalid name",
@@ -3328,6 +3581,11 @@ describe("diagnostics-otel service", () => {
         | { detectors?: Array<{ detector: string }> }
         | undefined;
       expect(call?.detectors?.map((detector) => detector.detector)).toEqual(expected);
+      if (env?.includes("invalid-name")) {
+        expect(diagWarn).toHaveBeenCalledWith(
+          'Invalid resource detector "invalid-name" specified in the environment variable OTEL_NODE_RESOURCE_DETECTORS',
+        );
+      }
     },
   );
 

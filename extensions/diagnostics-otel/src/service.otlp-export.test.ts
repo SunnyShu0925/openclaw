@@ -13,10 +13,31 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { context, diag, DiagLogLevel, metrics, propagation, trace } from "@opentelemetry/api";
+import {
+  context,
+  diag,
+  DiagLogLevel,
+  metrics,
+  propagation,
+  ROOT_CONTEXT,
+  trace,
+} from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import {
+  InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from "@opentelemetry/sdk-metrics";
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
@@ -243,6 +264,141 @@ function releasePreloadedOtelGlobals() {
   trace.disable();
   process.env[PRELOAD_ENV] = "0";
 }
+
+test("keeps preloaded host providers live and owned by the host after plugin stop", async () => {
+  const externalContextManager = new AsyncLocalStorageContextManager().enable();
+  const externalPropagator = new W3CTraceContextPropagator();
+  const metricExporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const metricProvider = new MeterProvider({
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter: metricExporter,
+        exportIntervalMillis: 60_000,
+      }),
+    ],
+  });
+  const logExporter = new InMemoryLogRecordExporter();
+  const loggerProvider = new LoggerProvider({
+    processors: [new SimpleLogRecordProcessor({ exporter: logExporter })],
+  });
+  context.disable();
+  metrics.disable();
+  propagation.disable();
+  logs.disable();
+  expect(context.setGlobalContextManager(externalContextManager)).toBe(true);
+  expect(propagation.setGlobalPropagator(externalPropagator)).toBe(true);
+  expect(metrics.setGlobalMeterProvider(metricProvider)).toBe(true);
+  logs.setGlobalLoggerProvider(loggerProvider);
+  const hostOwners = {
+    context: registeredOtelGlobals()?.context,
+    logs: logs.getLoggerProvider(),
+    metrics: registeredOtelGlobals()?.metrics,
+    propagation: registeredOtelGlobals()?.propagation,
+    trace: registeredOtelGlobals()?.trace,
+  };
+  const { service, ctx } = await startOtelService({
+    traces: true,
+    metrics: true,
+    logs: false,
+  });
+  const emitHostSignals = (generation: string) => {
+    trace.getTracer("host-preloaded").startSpan(`host-${generation}`).end();
+    metrics
+      .getMeter("host-preloaded")
+      .createCounter("host.preloaded.counter")
+      .add(1, { generation });
+    logs.getLogger("host-preloaded").emit({
+      body: `host-${generation}`,
+      severityText: "INFO",
+    });
+  };
+
+  try {
+    expect({
+      context: registeredOtelGlobals()?.context,
+      logs: logs.getLoggerProvider(),
+      metrics: registeredOtelGlobals()?.metrics,
+      propagation: registeredOtelGlobals()?.propagation,
+      trace: registeredOtelGlobals()?.trace,
+    }).toEqual(hostOwners);
+    emitHostSignals("before-stop");
+    await Promise.all([
+      provider.forceFlush(),
+      metricProvider.forceFlush(),
+      loggerProvider.forceFlush(),
+    ]);
+
+    const incoming = {
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    };
+    const extracted = propagation.extract(ROOT_CONTEXT, incoming);
+    const outgoing: Record<string, string> = {};
+    await context.with(extracted, async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      propagation.inject(context.active(), outgoing);
+    });
+    expect(outgoing).toEqual(incoming);
+
+    await service.stop?.(ctx);
+    expect({
+      context: registeredOtelGlobals()?.context,
+      logs: logs.getLoggerProvider(),
+      metrics: registeredOtelGlobals()?.metrics,
+      propagation: registeredOtelGlobals()?.propagation,
+      trace: registeredOtelGlobals()?.trace,
+    }).toEqual(hostOwners);
+    emitHostSignals("after-stop");
+    await Promise.all([
+      provider.forceFlush(),
+      metricProvider.forceFlush(),
+      loggerProvider.forceFlush(),
+    ]);
+
+    expect(exporter.getFinishedSpans().map((span) => span.name)).toEqual([
+      "host-before-stop",
+      "host-after-stop",
+    ]);
+    expect(
+      metricExporter
+        .getMetrics()
+        .flatMap((resourceMetrics) => resourceMetrics.scopeMetrics)
+        .flatMap((scopeMetrics) => scopeMetrics.metrics)
+        .map((metric) => metric.descriptor.name),
+    ).toContain("host.preloaded.counter");
+    expect(logExporter.getFinishedLogRecords().map((record) => record.body)).toEqual([
+      "host-before-stop",
+      "host-after-stop",
+    ]);
+  } finally {
+    await service.stop?.(ctx);
+    await loggerProvider.shutdown();
+    await metricProvider.shutdown();
+  }
+}, 30_000);
+
+test("leaves OTEL_LOG_LEVEL and the process diagnostic logger under host ownership", async () => {
+  releasePreloadedOtelGlobals();
+  const messages = captureOtelDiagnostics();
+  const hostDiagOwner = registeredOtelGlobals()?.diag;
+  process.env.OTEL_LOG_LEVEL = "debug";
+  const receiver = startLocalOtlpReceiver();
+  const port = await receiver.listen();
+  const { service, ctx } = await startOtelService({
+    endpoint: `http://127.0.0.1:${port}`,
+    traces: true,
+  });
+
+  try {
+    await emitRealSdkSignals("diag-owner");
+    await service.stop?.(ctx);
+    expect(registeredOtelGlobals()?.diag).toBe(hostDiagOwner);
+    diag.warn("host diagnostic logger remains active");
+    expect(messages).toContain("host diagnostic logger remains active");
+  } finally {
+    await service.stop?.(ctx);
+    await receiver.close();
+  }
+}, 30_000);
 
 const SHARED_ENDPOINT_ROUTING_CASES = [
   {
