@@ -595,6 +595,62 @@ function compareEventIdsBinary(a: string, b: string): number {
   return Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
 }
 
+// Incremental global top-k merge: mergedWindow stays globally ordered and
+// length <= cap. Each chunk's rows arrive already ordered (SQL ORDER BY), so a
+// two-pointer merge into mergedWindow replaces "materialize all chunks into one
+// array, sort, truncate". JS-side retention drops from chunkCount*cap to cap,
+// and sort work drops from O(n log n) to O(n) (merge, no log factor). This
+// bounds write-transaction work to the configured window instead of scaling
+// with the pending snapshot size, preserving the bounded-work invariant main's
+// single ordered LIMIT scanLimit held. Correctness rests on each chunk's
+// top-cap rows containing that chunk's globally-smallest cap rows, so the
+// global top-cap is a subset of their union.
+function mergeTopKRowWindow(
+  mergedWindow: ChannelIngressRow[],
+  chunkRows: ChannelIngressRow[],
+  cap: number,
+  compare: (a: ChannelIngressRow, b: ChannelIngressRow) => number,
+): void {
+  if (chunkRows.length === 0) {
+    return;
+  }
+  if (mergedWindow.length === 0) {
+    for (const row of chunkRows) {
+      mergedWindow.push(row);
+      if (mergedWindow.length === cap) {
+        break;
+      }
+    }
+    return;
+  }
+  // Two-pointer merge of two ordered sequences, keeping only the first cap.
+  const result: ChannelIngressRow[] = [];
+  let mergedIndex = 0;
+  let chunkIndex = 0;
+  while (
+    result.length < cap &&
+    (mergedIndex < mergedWindow.length || chunkIndex < chunkRows.length)
+  ) {
+    const mergedRow = mergedWindow[mergedIndex];
+    const chunkRow = chunkRows[chunkIndex];
+    const pickFromMerged =
+      chunkRow === undefined ? true : mergedRow !== undefined && compare(mergedRow, chunkRow) <= 0;
+    if (pickFromMerged) {
+      // mergedRow is defined here because mergedIndex < mergedWindow.length in
+      // the only branch that reaches this with chunkRow !== undefined above.
+      result.push(mergedRow as ChannelIngressRow);
+      mergedIndex += 1;
+    } else {
+      result.push(chunkRow as ChannelIngressRow);
+      chunkIndex += 1;
+    }
+  }
+  mergedWindow.length = 0;
+  for (const row of result) {
+    mergedWindow.push(row);
+  }
+}
+
 function queueNameForParts(channelId: string, accountId: string): string {
   // JSON tuple encoding keeps channel/account scopes unambiguous even when ids contain separators.
   return JSON.stringify([channelId, accountId]);
@@ -979,36 +1035,45 @@ export function createChannelIngressQueue<
           let cursor: ChannelIngressRow | undefined;
           let pagesWalked = 0;
           while (!selected && corruptReconciliations < MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
-            const candidateRows: ChannelIngressRow[] = [];
+            // Incremental global top-k: each chunk's rows arrive already ordered
+            // (SQL ORDER BY), so merge them into a window capped to mergeCap
+            // instead of materializing chunkCount*mergeCap rows, sorting, then
+            // truncating. JS-side retention stays <= mergeCap and merge work is
+            // O(n) (no log factor), bounding write-transaction work to the
+            // configured window regardless of pending snapshot size. Non-degraded
+            // keeps mergeCap = scanLimit (SQL prunes blocked, window is all free);
+            // degraded widens to CAP so blocked rows reach the window and the
+            // in-memory skip + keyset continuation can page past them.
+            const mergeCap = blockedPredicateDropped
+              ? Math.max(scanLimit, CLAIM_DEGRADED_BLOCKED_SCAN_CAP)
+              : scanLimit;
+            const compareRows =
+              claimOptions?.orderBy === "id"
+                ? (a: ChannelIngressRow, b: ChannelIngressRow) =>
+                    compareEventIdsBinary(a.event_id, b.event_id)
+                : (a: ChannelIngressRow, b: ChannelIngressRow) =>
+                    a.received_at - b.received_at || compareEventIdsBinary(a.event_id, b.event_id);
+            const mergedWindow: ChannelIngressRow[] = [];
+            let anyRows = false;
             for (const candidateChunk of candidateChunks) {
-              candidateRows.push(
-                ...executeSqliteQuerySync(tx.db, candidateSelect(candidateChunk, cursor)).rows,
-              );
+              const chunkRows = executeSqliteQuerySync(
+                tx.db,
+                candidateSelect(candidateChunk, cursor),
+              ).rows;
+              if (chunkRows.length > 0) {
+                anyRows = true;
+                mergeTopKRowWindow(mergedWindow, chunkRows, mergeCap, compareRows);
+              }
             }
-            if (candidateRows.length === 0) {
+            if (!anyRows) {
               break;
             }
-            candidateRows.sort(
-              claimOptions?.orderBy === "id"
-                ? (a, b) => compareEventIdsBinary(a.event_id, b.event_id)
-                : (a, b) =>
-                    a.received_at - b.received_at || compareEventIdsBinary(a.event_id, b.event_id),
-            );
-            // Restore main's global scan-limit contract on the non-degraded path.
-            // SQL still prunes blocked rows here (NOT IN retained), so the merged
-            // top-scanLimit rows are exactly what main's single ordered
-            // LIMIT scanLimit query would have materialized. Capping the merged
-            // traversal to scanLimit keeps write-transaction work bounded to the
-            // configured scan limit instead of chunkCount * scanLimit, matching
-            // main. The degraded path skips this cap: its NOT IN is dropped, so
-            // blocked rows reach the merge and the keyset continuation must walk
-            // past them (total work bounded by CLAIM_DEGRADED_BLOCKED_PAGES_MAX).
-            if (!blockedPredicateDropped && candidateRows.length > scanLimit) {
-              candidateRows.length = scanLimit;
-            }
+            // mergedWindow is the global-order top-mergeCap (non-degraded =
+            // scanLimit, naturally capped; degraded = CAP, includes blocked rows
+            // skipped in memory below). No further sort or truncate is needed.
             let tombstonedCorruptRow = false;
             let lastScannedRow: ChannelIngressRow | undefined;
-            for (const row of candidateRows) {
+            for (const row of mergedWindow) {
               lastScannedRow = row;
               const rec = baseRecord<TPayload, TMetadata>(row);
               if (rec === null) {

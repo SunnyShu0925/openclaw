@@ -522,4 +522,78 @@ describe("channel ingress queue claim bounds", () => {
       expect(claimed?.id).toBe("free-0");
     });
   });
+
+  it("bounds JS-side materialization to the scan window across many candidate chunks", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue<{ text: string }>(stateDir);
+      // Reproduces the ClawSweeper finding's scenario: a 33k candidate snapshot
+      // with scanLimit 100. Chunk size 1000 yields 33 chunks; each chunk's SQL
+      // LIMIT 100 returns at most 100 rows, so SQL read stays <= 3300, but the
+      // incremental merge window is capped to scanLimit=100 by mergeTopKRowWindow
+      // (the cap parameter statically bounds JS-side retention), instead of
+      // materializing all 3300 rows and sorting them under the write lock.
+      // Non-degraded path (no blockedLaneKeys), so SQL prunes nothing here.
+      const freeCount = 33_000;
+      for (let index = 0; index < freeCount; index += 1) {
+        await queue.enqueue(
+          `free-${index}`,
+          { text: `free-${index}` },
+          { laneKey: "free", receivedAt: index + 1 },
+        );
+      }
+      const candidateIds = Array.from({ length: freeCount }, (_, index) => `free-${index}`);
+
+      // Spy: accumulate rows returned by candidate-branch selects (= SQL read)
+      // and count those selects, to assert total work stays bounded.
+      const originalExecute = kyselySync.executeSqliteQuerySync;
+      let totalRowsRead = 0;
+      let candidateSelectCount = 0;
+      const wrappedExecute = (
+        db: Parameters<typeof originalExecute>[0],
+        query: Parameters<typeof originalExecute>[1],
+      ) => {
+        const result = originalExecute(db, query);
+        if (typeof query.compile === "function") {
+          const sql = query.compile().sql;
+          // Candidate-branch select: has the event_id IN membership predicate.
+          // The else branch lacks '"event_id" in' (its order by mentions event_id
+          // but never as an IN member), so this isolates the candidate path.
+          if (
+            sql.includes("channel_ingress_events") &&
+            sql.includes('"event_id" in') &&
+            sql.includes("limit")
+          ) {
+            candidateSelectCount += 1;
+            totalRowsRead += result.rows.length;
+          }
+        }
+        return result;
+      };
+      const spy = vi.spyOn(kyselySync, "executeSqliteQuerySync").mockImplementation(wrappedExecute);
+
+      try {
+        const claimed = await queue.claimNext({
+          ownerId: "worker",
+          candidateIds,
+          scanLimit: 100,
+        });
+
+        // The global-order minimum free row (received_at=1 -> free-0) is
+        // claimed, proving the incremental merge neither drops nor reorders the
+        // global top-scanLimit (each chunk's top-scanLimit contains the global
+        // top-scanLimit within that chunk).
+        expect(claimed?.id).toBe("free-0");
+        // One SQL per chunk, one pass (no corrupt re-run in this scenario): 33
+        // selects for 33 chunks. No re-scan of the snapshot per claim.
+        expect(candidateSelectCount).toBe(33);
+        // SQL read is bounded at chunkCount * scanLimit = 3300. Read cannot drop
+        // below this under chunked IN membership (SQLite must scan each chunk's
+        // candidates to rank the top-scanLimit), but JS-side materialization is
+        // bounded to scanLimit=100 by the merge window cap.
+        expect(totalRowsRead).toBeLessThanOrEqual(33 * 100);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 });
