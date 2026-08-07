@@ -511,6 +511,41 @@ const LIST_PENDING_BATCH_SIZE = 100;
 // Keep repair work bounded under one SQLite write lock; later calls continue
 // from the durable failed tombstones left by this call.
 const MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM = 100;
+// Supported Node runtimes cap SQLite bind variables at 32,766. Chunk candidate
+// membership so every IN list stays far below that ceiling with headroom for
+// the queue and lane predicates compiled onto the same statement.
+const CLAIM_CANDIDATE_IDS_CHUNK_SIZE = 1000;
+// SQLite caps bind variables at 32,766 across Node runtimes. Reserve a safety
+// margin for SQLite build/config variance and future Node versions.
+const SQLITE_BIND_SAFETY_LIMIT = 30_000;
+// Fixed binds on a claim select beyond the candidate chunk and blocked-lane
+// membership: queue_name, status, lane_key predicates, limit. Conservative pad.
+const CLAIM_FIXED_BIND_BUDGET = 10;
+// The blocked-lane NOT IN predicate shares the statement's bind budget with the
+// candidate chunk. Drop the SQL predicate only when the combined bind count
+// (candidate chunk + blocked lanes + fixed) would exceed SQLite's ceiling; below
+// that, keep it so blocked rows are pruned in SQL before they reach the in-memory
+// scan gate. Without SQL pruning, blocked rows returned to the scan loop still
+// consume the scanLimit budget and can starve a later free row behind a blocked
+// prefix (see CLAIM_DEGRADED_BLOCKED_SCAN_CAP).
+const CLAIM_BLOCKED_LANE_PREDICATE_LIMIT =
+  SQLITE_BIND_SAFETY_LIMIT - CLAIM_CANDIDATE_IDS_CHUNK_SIZE - CLAIM_FIXED_BIND_BUDGET;
+// When the SQL blocked-lane predicate is dropped above the bind budget, blocked
+// rows returned by SQL are skipped by the in-memory effectiveBlocked.has(laneKey)
+// gate without consuming the success-scan budget. Because the drain rebuilds the
+// same pending snapshot each pump, a blocked prefix that exceeds any single-page
+// scan would otherwise starve a later free row on every pump. So the degraded
+// path pages past the prefix with a keyset cursor (see CLAIM_DEGRADED_BLOCKED_PAGES_MAX)
+// instead of stopping. This constant bounds the rows fetched per page; the total
+// walk is bounded by the page cap, never a full-table scan under the write lock.
+const CLAIM_DEGRADED_BLOCKED_SCAN_CAP = 10_000;
+// Hard work bound for the degraded keyset continuation: the maximum number of
+// pages a single claim walks past blocked rows before giving up. With page size
+// CLAIM_DEGRADED_BLOCKED_SCAN_CAP this caps a single claim at 1M scanned rows,
+// only in the pathological case of >28,990 blocked lanes plus a blocked prefix
+// larger than 1M with no claimable row behind it. The cursor strictly advances
+// each page, so a real free row is reached within ceil(prefix / page size) pages.
+const CLAIM_DEGRADED_BLOCKED_PAGES_MAX = 100;
 
 function normalizeMaxEntries(value: number | undefined): number | null {
   return value === undefined ? null : Math.max(0, Math.floor(value));
@@ -521,7 +556,43 @@ function normalizedProtectedIds(ids: Iterable<string> | undefined): string[] {
 }
 
 function normalizedCandidateIds(ids: Iterable<string> | undefined): string[] | undefined {
-  return ids === undefined ? undefined : [...ids].map((id) => id.trim()).filter(Boolean);
+  if (ids === undefined) {
+    return undefined;
+  }
+  // Deduplicate before chunking: SQL IN set semantics used to collapse repeated
+  // ids, but chunked membership would re-read the same row from every chunk and
+  // let duplicates burn the global scan window.
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const normalized = id.trim();
+    if (normalized) {
+      seen.add(normalized);
+    }
+  }
+  return [...seen];
+}
+
+function chunkStrings(ids: string[], size: number): string[][] {
+  const chunks: string[][] = [];
+  for (let index = 0; index < ids.length; index += size) {
+    chunks.push(ids.slice(index, index + size));
+  }
+  return chunks;
+}
+
+// SQLite orders plain TEXT with the BINARY collation (byte order), not with
+// locale-aware collation. The merged chunk sort must reproduce that ordering
+// exactly, or equal-timestamp events could swap across chunk boundaries.
+function compareEventIdsBinary(a: string, b: string): number {
+  if (a === b) {
+    return 0;
+  }
+  // BINARY orders TEXT by raw UTF-8 byte value, not by JavaScript's UTF-16
+  // code-unit order. The two diverge for code points outside the BMP (surrogate
+  // pairs): e.g. U+E000 (< U+1F600 in UTF-8 bytes) sorts AFTER U+1F600 under
+  // UTF-16, because the high surrogate 0xD83D precedes 0xE000. Encoding to
+  // UTF-8 buffers reproduces SQLite's byte order exactly.
+  return Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
 }
 
 function queueNameForParts(channelId: string, accountId: string): string {
@@ -803,85 +874,291 @@ export function createChannelIngressQueue<
         if (candidateIds && candidateIds.length > 0) {
           // Candidate snapshots can race a sibling drainer. If an earlier
           // candidate is now claimed, its lane must block later same-lane rows.
-          const claimedCandidateRows = executeSqliteQuerySync(
-            tx.db,
-            kysely
-              .selectFrom("channel_ingress_events")
-              .selectAll()
-              .where("queue_name", "=", queueName)
-              .where("status", "=", "claimed")
-              .where("event_id", "in", candidateIds),
-          ).rows;
-          const claimedCandidateLaneKeys = claimedCandidateRows
-            .map((row) => {
+          const claimedCandidateLaneKeys = new Set<string>();
+          for (const candidateChunk of chunkStrings(candidateIds, CLAIM_CANDIDATE_IDS_CHUNK_SIZE)) {
+            const claimedCandidateRows = executeSqliteQuerySync(
+              tx.db,
+              kysely
+                .selectFrom("channel_ingress_events")
+                .selectAll()
+                .where("queue_name", "=", queueName)
+                .where("status", "=", "claimed")
+                .where("event_id", "in", candidateChunk),
+            ).rows;
+            for (const row of claimedCandidateRows) {
               if (row.lane_key && !claimOptions?.reconcileStoredLaneKey) {
-                return row.lane_key;
+                claimedCandidateLaneKeys.add(row.lane_key);
+                continue;
               }
               const rec = baseRecord<TPayload, TMetadata>(row);
-              return rec ? resolveClaimLaneKey(rec) : (row.lane_key ?? undefined);
-            })
-            .filter((laneKey): laneKey is string => Boolean(laneKey));
-          if (claimedCandidateLaneKeys.length > 0) {
+              const laneKey = rec ? resolveClaimLaneKey(rec) : (row.lane_key ?? undefined);
+              if (laneKey) {
+                claimedCandidateLaneKeys.add(laneKey);
+              }
+            }
+          }
+          if (claimedCandidateLaneKeys.size > 0) {
             effectiveBlocked = new Set([...blocked, ...claimedCandidateLaneKeys]);
           }
         }
-        const baseSelect = kysely
-          .selectFrom("channel_ingress_events")
-          .selectAll()
-          .where("queue_name", "=", queueName)
-          .where("status", "=", "pending");
-        let select = baseSelect;
-        if (candidateIds) {
-          select = select.where("event_id", "in", candidateIds);
-        }
-        if (effectiveBlocked.size > 0 && !claimOptions?.deriveLaneKey) {
-          select = select.where((eb) =>
-            eb.or([eb("lane_key", "is", null), eb("lane_key", "not in", [...effectiveBlocked])]),
-          );
-        }
-        let orderedSelect =
-          claimOptions?.orderBy === "id"
-            ? select.orderBy("event_id", "asc")
-            : select.orderBy("received_at", "asc").orderBy("event_id", "asc");
-        orderedSelect = orderedSelect.limit(normalizeScanLimit(claimOptions?.scanLimit));
         const transitionAt = now();
         let corruptReconciliations = 0;
         let selected:
           | { row: ChannelIngressRow; record: ChannelIngressQueueRecord<TPayload, TMetadata> }
           | undefined;
-        while (!selected) {
-          const rows = executeSqliteQuerySync(tx.db, orderedSelect).rows;
-          let tombstonedCorruptRow = false;
-          for (const row of rows) {
-            const rec = baseRecord<TPayload, TMetadata>(row);
-            if (rec === null) {
-              if (corruptReconciliations >= MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+        // Candidate membership is chunked so every IN list stays below SQLite's
+        // bind-variable ceiling. Chunked rows are merged in the queue's global
+        // order and scanned under one total scan limit, so chunk boundaries
+        // never reorder claims or multiply the scan window.
+        if (candidateIds) {
+          const candidateChunks = chunkStrings(candidateIds, CLAIM_CANDIDATE_IDS_CHUNK_SIZE);
+          const scanLimit = normalizeScanLimit(claimOptions?.scanLimit);
+          // When the blocked-lane SQL predicate is dropped above the bind budget,
+          // blocked rows reach the per-chunk result and are skipped in memory.
+          // Because the drain rebuilds the same pending snapshot each pump, a
+          // single-page scan that stops at the first blocked prefix would starve
+          // a later free row on every pump. So the degraded path pages past the
+          // prefix with a keyset cursor (received_at, event_id), mirroring
+          // listPending's continuation, bounded by CLAIM_DEGRADED_BLOCKED_PAGES_MAX.
+          const blockedPredicateDropped =
+            effectiveBlocked.size > CLAIM_BLOCKED_LANE_PREDICATE_LIMIT &&
+            !claimOptions?.deriveLaneKey;
+          // Per-chunk page size. Non-degraded keeps scanLimit (SQL prunes blocked
+          // rows, so one page suffices). Degraded widens to the page size so each
+          // page carries enough rows to make progress past a blocked prefix; the
+          // total walk is bounded by the page cap, not this limit.
+          const perChunkLimit = blockedPredicateDropped
+            ? Math.max(scanLimit, CLAIM_DEGRADED_BLOCKED_SCAN_CAP)
+            : scanLimit;
+          const candidateSelect = (candidateChunk: string[], cursor?: ChannelIngressRow) => {
+            let select = kysely
+              .selectFrom("channel_ingress_events")
+              .selectAll()
+              .where("queue_name", "=", queueName)
+              .where("status", "=", "pending")
+              .where("event_id", "in", candidateChunk);
+            if (
+              effectiveBlocked.size > 0 &&
+              effectiveBlocked.size <= CLAIM_BLOCKED_LANE_PREDICATE_LIMIT &&
+              !claimOptions?.deriveLaneKey
+            ) {
+              select = select.where((eb) =>
+                eb.or([
+                  eb("lane_key", "is", null),
+                  eb("lane_key", "not in", [...effectiveBlocked]),
+                ]),
+              );
+            }
+            if (cursor) {
+              // Keyset continuation: advance strictly past the last scanned row in
+              // the same global order the ORDER BY uses, so the next page never
+              // re-reads or skips a row. Same invariant as listPending.
+              select =
+                claimOptions?.orderBy === "id"
+                  ? select.where("event_id", ">", cursor.event_id)
+                  : select.where((eb) =>
+                      eb.or([
+                        eb("received_at", ">", cursor.received_at),
+                        eb.and([
+                          eb("received_at", "=", cursor.received_at),
+                          eb("event_id", ">", cursor.event_id),
+                        ]),
+                      ]),
+                    );
+            }
+            const ordered =
+              claimOptions?.orderBy === "id"
+                ? select.orderBy("event_id", "asc")
+                : select.orderBy("received_at", "asc").orderBy("event_id", "asc");
+            // Bound each ordered chunk before merging: no row past the k-th
+            // position in its chunk can enter the global top-k, and per-chunk
+            // bounding keeps recovery from re-reading the whole backlog under
+            // the SQLite write lock on every claim.
+            return ordered.limit(perChunkLimit);
+          };
+          let cursor: ChannelIngressRow | undefined;
+          let pagesWalked = 0;
+          while (!selected && corruptReconciliations < MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+            const candidateRows: ChannelIngressRow[] = [];
+            for (const candidateChunk of candidateChunks) {
+              candidateRows.push(
+                ...executeSqliteQuerySync(tx.db, candidateSelect(candidateChunk, cursor)).rows,
+              );
+            }
+            if (candidateRows.length === 0) {
+              break;
+            }
+            candidateRows.sort(
+              claimOptions?.orderBy === "id"
+                ? (a, b) => compareEventIdsBinary(a.event_id, b.event_id)
+                : (a, b) =>
+                    a.received_at - b.received_at || compareEventIdsBinary(a.event_id, b.event_id),
+            );
+            let tombstonedCorruptRow = false;
+            let lastScannedRow: ChannelIngressRow | undefined;
+            for (const row of candidateRows) {
+              lastScannedRow = row;
+              const rec = baseRecord<TPayload, TMetadata>(row);
+              if (rec === null) {
+                if (corruptReconciliations >= MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+                  continue;
+                }
+                const didTombstone = tombstoneCorruptPayloadRow({
+                  db: tx.db,
+                  row,
+                  expectedStatus: "pending",
+                  failedAt: transitionAt,
+                });
+                tombstonedCorruptRow = didTombstone || tombstonedCorruptRow;
+                if (didTombstone) {
+                  corruptReconciliations += 1;
+                }
                 continue;
               }
-              const didTombstone = tombstoneCorruptPayloadRow({
-                db: tx.db,
-                row,
-                expectedStatus: "pending",
-                failedAt: transitionAt,
-              });
-              tombstonedCorruptRow = didTombstone || tombstonedCorruptRow;
-              if (didTombstone) {
-                corruptReconciliations += 1;
+              const laneKey = resolveClaimLaneKey(rec);
+              if (!laneKey || !effectiveBlocked.has(laneKey)) {
+                selected = { row, record: rec };
+                break;
               }
+              // Blocked rows are skipped by the in-memory gate without consuming
+              // the success-scan budget. The cursor advances past each skipped
+              // row (via lastScannedRow) so the next page starts strictly beyond
+              // it; a free row behind any-size blocked prefix is reached within
+              // the page cap.
+            }
+            if (selected) {
+              break;
+            }
+            // Continue paginating past the blocked prefix. Only the degraded path
+            // paginates; the non-degraded path prunes blocked rows in SQL, so its
+            // first page always resolves and cursor stays unset. The cursor is
+            // the last row scanned in global order, which is strictly greater than
+            // all previously scanned rows under the keyset ordering.
+            if (
+              blockedPredicateDropped &&
+              lastScannedRow &&
+              pagesWalked < CLAIM_DEGRADED_BLOCKED_PAGES_MAX
+            ) {
+              cursor = lastScannedRow;
+              pagesWalked += 1;
               continue;
             }
-            const laneKey = resolveClaimLaneKey(rec);
-            if (!laneKey || !effectiveBlocked.has(laneKey)) {
-              selected = { row, record: rec };
+            // No degraded continuation left (or not degraded): only re-run when a
+            // corrupt row was just tombstoned and may have changed the pending set.
+            if (!tombstonedCorruptRow) {
               break;
             }
           }
+        } else {
+          const baseSelect = kysely
+            .selectFrom("channel_ingress_events")
+            .selectAll()
+            .where("queue_name", "=", queueName)
+            .where("status", "=", "pending");
+          let select = baseSelect;
+          const blockedPredicateDropped =
+            effectiveBlocked.size > CLAIM_BLOCKED_LANE_PREDICATE_LIMIT &&
+            !claimOptions?.deriveLaneKey;
           if (
-            selected ||
-            !tombstonedCorruptRow ||
-            corruptReconciliations >= MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM
+            effectiveBlocked.size > 0 &&
+            effectiveBlocked.size <= CLAIM_BLOCKED_LANE_PREDICATE_LIMIT &&
+            !claimOptions?.deriveLaneKey
           ) {
-            break;
+            select = select.where((eb) =>
+              eb.or([eb("lane_key", "is", null), eb("lane_key", "not in", [...effectiveBlocked])]),
+            );
+          }
+          // When the blocked-lane SQL predicate is dropped above the bind budget,
+          // blocked rows reach the scan loop and are skipped in memory. Because
+          // the drain rebuilds the same pending snapshot each pump, stopping at
+          // the first blocked prefix would starve a later free row on every pump.
+          // So the degraded path pages past the prefix with a keyset cursor
+          // (received_at, event_id), mirroring listPending's continuation,
+          // bounded by CLAIM_DEGRADED_BLOCKED_PAGES_MAX. Non-degraded keeps a
+          // single scanLimit page (SQL prunes blocked rows, so one page suffices).
+          const scanLimit = normalizeScanLimit(claimOptions?.scanLimit);
+          const degradedSqlLimit = blockedPredicateDropped
+            ? Math.max(scanLimit, CLAIM_DEGRADED_BLOCKED_SCAN_CAP)
+            : scanLimit;
+          const buildOrderedSelect = (cursor?: ChannelIngressRow) => {
+            let paged = select;
+            if (cursor) {
+              paged =
+                claimOptions?.orderBy === "id"
+                  ? paged.where("event_id", ">", cursor.event_id)
+                  : paged.where((eb) =>
+                      eb.or([
+                        eb("received_at", ">", cursor.received_at),
+                        eb.and([
+                          eb("received_at", "=", cursor.received_at),
+                          eb("event_id", ">", cursor.event_id),
+                        ]),
+                      ]),
+                    );
+            }
+            return claimOptions?.orderBy === "id"
+              ? paged.orderBy("event_id", "asc").limit(degradedSqlLimit)
+              : paged
+                  .orderBy("received_at", "asc")
+                  .orderBy("event_id", "asc")
+                  .limit(degradedSqlLimit);
+          };
+          let cursor: ChannelIngressRow | undefined;
+          let pagesWalked = 0;
+          while (!selected) {
+            const rows = executeSqliteQuerySync(tx.db, buildOrderedSelect(cursor)).rows;
+            let tombstonedCorruptRow = false;
+            let lastScannedRow: ChannelIngressRow | undefined;
+            for (const row of rows) {
+              lastScannedRow = row;
+              const rec = baseRecord<TPayload, TMetadata>(row);
+              if (rec === null) {
+                if (corruptReconciliations >= MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+                  continue;
+                }
+                const didTombstone = tombstoneCorruptPayloadRow({
+                  db: tx.db,
+                  row,
+                  expectedStatus: "pending",
+                  failedAt: transitionAt,
+                });
+                tombstonedCorruptRow = didTombstone || tombstonedCorruptRow;
+                if (didTombstone) {
+                  corruptReconciliations += 1;
+                }
+                continue;
+              }
+              const laneKey = resolveClaimLaneKey(rec);
+              if (!laneKey || !effectiveBlocked.has(laneKey)) {
+                selected = { row, record: rec };
+                break;
+              }
+              // Blocked rows skipped in memory (only when the SQL predicate is
+              // dropped) do not end the claim; the cursor advances past each so
+              // the next page reaches a free row behind any-size blocked prefix.
+            }
+            if (selected) {
+              break;
+            }
+            // Continue paginating past the blocked prefix. Only the degraded path
+            // paginates; the non-degraded path prunes blocked rows in SQL, so its
+            // first page always resolves and cursor stays unset. The cursor is the
+            // last row scanned in global order, strictly greater than all prior.
+            if (
+              blockedPredicateDropped &&
+              lastScannedRow &&
+              pagesWalked < CLAIM_DEGRADED_BLOCKED_PAGES_MAX
+            ) {
+              cursor = lastScannedRow;
+              pagesWalked += 1;
+              continue;
+            }
+            if (
+              !tombstonedCorruptRow ||
+              corruptReconciliations >= MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM
+            ) {
+              break;
+            }
           }
         }
         if (!selected) {
