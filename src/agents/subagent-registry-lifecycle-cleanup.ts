@@ -68,10 +68,22 @@ export function createSubagentRegistryLifecycleCleanup(
     suspendPendingFinalDelivery,
   } = cleanupBase;
 
-  const shouldSuspendPendingFinalDelivery = (entry: SubagentRunRecord) =>
-    entry.expectsCompletionMessage === true &&
-    entry.endedReason === SUBAGENT_ENDED_REASON_COMPLETE &&
-    entry.execution.outcome?.status === "ok";
+  const shouldSuspendPendingFinalDelivery = (
+    entry: SubagentRunRecord,
+    reason: "expiry" | "permanent_failure",
+  ) => {
+    if (entry.expectsCompletionMessage !== true) {
+      return false;
+    }
+    // A false end (recoverable blocked/error) can still be superseded by a
+    // later real completion. Suspending an exhausted retry keeps the payload
+    // so that completion can re-capture and re-announce instead of stranding.
+    if (reason === "expiry" && entry.execution.outcome?.status === "error") {
+      return true;
+    }
+    return entry.endedReason === SUBAGENT_ENDED_REASON_COMPLETE &&
+      entry.execution.outcome?.status === "ok";
+  };
 
   const finalizeAnnounceGiveUp = async (giveUpParams: {
     runId: string;
@@ -84,7 +96,7 @@ export function createSubagentRegistryLifecycleCleanup(
   }) => {
     const { runId, entry, reason, cleanup, cleanupGeneration, retryCount, completedAt } =
       giveUpParams;
-    if (shouldSuspendPendingFinalDelivery(entry)) {
+    if (shouldSuspendPendingFinalDelivery(entry, reason)) {
       suspendPendingFinalDelivery({
         runId,
         entry,

@@ -3316,11 +3316,6 @@ describe("subagent registry lifecycle hardening", () => {
       outcome: { status: "timeout" as const },
     },
     {
-      name: "error",
-      endedReason: SUBAGENT_ENDED_REASON_ERROR,
-      outcome: { status: "error" as const, error: "child failed" },
-    },
-    {
       name: "killed",
       endedReason: SUBAGENT_ENDED_REASON_KILLED,
       outcome: undefined,
@@ -3363,6 +3358,40 @@ describe("subagent registry lifecycle hardening", () => {
       expect(persistOrThrow).toHaveBeenCalled();
     },
   );
+
+  it("suspends error completion cleanup on retry exhaustion so a later real completion can deliver", async () => {
+    const persistOrThrow = vi.fn();
+    const entry = createRunEntry({
+      endedAt: 4_000,
+      endedReason: SUBAGENT_ENDED_REASON_ERROR,
+      expectsCompletionMessage: true,
+      delivery: { status: "pending", lastError: "gateway request timeout for agent" },
+      outcome: { status: "error", error: "child failed" },
+      retainAttachmentsOnKeep: true,
+    });
+    const runs = new Map([[entry.runId, entry]]);
+
+    const controller = createLifecycleController({
+      entry,
+      runs,
+      persistOrThrow,
+      captureSubagentCompletionReply: vi.fn(async () => undefined),
+    });
+
+    await controller.finalizeResumedAnnounceGiveUp({
+      runId: entry.runId,
+      entry,
+      reason: "expiry",
+    });
+
+    expect(entry.delivery?.status).toBe("suspended");
+    expect(entry.delivery?.payload).toBeDefined();
+    expect(entry.delivery?.suspendedAt).toBeTypeOf("number");
+    expect(entry.delivery?.suspendedReason).toBe("expiry");
+    expect(entry.cleanupHandled).toBe(false);
+    expect(entry.cleanupCompletedAt).toBeUndefined();
+    expect(persistOrThrow).toHaveBeenCalled();
+  });
 
   it("continues cleanup when delivery-status persistence throws after announce delivery", async () => {
     const persist = vi.fn();

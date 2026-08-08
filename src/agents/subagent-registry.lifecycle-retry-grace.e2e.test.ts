@@ -18,6 +18,7 @@ type LifecycleData = {
   endedAt?: number;
   aborted?: boolean;
   error?: string;
+  livenessState?: string;
 };
 type LifecycleEvent = {
   stream?: string;
@@ -277,6 +278,45 @@ describe("subagent registry lifecycle error grace", () => {
         requesterSettleWake: lastRun?.requesterSettleWake,
       })}`,
     );
+  };
+
+  const waitForSuspendedDelivery = async (runId: string) => {
+    let lastRun: ReturnType<typeof mod.listSubagentRunsForRequester>[number] | undefined;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const run = mod
+        .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
+        .find((candidate) => candidate.runId === runId);
+      lastRun = run;
+      if (run?.delivery?.status === "suspended") {
+        return run;
+      }
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushAsync();
+    }
+    throw new Error(
+      `run ${runId} did not reach suspended delivery in time: ${JSON.stringify({
+        delivery: lastRun?.delivery,
+        cleanupHandled: lastRun?.cleanupHandled,
+        cleanupCompletedAt: lastRun?.cleanupCompletedAt,
+        endedReason: lastRun?.endedReason,
+        outcome: lastRun?.execution.outcome,
+        agentCalls: getAgentCalls().length,
+      })}`,
+    );
+  };
+
+  const waitForDeliveredStatus = async (runId: string) => {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const run = mod
+        .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
+        .find((candidate) => candidate.runId === runId);
+      if (run?.delivery?.status === "delivered" && typeof run.cleanupCompletedAt === "number") {
+        return run;
+      }
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushAsync();
+    }
+    throw new Error(`run ${runId} did not reach delivered status in time`);
   };
 
   const waitForAgentCallCount = async (expectedCount: number) => {
@@ -557,6 +597,55 @@ describe("subagent registry lifecycle error grace", () => {
     await waitForAgentCallCount(1);
     expect(readFirstAnnounceOutcome()?.status).toBe("error");
     expect(readFirstAnnounceOutcome()?.error).toContain("fatal failure");
+  });
+
+  it("re-captures a null-frozen result after a false blocked end when the run completes for real", async () => {
+    // Regression for #120383: a recoverable context overflow is published as a
+    // blocked run end, freezing `resultText = null`. The exhausted announce must
+    // suspend (payload retained) instead of clearing, so the later real
+    // completion can re-capture and re-announce the answer.
+    registerCompletionRun("run-false-blocked", "false-blocked", "false blocked end test");
+    setAssistantOutput(
+      "agent:main:subagent:false-blocked",
+      "Context overflow: prompt too large for the model.",
+    );
+    agentCallPlan = Array(50).fill("throw");
+
+    // The announce retry budget is long past when the false end arrives, so the
+    // first deferred decision gives up (hard expiry) instead of scheduling
+    // resume timers. This keeps the test off the orphan-reconciliation path.
+    const falseEndedAt = Date.now() - 31 * 60_000;
+    emitLifecycleEvent("run-false-blocked", {
+      phase: "end",
+      endedAt: falseEndedAt,
+      livenessState: "blocked",
+      error: "Context overflow: prompt too large for the model.",
+    });
+    await flushAsync();
+
+    await waitForFrozenResultText("run-false-blocked", null);
+    const runAfterBlocked = mod
+      .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
+      .find((candidate) => candidate.runId === "run-false-blocked");
+    expect(runAfterBlocked?.execution.outcome?.status).toBe("error");
+    expect(runAfterBlocked?.completion?.resultText).toBeNull();
+
+    // Retries exhaust: give-up must suspend instead of wiping the payload.
+    const runSuspended = await waitForSuspendedDelivery("run-false-blocked");
+    expect(runSuspended?.delivery?.suspendedReason).toBe("expiry");
+    expect(runSuspended?.delivery?.payload).toBeDefined();
+    expect(runSuspended?.cleanupHandled).toBe(false);
+
+    // The run recovers and completes for real, long after the retry budget.
+    agentCallPlan = ["ok"];
+    setAssistantOutput("agent:main:subagent:false-blocked", "Final answer after recovery");
+    emitLifecycleEvent("run-false-blocked", { phase: "end", endedAt: falseEndedAt + 30_000 });
+    await flushAsync();
+
+    const runDelivered = await waitForDeliveredStatus("run-false-blocked");
+    expect(runDelivered?.completion?.resultText).toBe("Final answer after recovery");
+    const deliveredResults = getAgentResultsForChildSession("agent:main:subagent:false-blocked");
+    expect(deliveredResults[deliveredResults.length - 1]).toBe("Final answer after recovery");
   });
 
   it("freezes completion result at run termination across deferred announce retries", async () => {

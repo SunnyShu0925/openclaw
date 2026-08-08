@@ -265,11 +265,21 @@ export function createSubagentRegistryLifecycleDelivery(
     entry: SubagentRunRecord,
     outcome: SubagentRunOutcome,
   ): Promise<boolean> => {
-    if (ensureCompletionState(entry).resultText !== undefined) {
+    const completion = ensureCompletionState(entry);
+    const existingResult = completion.resultText;
+    // An error settlement freezes `null` so a run that recovers and completes
+    // for real can re-capture its output. Any real text is final and must
+    // never be overwritten by later lifecycle noise; a terminalReply snapshot
+    // is authoritative even when it carries an empty result.
+    if (
+      existingResult !== undefined &&
+      (existingResult !== null ||
+        completion.terminalReply !== undefined ||
+        outcome.status === "error")
+    ) {
       return false;
     }
     if (outcome.status === "error") {
-      const completion = ensureCompletionState(entry);
       completion.resultText = null;
       completion.capturedAt = Date.now();
       return true;
@@ -317,12 +327,21 @@ export function createSubagentRegistryLifecycleDelivery(
     ) {
       return false;
     }
-    const completion = ensureCompletionState(entry);
-    if (completion.resultText !== undefined) {
+    const completionAfterCapture = ensureCompletionState(entry);
+    if (
+      completionAfterCapture.resultText !== undefined &&
+      completionAfterCapture.resultText !== null
+    ) {
       return false;
     }
-    completion.resultText = resultText;
-    completion.capturedAt = Date.now();
+    if (completionAfterCapture.terminalReply !== undefined) {
+      return false;
+    }
+    if (resultText === null && completionAfterCapture.resultText === null) {
+      return false;
+    }
+    completionAfterCapture.resultText = resultText;
+    completionAfterCapture.capturedAt = Date.now();
     return true;
   };
 
