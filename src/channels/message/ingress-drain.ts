@@ -25,6 +25,7 @@ import {
 } from "./ingress-drain-state.js";
 import { supersedeActiveStatesIfNeeded } from "./ingress-drain-supersede.js";
 export { isIngressAdoptionLostError } from "./ingress-drain-state.js";
+import { createIngressDrainCandidateWindow } from "./ingress-drain-candidates.js";
 import type {
   ChannelIngressQueue,
   ChannelIngressQueueClaim,
@@ -752,29 +753,34 @@ export function createChannelIngressDrain<
       }
     }
 
-    const candidateIds = new Set(pending.map((event) => event.id));
+    // Bounded ordered candidate window (see ingress-drain-candidates.ts): a
+    // large backlog is never re-read chunk-by-chunk for every claim of a pass.
+    const candidateWindow = createIngressDrainCandidateWindow({
+      queue,
+      orderedCandidateIds: pending.map((event) => event.id),
+      blockedLaneKeys,
+      scanLimit,
+      deriveLaneKey: options.deriveLaneKey,
+      reconcileStoredLaneKey: options.reconcileStoredLaneKey,
+    });
     let started = 0;
     while (started < startLimit) {
       if (shouldStop()) {
         break;
       }
-      const claimed = await queue.claimNext({
+      const claimed = await candidateWindow.claimNextAttempt({
         ownerId,
         blockedLaneKeys,
         orderBy,
         scanLimit,
-        candidateIds,
         deriveLaneKey: options.deriveLaneKey,
-        ...(options.reconcileStoredLaneKey
-          ? { reconcileStoredLaneKey: options.reconcileStoredLaneKey }
-          : {}),
+        reconcileStoredLaneKey: options.reconcileStoredLaneKey,
       });
       if (!claimed) {
         break;
       }
       // One snapshot row gets one attempt per pass. A released claim remains
       // pending for the next pump instead of spinning through SQLite here.
-      candidateIds.delete(claimed.id);
       if (shouldStop()) {
         await queue.release(claimed, { recordAttempt: false });
         break;

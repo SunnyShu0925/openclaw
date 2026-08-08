@@ -36,7 +36,9 @@ describe("channel ingress drain lanes", () => {
 
       await expect(drain.drainOnce()).resolves.toEqual({ started: 1 });
       await vi.waitFor(() => expect(dispatches).toEqual(["active", "candidate"]));
-      expect(claimNext).toHaveBeenCalledTimes(2);
+      // The bounded candidate window ends the pass when the snapshot is fully
+      // covered instead of issuing a no-op empty-candidate claimNext probe.
+      expect(claimNext).toHaveBeenCalledTimes(1);
       await expect(queue.enqueue("candidate", { text: "topic" })).resolves.toMatchObject({
         kind: "completed",
       });
