@@ -100,10 +100,16 @@ export function createIngressDrainCandidateWindow<TPayload, TMetadata>(options: 
       await refreshClaimedLanes();
       const claimed = await queue.claimNext({ ...claimOptions, candidateIds: ids });
       if (claimed) {
-        const index = ids.indexOf(claimed.id);
-        if (index >= 0) {
-          ids.splice(index, 1);
-        }
+        // Compact after a successful claim: drop the exhausted blocked prefix
+        // (every id up to and including the claimed row was scanned this
+        // attempt and the blocked set is effectively monotonic for the pass),
+        // shrink the window back to the base target, and resume the ordered
+        // snapshot just after the claimed row. Without this, a window widened
+        // through a large blocked prefix would stay wide and replay nearly the
+        // whole snapshot on every remaining start of the pass.
+        ids.length = 0;
+        nextCandidateIndex = orderedCandidateIds.indexOf(claimed.id) + 1;
+        candidateWindowTarget = Math.max(1, scanLimit);
         return claimed;
       }
       if (!grow()) {

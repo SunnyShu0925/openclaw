@@ -141,4 +141,85 @@ describe("channel ingress drain claim bounds", () => {
       drain.dispose();
     });
   });
+
+  it("compacts the widened window after a blocked-prefix claim so later starts stay cheap", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue(stateDir);
+      // 3,300 retry-delayed rows (each on its own lane) span >3 candidate
+      // chunks; 64 free rows sit behind them. The first claim must grow the
+      // bounded window through the prefix, but after it succeeds the window
+      // must compact back to scanLimit so the remaining 31 starts replay one
+      // candidate chunk each instead of the whole widened prefix.
+      const blockedCount = 3_300;
+      for (let index = 0; index < blockedCount; index += 1) {
+        const id = `blocked-${index}`;
+        await queue.enqueue(
+          id,
+          { text: id },
+          { laneKey: `blocked-lane-${index}`, receivedAt: index + 1 },
+        );
+        const claim = await queue.claim(id, { ownerId: "test-worker" });
+        if (!claim) {
+          throw new Error(`expected a claim for ${id}`);
+        }
+        await queue.release(claim, { recordAttempt: true, lastError: "retry" });
+      }
+      const freeCount = 64;
+      for (let index = 0; index < freeCount; index += 1) {
+        await queue.enqueue(
+          `free-${index}`,
+          { text: `free-${index}` },
+          { laneKey: `free-lane-${index}`, receivedAt: blockedCount + index + 1 },
+        );
+      }
+      const dispatched: string[] = [];
+      const drain = createChannelIngressDrain<Payload>({
+        queue,
+        scanLimit: 100,
+        startLimit: 32,
+        dispatchClaimedEvent: async (event, lifecycle) => {
+          dispatched.push(event.id);
+          await lifecycle.onAdopted();
+        },
+      });
+
+      const originalExecute = kyselySync.executeSqliteQuerySync;
+      let membershipSelectCount = 0;
+      const wrappedExecute = (
+        db: Parameters<typeof originalExecute>[0],
+        query: Parameters<typeof originalExecute>[1],
+      ) => {
+        const result = originalExecute(db, query);
+        if (typeof query.compile === "function") {
+          const sql = query.compile().sql;
+          if (
+            sql.includes("channel_ingress_events") &&
+            sql.includes('"event_id" in') &&
+            sql.includes("select")
+          ) {
+            membershipSelectCount += 1;
+          }
+        }
+        return result;
+      };
+      const spy = vi.spyOn(kyselySync, "executeSqliteQuerySync").mockImplementation(wrappedExecute);
+
+      let started: number;
+      try {
+        ({ started } = await drain.drainOnce());
+        await drain.waitForIdle();
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(started).toBe(32);
+      expect(dispatched).toEqual(Array.from({ length: 32 }, (_, index) => `free-${index}`));
+      // First claim: ~7 growth probes + the winning select (~36 membership
+      // selects). Remaining 31 starts: one chunk each (2 selects). Without the
+      // post-claim compaction, the widened 3,364-id window would replay 4
+      // chunks per start (~284 total) instead of ~98.
+      expect(membershipSelectCount).toBeLessThanOrEqual(2 * 32 + 50);
+      drain.dispose();
+    });
+  });
 });
