@@ -4,10 +4,12 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import { createFixtureSuite } from "../../test-utils/fixture-suite.js";
+import { readSessionArchiveContentSync } from "./archive-compression.js";
 import { isRetainedSessionTranscriptArchiveName } from "./artifacts.js";
 import {
   appendTranscriptEventSync,
   loadSessionEntry,
+  loadTranscriptEvents,
   replaceSessionEntry,
 } from "./session-accessor.js";
 import { runSessionRegistryMaintenanceForStore } from "./session-registry-maintenance.js";
@@ -192,14 +194,24 @@ describe("runSessionRegistryMaintenanceForStore", () => {
     });
     expect(loadSessionEntry({ sessionKey, storePath })).toBeUndefined();
     const archives = await listDeletedArchiveFiles(path.dirname(storePath));
-    expect(archives.length).toBeGreaterThan(0);
+    expect(archives).toHaveLength(1);
+    expect(readSessionArchiveContentSync(archives[0] ?? "")).toContain(
+      "cron transcript must survive pruning",
+    );
+    await expect(loadTranscriptEvents({ sessionKey, sessionId, storePath })).resolves.toEqual([]);
   });
 
   it("does not write transcript archives during preview", async () => {
     const now = Date.now();
+    const sessionKey = "agent:main:cron:done-job:run:old-run";
+    const sessionId = "run-1";
     const storePath = await createStore({
-      "agent:main:cron:done-job:run:old-run": sessionEntry("run-1", now - 8 * DAY_MS),
+      [sessionKey]: sessionEntry(sessionId, now - 8 * DAY_MS),
     });
+    appendTranscriptEventSync(
+      { sessionKey, sessionId, storePath },
+      { type: "proof-event", data: "cron transcript must survive preview" },
+    );
 
     const result = await runSessionRegistryMaintenanceForStore({
       apply: false,
@@ -209,6 +221,10 @@ describe("runSessionRegistryMaintenanceForStore", () => {
     });
 
     expect(result.pruned).toBe(1);
+    expect(loadSessionEntry({ sessionKey, storePath })).toBeDefined();
+    await expect(loadTranscriptEvents({ sessionKey, sessionId, storePath })).resolves.toHaveLength(
+      1,
+    );
     expect(await listDeletedArchiveFiles(path.dirname(storePath))).toStrictEqual([]);
   });
 
