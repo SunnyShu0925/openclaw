@@ -330,7 +330,7 @@ describe("subagent registry lifecycle error grace", () => {
     throw new Error(`expected ${expectedCount} agent call(s), got ${getAgentCalls().length}`);
   };
 
-  const waitForFrozenResultText = async (runId: string, expectedText: string) => {
+  const waitForFrozenResultText = async (runId: string, expectedText: string | null) => {
     for (let attempt = 0; attempt < 80; attempt += 1) {
       const run = mod
         .listSubagentRunsForRequester(MAIN_REQUESTER_SESSION_KEY)
