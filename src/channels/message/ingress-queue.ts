@@ -1032,62 +1032,89 @@ export function createChannelIngressQueue<
             // the SQLite write lock on every claim.
             return ordered.limit(perChunkLimit);
           };
-          let cursor: ChannelIngressRow | undefined;
-          let pagesWalked = 0;
-          while (!selected && corruptReconciliations < MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
-            // Incremental global top-k: each chunk's rows arrive already ordered
-            // (SQL ORDER BY), so merge them into a window capped to mergeCap
-            // instead of materializing chunkCount*mergeCap rows, sorting, then
-            // truncating. JS-side retention stays <= mergeCap and merge work is
-            // O(n) (no log factor), bounding write-transaction work to the
-            // configured window regardless of pending snapshot size. Non-degraded
-            // keeps mergeCap = scanLimit (SQL prunes blocked, window is all free);
-            // degraded widens to CAP so blocked rows reach the window and the
-            // in-memory skip + keyset continuation can page past them.
-            const mergeCap = blockedPredicateDropped
-              ? Math.max(scanLimit, CLAIM_DEGRADED_BLOCKED_SCAN_CAP)
-              : scanLimit;
-            const compareRows =
-              claimOptions?.orderBy === "id"
-                ? (a: ChannelIngressRow, b: ChannelIngressRow) =>
-                    compareEventIdsBinary(a.event_id, b.event_id)
-                : (a: ChannelIngressRow, b: ChannelIngressRow) =>
-                    a.received_at - b.received_at || compareEventIdsBinary(a.event_id, b.event_id);
-            const mergedWindow: ChannelIngressRow[] = [];
-            let anyRows = false;
-            for (const candidateChunk of candidateChunks) {
-              const chunkRows = executeSqliteQuerySync(
-                tx.db,
-                candidateSelect(candidateChunk, cursor),
-              ).rows;
-              if (chunkRows.length > 0) {
-                anyRows = true;
-                mergeTopKRowWindow(mergedWindow, chunkRows, mergeCap, compareRows);
+          const compareRows =
+            claimOptions?.orderBy === "id"
+              ? (a: ChannelIngressRow, b: ChannelIngressRow) =>
+                  compareEventIdsBinary(a.event_id, b.event_id)
+              : (a: ChannelIngressRow, b: ChannelIngressRow) =>
+                  a.received_at - b.received_at || compareEventIdsBinary(a.event_id, b.event_id);
+          if (blockedPredicateDropped) {
+            // Degraded candidate walk: the SQL NOT IN predicate is dropped, so
+            // blocked rows reach the scan and are skipped in memory. Stream each
+            // chunk in its own global order and merge the chunk heads, so every
+            // candidate row is read at most once — a blocked prefix is walked
+            // once instead of re-selecting every chunk on every keyset page —
+            // and the total walk is bounded by the degraded row budget (the old
+            // page-cap bound expressed as rows).
+            const degradedRowBudget =
+              CLAIM_DEGRADED_BLOCKED_PAGES_MAX * CLAIM_DEGRADED_BLOCKED_SCAN_CAP;
+            const streams: Array<{
+              ids: string[];
+              rows: ChannelIngressRow[];
+              lastRow: ChannelIngressRow | undefined;
+              exhausted: boolean;
+            }> = candidateChunks.map((ids) => ({
+              ids,
+              rows: [],
+              lastRow: undefined,
+              exhausted: false,
+            }));
+            let rowsRead = 0;
+            while (!selected && corruptReconciliations < MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+              for (const stream of streams) {
+                if (!stream.exhausted && stream.rows.length === 0) {
+                  stream.rows = executeSqliteQuerySync(
+                    tx.db,
+                    candidateSelect(stream.ids, stream.lastRow),
+                  ).rows;
+                  if (stream.rows.length === 0) {
+                    // No candidate of this chunk remains after the chunk's last
+                    // consumed row, so it can never contribute again; skip its
+                    // refill (and head) from every later iteration.
+                    stream.exhausted = true;
+                  }
+                }
               }
-            }
-            if (!anyRows) {
-              break;
-            }
-            // mergedWindow is the global-order top-mergeCap (non-degraded =
-            // scanLimit, naturally capped; degraded = CAP, includes blocked rows
-            // skipped in memory below). No further sort or truncate is needed.
-            let tombstonedCorruptRow = false;
-            let lastScannedRow: ChannelIngressRow | undefined;
-            for (const row of mergedWindow) {
-              lastScannedRow = row;
-              const rec = baseRecord<TPayload, TMetadata>(row);
-              if (rec === null) {
-                if (corruptReconciliations >= MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+              let bestIndex = -1;
+              let bestRow: ChannelIngressRow | undefined;
+              for (let index = 0; index < streams.length; index += 1) {
+                const stream = streams[index]!;
+                if (stream.exhausted) {
                   continue;
                 }
-                const didTombstone = tombstoneCorruptPayloadRow({
-                  db: tx.db,
-                  row,
-                  expectedStatus: "pending",
-                  failedAt: transitionAt,
-                });
-                tombstonedCorruptRow = didTombstone || tombstonedCorruptRow;
-                if (didTombstone) {
+                const head = stream.rows[0];
+                if (head === undefined) {
+                  continue;
+                }
+                if (bestRow === undefined) {
+                  bestRow = head;
+                  bestIndex = index;
+                } else if (compareRows(head, bestRow) < 0) {
+                  bestRow = head;
+                  bestIndex = index;
+                }
+              }
+              if (bestIndex < 0) {
+                break;
+              }
+              const stream = streams[bestIndex]!;
+              const row = stream.rows.shift()!;
+              stream.lastRow = row;
+              rowsRead += 1;
+              if (rowsRead > degradedRowBudget) {
+                break;
+              }
+              const rec = baseRecord<TPayload, TMetadata>(row);
+              if (rec === null) {
+                if (
+                  corruptReconciliations < MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM &&
+                  tombstoneCorruptPayloadRow({
+                    db: tx.db,
+                    row,
+                    expectedStatus: "pending",
+                    failedAt: transitionAt,
+                  })
+                ) {
                   corruptReconciliations += 1;
                 }
                 continue;
@@ -1097,33 +1124,59 @@ export function createChannelIngressQueue<
                 selected = { row, record: rec };
                 break;
               }
-              // Blocked rows are skipped by the in-memory gate without consuming
-              // the success-scan budget. The cursor advances past each skipped
-              // row (via lastScannedRow) so the next page starts strictly beyond
-              // it; a free row behind any-size blocked prefix is reached within
-              // the page cap.
+              // Blocked rows are skipped in memory; the stream merge keeps
+              // advancing in global order, so a free row behind any-size blocked
+              // prefix is reached within the row budget.
             }
-            if (selected) {
-              break;
-            }
-            // Continue paginating past the blocked prefix. Only the degraded path
-            // paginates; the non-degraded path prunes blocked rows in SQL, so its
-            // first page always resolves and cursor stays unset. The cursor is
-            // the last row scanned in global order, which is strictly greater than
-            // all previously scanned rows under the keyset ordering.
-            if (
-              blockedPredicateDropped &&
-              lastScannedRow &&
-              pagesWalked < CLAIM_DEGRADED_BLOCKED_PAGES_MAX
-            ) {
-              cursor = lastScannedRow;
-              pagesWalked += 1;
-              continue;
-            }
-            // No degraded continuation left (or not degraded): only re-run when a
-            // corrupt row was just tombstoned and may have changed the pending set.
-            if (!tombstonedCorruptRow) {
-              break;
+          } else {
+            // Non-degraded: SQL prunes blocked rows, so one ordered merge pass
+            // over the per-chunk tops resolves the claim; the pass only re-runs
+            // when a corrupt row was tombstoned (the merged list is capped to
+            // scanLimit, matching main's single ordered LIMIT scanLimit).
+            while (!selected && corruptReconciliations < MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+              let tombstonedCorruptRow = false;
+              const mergedWindow: ChannelIngressRow[] = [];
+              let anyRows = false;
+              for (const candidateChunk of candidateChunks) {
+                const chunkRows = executeSqliteQuerySync(
+                  tx.db,
+                  candidateSelect(candidateChunk),
+                ).rows;
+                if (chunkRows.length > 0) {
+                  anyRows = true;
+                  mergeTopKRowWindow(mergedWindow, chunkRows, scanLimit, compareRows);
+                }
+              }
+              if (!anyRows) {
+                break;
+              }
+              for (const row of mergedWindow) {
+                const rec = baseRecord<TPayload, TMetadata>(row);
+                if (rec === null) {
+                  if (corruptReconciliations >= MAX_CORRUPT_RECONCILIATIONS_PER_CLAIM) {
+                    continue;
+                  }
+                  const didTombstone = tombstoneCorruptPayloadRow({
+                    db: tx.db,
+                    row,
+                    expectedStatus: "pending",
+                    failedAt: transitionAt,
+                  });
+                  tombstonedCorruptRow = didTombstone || tombstonedCorruptRow;
+                  if (didTombstone) {
+                    corruptReconciliations += 1;
+                  }
+                  continue;
+                }
+                const laneKey = resolveClaimLaneKey(rec);
+                if (!laneKey || !effectiveBlocked.has(laneKey)) {
+                  selected = { row, record: rec };
+                  break;
+                }
+              }
+              if (selected || !tombstonedCorruptRow) {
+                break;
+              }
             }
           }
         } else {

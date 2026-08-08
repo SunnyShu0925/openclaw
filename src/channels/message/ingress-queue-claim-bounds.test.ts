@@ -596,4 +596,86 @@ describe("channel ingress queue claim bounds", () => {
       }
     });
   });
+
+  it("bounds degraded candidate reads across chunks", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue<{ text: string }>(stateDir);
+      // 22,000 blocked rows (each on its own stored lane) followed by one free
+      // row, with 30,000 blockedLaneKeys and no deriveLaneKey: the SQL NOT IN
+      // predicate is dropped, so the claim takes the degraded candidate path.
+      // Pre-fix, every degraded keyset page re-selected every candidate chunk
+      // (per-chunk LIMIT 10,000 > chunk size 1,000) and re-read the discarded
+      // suffix, so this shape issued ~3 pages x 23 chunks and read ~36,000 rows
+      // under the write lock. The stream merge must read each row at most once.
+      const blockedCount = 22_000;
+      for (let index = 0; index < blockedCount; index += 1) {
+        await queue.enqueue(
+          `blocked-${index}`,
+          { text: `blocked-${index}` },
+          { laneKey: `blocked-lane-${index}`, receivedAt: index + 1 },
+        );
+      }
+      await queue.enqueue(
+        "free",
+        { text: "free" },
+        { laneKey: "free", receivedAt: blockedCount + 1 },
+      );
+      const candidateIds = [
+        ...Array.from({ length: blockedCount }, (_, index) => `blocked-${index}`),
+        "free",
+      ];
+      const oversizedBlockedLaneKeys = Array.from(
+        { length: 30_000 },
+        (_, index) => `stored-lane-${index}`,
+      );
+      for (let index = 0; index < blockedCount; index += 1) {
+        oversizedBlockedLaneKeys[index] = `blocked-lane-${index}`;
+      }
+
+      // Spy: count candidate-branch selects (event_id IN membership) and the
+      // rows those selects return.
+      const originalExecute = kyselySync.executeSqliteQuerySync;
+      let candidateSelectCount = 0;
+      let candidateRowsRead = 0;
+      const wrappedExecute = (
+        db: Parameters<typeof originalExecute>[0],
+        query: Parameters<typeof originalExecute>[1],
+      ) => {
+        const result = originalExecute(db, query);
+        if (typeof query.compile === "function") {
+          const sql = query.compile().sql;
+          if (
+            sql.includes("channel_ingress_events") &&
+            sql.includes('"event_id" in') &&
+            sql.includes("limit")
+          ) {
+            candidateSelectCount += 1;
+            candidateRowsRead += result.rows.length;
+          }
+        }
+        return result;
+      };
+      const spy = vi.spyOn(kyselySync, "executeSqliteQuerySync").mockImplementation(wrappedExecute);
+
+      let claimed: { id?: string } | null;
+      try {
+        claimed = await queue.claimNext({
+          ownerId: "worker",
+          candidateIds,
+          blockedLaneKeys: oversizedBlockedLaneKeys,
+          scanLimit: 100,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(claimed?.id).toBe("free");
+      // 23 chunks: one claimed-candidate pre-scan select per chunk plus one
+      // degraded pending select per chunk = ~46 selects, with every candidate
+      // row read once (~22,001 rows). Pre-fix this was ~92 selects / ~36,003
+      // rows (3 keyset pages re-selecting all chunks and re-reading the suffix).
+      expect(candidateSelectCount).toBeLessThanOrEqual(2 * 23 + 20);
+      expect(candidateRowsRead).toBeLessThanOrEqual(blockedCount + 1 + 1_000);
+    });
+  });
 });
