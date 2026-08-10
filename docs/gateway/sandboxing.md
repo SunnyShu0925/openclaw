@@ -269,6 +269,30 @@ Use `backend: "openshell"` to sandbox tools in an OpenShell-managed remote envir
 
 For the full prerequisites, configuration reference, workspace-mode comparison, and lifecycle details, see [OpenShell](/gateway/openshell).
 
+## Custom sandbox backends and inbound media staging
+
+Third-party sandbox backends register through `registerSandboxBackend(id, registration)` from `openclaw/plugin-sdk/sandbox`. The registration object declares the backend factory, optional lifecycle manager and workdir resolver, and the **canonical staging contract**:
+
+```ts
+registerSandboxBackend("my-remote", {
+  factory: createMyRemoteBackend,
+  resolveWorkdir: ({ cfg, scopeKey }) => resolveRemoteWorkdir(cfg, scopeKey),
+  canonicalStaging: "remote", // "local" (default) | "remote"
+});
+```
+
+`canonicalStaging` tells OpenClaw where the backend keeps the **canonical workspace** that agents read after the sandbox is created:
+
+- `"local"` (default when absent): the workspace is host-local. Inbound channel attachments are staged with host-local helpers and the backend is never constructed or registered during staging. Docker, Podman, and OpenShell `mirror` mode are local-canonical.
+- `"remote"`: after the initial seed, the backend's real workspace lives on the remote runtime, so `exec`/`read`/`write`/`edit`/`apply_patch` and inbound media staging all target the remote workspace. Declare this only when `createFsBridge` returns a bridge that writes into that remote canonical workspace. SSH and OpenShell `remote` mode are remote-canonical.
+
+Remote-canonical backends must satisfy two bridge requirements:
+
+1. **Gateway staging writes**: OpenClaw stages inbound media by calling the bridge's `writeFile` with a private `gatewayStaging` capability option and `mkdir: true`. The bridge must honor that capability for the workspace path (populating the canonical workspace even when `workspaceAccess` is `"none"` or `"ro"`), while still rejecting ordinary agent tool writes under those access modes.
+2. **Path guards**: the bridge write must keep the pinned-parent and post-canonical protected-root checks, so a symlinked workspace path can never resolve into protected skill roots, and oversized attachments are rejected before any remote write.
+
+Staging never inspects backend ids or private backend options: the declared `canonicalStaging` value alone selects the bridge route, so any backend can opt into remote-canonical staging without core changes.
+
 ## Workspace access
 
 `agents.defaults.sandbox.workspaceAccess` controls what the sandbox can see:
