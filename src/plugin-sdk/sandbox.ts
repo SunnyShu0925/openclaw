@@ -1,5 +1,12 @@
 /**
  * Public SDK subpath for sandbox backends, SSH execution, and temp workspace helpers.
+ *
+ * Backend registration contract: `SandboxBackendRegistration.canonicalStaging`
+ * declares where gateway-owned inbound media staging writes. Third-party
+ * backends default to `"local"` (host-local copy, no provisioning during
+ * staging); declare `"remote"` only when the canonical workspace lives on the
+ * remote runtime and the resolved `SandboxFsBridge` can write staged bytes into
+ * it. See `SandboxBackendCanonicalStaging` for the full contract.
  */
 export type {
   CreateSandboxBackendParams,
