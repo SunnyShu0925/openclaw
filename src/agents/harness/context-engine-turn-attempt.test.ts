@@ -20,8 +20,13 @@ import {
 } from "./context-engine-turn-attempt.js";
 import { enqueueContextEngineTurnIntent } from "./context-engine-turn-outbox.js";
 
+const tempDirs: string[] = [];
+
 afterEach(() => {
   closeOpenClawAgentDatabasesForTest();
+  for (const tempDir of tempDirs.splice(0)) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 describe("accepted context-engine turn finalization", () => {
@@ -343,6 +348,7 @@ describe("accepted context-engine turn finalization", () => {
 
   it("commits a small accepted turn when the historical prefix exceeds the accepted-turn cap", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-turn-prefix-cap-"));
+    tempDirs.push(tempDir);
     const target = {
       agentId: "main",
       sessionId: "large-prefix-turn",
@@ -455,6 +461,7 @@ describe("accepted context-engine turn finalization", () => {
 
   it("still blocks an accepted turn whose own range exceeds the cap", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-turn-own-cap-"));
+    tempDirs.push(tempDir);
     const target = {
       agentId: "main",
       sessionId: "oversized-turn",
