@@ -5,6 +5,7 @@
  */
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type {
+  SandboxBackendCanonicalStaging,
   RegisteredSandboxBackend,
   SandboxBackendFactory,
   SandboxBackendId,
@@ -15,6 +16,7 @@ import type {
 
 export type {
   CreateSandboxBackendParams,
+  SandboxBackendCanonicalStaging,
   SandboxBackendFactory,
   SandboxBackendId,
   SandboxBackendManager,
@@ -87,6 +89,18 @@ export function getSandboxBackendWorkdirResolver(id: string): SandboxBackendWork
   return getSandboxBackendFactories().get(normalizeSandboxBackendId(id))?.resolveWorkdir ?? null;
 }
 
+/**
+ * Resolve the declared canonical staging target for a backend id without
+ * creating or starting the backend. Backends that do not declare a target
+ * default to local staging, so gateway code never provisions a runtime just
+ * to discover where attachments should be written.
+ */
+export function getSandboxBackendCanonicalStaging(id: string): SandboxBackendCanonicalStaging {
+  return (
+    getSandboxBackendFactories().get(normalizeSandboxBackendId(id))?.canonicalStaging ?? "local"
+  );
+}
+
 /** Resolve a backend factory or throw the user-facing configuration error. */
 export function requireSandboxBackendFactory(id: string): SandboxBackendFactory {
   const factory = getSandboxBackendFactory(id);
@@ -130,4 +144,7 @@ registerSandboxBackend("ssh", {
   manager: sshSandboxBackendManager,
   resolveWorkdir: ({ cfg, scopeKey }) =>
     resolveSshRuntimePaths(cfg.ssh.workspaceRoot, scopeKey).remoteWorkspaceDir,
+  // The SSH workspace is remote-canonical after its initial seed: inbound
+  // media must be staged through the remote filesystem bridge.
+  canonicalStaging: "remote",
 });

@@ -9,6 +9,7 @@ import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { assertSandboxPath } from "../../agents/sandbox-paths.js";
 import {
   ensureSandboxWorkspaceForSession,
+  getSandboxBackendCanonicalStaging,
   resolveSandboxConfigForAgent,
   resolveSandboxContext,
   type SandboxFsBridge,
@@ -71,10 +72,12 @@ export async function stageSandboxMedia(params: {
         sessionKey,
         workspaceDir,
       });
-  // Remote-canonical backends (ssh/openshell) stage through the backend
-  // filesystem bridge. Local backends must NOT be provisioned here: resolving
-  // the full sandbox context constructs the backend and can create/start a
-  // Docker runtime before the attachment has been acknowledged.
+  // Backends that declare a remote-canonical workspace stage through the
+  // backend filesystem bridge. Local-canonical backends must NOT be
+  // provisioned here: resolving the full sandbox context constructs the
+  // backend and can create/start a runtime before the attachment has been
+  // acknowledged. The typed registration capability is consulted without
+  // creating or registering the backend.
   const remoteSandboxFsBridge =
     forceRemoteCache || !sandbox
       ? null
@@ -290,10 +293,11 @@ async function stageLocalFileIntoRoot(params: {
 }
 
 /**
- * SSH/openshell backends keep the remote workspace canonical after the initial
- * seed, so inbound media must be written through the remote filesystem bridge
- * instead of host-local copy helpers. Docker and other host-mounted backends
- * keep the existing local copy path.
+ * Backends that declare a remote-canonical workspace (SSH, and remote-mode
+ * OpenShell) keep inbound media in the remote workspace, so it must be
+ * written through the backend filesystem bridge instead of host-local copy
+ * helpers. Docker, mirror-mode OpenShell, and other local-canonical backends
+ * keep the existing local copy path and are never provisioned here.
  */
 async function resolveRemoteSandboxFsBridge(params: {
   config: OpenClawConfig;
@@ -305,7 +309,10 @@ async function resolveRemoteSandboxFsBridge(params: {
     config: params.config,
   });
   const resolvedConfig = resolveSandboxConfigForAgent(params.config, agentId);
-  if (resolvedConfig.backend !== "ssh" && resolvedConfig.backend !== "openshell") {
+  // The backend itself declares where its canonical workspace lives; core
+  // never inspects plugin identity or private backend mode. Local-canonical
+  // backends short-circuit here, so staging has no provisioning side effect.
+  if (getSandboxBackendCanonicalStaging(resolvedConfig.backend) !== "remote") {
     return null;
   }
   const context = await resolveSandboxContext({
@@ -313,20 +320,7 @@ async function resolveRemoteSandboxFsBridge(params: {
     sessionKey: params.sessionKey,
     workspaceDir: params.workspaceDir,
   });
-  if (!context?.fsBridge) {
-    return null;
-  }
-  if (resolvedConfig.backend === "openshell") {
-    // OpenShell defaults to locally canonical mirror mode; only its explicit
-    // remote mode owns a remote workspace. Mirror workspaces must stay local
-    // so staging never triggers mirror sync/provisioning before the
-    // attachment has been acknowledged.
-    const mode = (context.backend as { mode?: string } | undefined)?.mode;
-    if (mode !== "remote") {
-      return null;
-    }
-  }
-  return context.fsBridge;
+  return context?.fsBridge ?? null;
 }
 
 /**

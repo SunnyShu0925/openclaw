@@ -50,6 +50,17 @@ export type SandboxBackendFactory = (
 /** Resolve the runtime workdir without creating or starting the backend. */
 export type SandboxBackendWorkdirResolver = (params: CreateSandboxBackendParams) => string;
 
+/**
+ * Canonical workspace target for gateway-owned inbound media staging.
+ *
+ * Backends whose workspace is remote-canonical (SSH, and remote-mode
+ * OpenShell) declare `"remote"` so core can stage attachments through the
+ * backend filesystem bridge. Local-canonical backends (Docker, mirror-mode
+ * OpenShell) keep the host-local copy path and are never provisioned during
+ * staging.
+ */
+export type SandboxBackendCanonicalStaging = "local" | "remote";
+
 /** Registry input accepted for sandbox backend registration. */
 export type SandboxBackendRegistration =
   | SandboxBackendFactory
@@ -57,6 +68,12 @@ export type SandboxBackendRegistration =
       factory: SandboxBackendFactory;
       manager?: SandboxBackendManager;
       resolveWorkdir?: SandboxBackendWorkdirResolver;
+      /**
+       * Declares where gateway-owned inbound media staging writes. Absent
+       * means `"local"`: staging uses host-local helpers and must not
+       * construct or register the backend runtime.
+       */
+      canonicalStaging?: SandboxBackendCanonicalStaging;
     };
 
 /** Normalized backend registration stored in the sandbox backend registry. */
@@ -64,6 +81,7 @@ export type RegisteredSandboxBackend = {
   factory: SandboxBackendFactory;
   manager?: SandboxBackendManager;
   resolveWorkdir?: SandboxBackendWorkdirResolver;
+  canonicalStaging?: SandboxBackendCanonicalStaging;
 };
 
 export type { SandboxBackendHandle, SandboxBackendId } from "./backend-handle.types.js";

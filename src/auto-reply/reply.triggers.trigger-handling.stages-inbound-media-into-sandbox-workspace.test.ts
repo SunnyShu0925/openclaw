@@ -14,6 +14,7 @@ import {
 
 const sandboxMocks = vi.hoisted(() => ({
   ensureSandboxWorkspaceForSession: vi.fn(),
+  getSandboxBackendCanonicalStaging: vi.fn(),
   resolveSandboxConfigForAgent: vi.fn(),
   resolveSandboxContext: vi.fn(),
   assertSandboxPath: vi.fn(),
@@ -121,6 +122,7 @@ async function rootCopyFromForTest({
 
 beforeEach(() => {
   sandboxMocks.ensureSandboxWorkspaceForSession.mockReset();
+  sandboxMocks.getSandboxBackendCanonicalStaging.mockReset().mockReturnValue("local");
   sandboxMocks.resolveSandboxConfigForAgent.mockReset();
   sandboxMocks.resolveSandboxContext.mockReset();
   sandboxMocks.resolveSandboxConfigForAgent.mockReturnValue({ backend: "docker" });
@@ -221,6 +223,7 @@ describe("stageSandboxMedia", () => {
         workspaceDir: sandboxDir,
       });
       sandboxMocks.resolveSandboxConfigForAgent.mockReturnValue({ backend: "ssh" });
+      sandboxMocks.getSandboxBackendCanonicalStaging.mockReturnValue("remote");
       sandboxMocks.resolveSandboxContext.mockResolvedValue({
         workspaceDir: sandboxDir,
         backendId: "ssh",
@@ -268,6 +271,7 @@ describe("stageSandboxMedia", () => {
         workspaceDir: sandboxDir,
       });
       sandboxMocks.resolveSandboxConfigForAgent.mockReturnValue({ backend: "ssh" });
+      sandboxMocks.getSandboxBackendCanonicalStaging.mockReturnValue("remote");
       sandboxMocks.resolveSandboxContext.mockResolvedValue({
         workspaceDir: sandboxDir,
         backendId: "ssh",
@@ -308,6 +312,7 @@ describe("stageSandboxMedia", () => {
         workspaceDir: sandboxDir,
       });
       sandboxMocks.resolveSandboxConfigForAgent.mockReturnValue({ backend: "openshell" });
+      sandboxMocks.getSandboxBackendCanonicalStaging.mockReturnValue("remote");
       const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
       ctx.media = [{ ...ctx.media?.[0], contentType: "application/pdf" }];
       sessionCtx.media = ctx.media;
@@ -338,12 +343,8 @@ describe("stageSandboxMedia", () => {
       // OpenShell mirror mode (the default) is locally canonical: keep the
       // local staging path and never touch the mirror bridge before the
       // attachment is acknowledged.
-      const mirrorWriteFile = vi.fn().mockResolvedValue(undefined);
-      sandboxMocks.resolveSandboxContext.mockResolvedValue({
-        workspaceDir: sandboxDir,
-        backend: { mode: "mirror" },
-        fsBridge: { writeFile: mirrorWriteFile, mkdirp: vi.fn().mockResolvedValue(undefined) },
-      });
+      sandboxMocks.resolveSandboxContext.mockClear();
+      sandboxMocks.getSandboxBackendCanonicalStaging.mockReturnValue("local");
       const { ctx: mirrorCtx, sessionCtx: mirrorSessionCtx } = createSandboxMediaContexts(mediaUri);
       mirrorCtx.media = [{ ...mirrorCtx.media?.[0], contentType: "application/pdf" }];
       mirrorSessionCtx.media = mirrorCtx.media;
@@ -354,7 +355,9 @@ describe("stageSandboxMedia", () => {
         sessionKey: "agent:main:main",
         workspaceDir,
       });
-      expect(mirrorWriteFile).not.toHaveBeenCalled();
+      // Mirror mode must be decided from the declared registration capability
+      // without constructing the plugin backend or updating registry state.
+      expect(sandboxMocks.resolveSandboxContext).not.toHaveBeenCalled();
       expect(mirrorResult.staged.get(0)).toBe(`media/inbound/${fileName}`);
       await expect(
         fs.readFile(join(sandboxDir, "media", "inbound", fileName), "utf8"),
@@ -627,6 +630,7 @@ describe("stageSandboxMedia", () => {
       await writeInboundMedia(home, fileName, "pdf-bytes");
       const mediaUri = `media://inbound/${fileName}`;
       sandboxMocks.resolveSandboxConfigForAgent.mockReturnValue({ backend: "docker" });
+      sandboxMocks.getSandboxBackendCanonicalStaging.mockReturnValue("local");
       const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
       ctx.media = [{ ...ctx.media?.[0], contentType: "application/pdf" }];
       sessionCtx.media = ctx.media;
@@ -646,6 +650,50 @@ describe("stageSandboxMedia", () => {
       // must not be resolved during attachment staging.
       expect(sandboxMocks.resolveSandboxContext).not.toHaveBeenCalled();
       await expect(fs.readFile(join(sandboxDir, stagedPath), "utf8")).resolves.toBe("pdf-bytes");
+    });
+  });
+
+  it("stages through the fs bridge for any backend declaring remote canonical staging", async () => {
+    await withSandboxMediaTempHome("openclaw-triggers-", async (home) => {
+      const { cfg, workspaceDir, sandboxDir } = await setupSandboxWorkspace(home);
+      const fileName = "report.pdf";
+      await writeInboundMedia(home, fileName, "pdf-bytes");
+      const mediaUri = `media://inbound/${fileName}`;
+      const writeFile = vi.fn().mockResolvedValue(undefined);
+      sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue({
+        workspaceDir: sandboxDir,
+      });
+      // A future plugin backend id is not hard-coded anywhere in core: the
+      // typed registration capability alone selects the remote staging path.
+      sandboxMocks.resolveSandboxConfigForAgent.mockReturnValue({ backend: "custom-remote" });
+      sandboxMocks.getSandboxBackendCanonicalStaging.mockReturnValue("remote");
+      sandboxMocks.resolveSandboxContext.mockResolvedValue({
+        workspaceDir: sandboxDir,
+        backendId: "custom-remote",
+        fsBridge: {
+          writeFile,
+          mkdirp: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
+      ctx.media = [{ ...ctx.media?.[0], contentType: "application/pdf" }];
+      sessionCtx.media = ctx.media;
+
+      const result = await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        sessionKey: "agent:main:main",
+        workspaceDir,
+      });
+
+      expect(result.staged.get(0)).toBe(`media/inbound/${fileName}`);
+      expect(writeFile).toHaveBeenCalledTimes(1);
+      expect(writeFile.mock.calls[0]?.[0]).toMatchObject({
+        filePath: `media/inbound/${fileName}`,
+        mkdir: true,
+      });
+      expect(writeFile.mock.calls[0]?.[0]?.gatewayStaging).toBe(REMOTE_BRIDGE_GATEWAY_STAGING);
     });
   });
 

@@ -2,6 +2,7 @@
 // lifecycle hooks.
 import { describe, expect, it } from "vitest";
 import {
+  getSandboxBackendCanonicalStaging,
   getSandboxBackendFactory,
   getSandboxBackendManager,
   getSandboxBackendWorkdirResolver,
@@ -60,5 +61,24 @@ describe("sandbox backend registry", () => {
     expect(getSandboxBackendWorkdirResolver("test-workdir")).toBe(resolveWorkdir);
     restore();
     expect(getSandboxBackendWorkdirResolver("test-workdir")).toBeNull();
+  });
+
+  it("declares remote canonical staging for SSH and defaults unknown backends to local", () => {
+    expect(getSandboxBackendCanonicalStaging("ssh")).toBe("remote");
+    expect(getSandboxBackendCanonicalStaging("docker")).toBe("local");
+    expect(getSandboxBackendCanonicalStaging("unknown-backend")).toBe("local");
+  });
+
+  it("registers the canonical staging declaration alongside factories", () => {
+    const factory = async () => {
+      throw new Error("not used");
+    };
+    const restore = registerSandboxBackend("test-staging", {
+      factory,
+      canonicalStaging: "remote",
+    });
+    expect(getSandboxBackendCanonicalStaging("test-staging")).toBe("remote");
+    restore();
+    expect(getSandboxBackendCanonicalStaging("test-staging")).toBe("local");
   });
 });

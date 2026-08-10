@@ -25,6 +25,9 @@ export default definePluginEntry({
         pluginConfig,
       }),
       resolveWorkdir: () => pluginConfig.remoteWorkspaceDir,
+      // Remote-mode OpenShell owns a remote canonical workspace; mirror mode
+      // (the default) is locally canonical and must keep host-local staging.
+      canonicalStaging: pluginConfig.mode === "remote" ? "remote" : "local",
     });
   },
 });

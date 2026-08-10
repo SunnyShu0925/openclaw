@@ -12,6 +12,7 @@ export {
 } from "./sandbox/constants.js";
 export { ensureSandboxWorkspaceForSession, resolveSandboxContext } from "./sandbox/context.js";
 export {
+  getSandboxBackendCanonicalStaging,
   getSandboxBackendFactory,
   getSandboxBackendManager,
   getSandboxBackendWorkdirResolver,
@@ -51,6 +52,7 @@ export { createWritableRenameTargetResolver } from "./sandbox/fs-bridge-rename-t
 export { resolveWritableRenameTargets } from "./sandbox/fs-bridge-rename-targets.js";
 export { resolveWritableRenameTargetsForBridge } from "./sandbox/fs-bridge-rename-targets.js";
 export type {
+  SandboxBackendCanonicalStaging,
   CreateSandboxBackendParams,
   SandboxBackendCommandParams,
   SandboxBackendCommandResult,
