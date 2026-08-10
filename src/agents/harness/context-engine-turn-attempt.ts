@@ -254,7 +254,6 @@ export async function finalizeAcceptedContextEngineTurn(params: {
         boundary: params.facts.boundary,
         isHeartbeat: params.facts.isHeartbeat === true,
         messages: closedTurn.messages,
-        prePromptMessageCount: closedTurn.prePromptMessageCount,
       },
     });
     await drainContextEngineTurnOutbox({

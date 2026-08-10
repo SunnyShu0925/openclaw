@@ -43,7 +43,6 @@ type ReadyContextEngineTurnOutboxPayload = Readonly<{
   boundary: TranscriptTurnBoundary;
   isHeartbeat: boolean;
   messages: AgentMessage[];
-  prePromptMessageCount: number;
   state: "ready";
 }>;
 
@@ -328,7 +327,6 @@ export function recoverContextEngineTurnOutbox(params: {
         boundary: payload.boundary,
         isHeartbeat: payload.isHeartbeat,
         messages: closedTurn.messages,
-        prePromptMessageCount: closedTurn.prePromptMessageCount,
       },
     });
   }
@@ -437,7 +435,6 @@ async function commitPendingContextEngineTurn(
       admission: payload.boundary.admission,
       terminal: payload.boundary.terminal,
       messages: payload.messages,
-      prePromptMessageCount: payload.prePromptMessageCount,
       sessionId: payload.boundary.admission.sessionId,
       sessionKey: payload.boundary.admission.sessionKey,
       sessionTarget: {

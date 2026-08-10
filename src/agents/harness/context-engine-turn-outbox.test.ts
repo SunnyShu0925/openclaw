@@ -74,7 +74,6 @@ function createPayload(params: {
     boundary,
     isHeartbeat: false,
     messages: [],
-    prePromptMessageCount: params.sequence,
   };
 }
 
@@ -205,7 +204,9 @@ describe("context-engine turn outbox", () => {
       message: currentMessage,
       target: async () => undefined,
     });
-    const commitTurn = vi.fn(async () => ({ status: "committed" as const }));
+    const commitTurn = vi.fn<NonNullable<ContextEngine["commitTurn"]>>(async () => ({
+      status: "committed",
+    }));
     const engine = {
       info: {
         id: "test",
@@ -251,12 +252,12 @@ describe("context-engine turn outbox", () => {
           { role: "user", content: "first" },
           { role: "assistant", content: "first answer" },
         ],
-        prePromptMessageCount: 0,
       }),
     );
     expect(
       database.db.prepare("SELECT advancement_key FROM context_engine_turn_outbox").all(),
     ).toHaveLength(0);
+    expect(commitTurn.mock.calls[0]?.[0]).not.toHaveProperty("prePromptMessageCount");
 
     recorder.markRuntimePersisted(currentMessage, currentAdmission);
     const queued = database.db
