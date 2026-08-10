@@ -133,7 +133,9 @@ describe("accepted context-engine turn finalization", () => {
       throw new Error("expected admitted turn transcript");
     }
 
-    const commitTurn = vi.fn(async () => ({ status: "committed" as const }));
+    const commitTurn = vi.fn<NonNullable<ContextEngine["commitTurn"]>>(async () => ({
+      status: "committed" as const,
+    }));
     const engine: ContextEngine = {
       info: {
         id: "test",
@@ -337,5 +339,221 @@ describe("accepted context-engine turn finalization", () => {
         .prepare("SELECT 1 FROM context_engine_turn_outbox WHERE advancement_key = ?")
         .get(abortedAdmission.logicalTurnId),
     ).toBeUndefined();
+  });
+
+  it("commits a small accepted turn when the historical prefix exceeds the accepted-turn cap", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-turn-prefix-cap-"));
+    const target = {
+      agentId: "main",
+      sessionId: "large-prefix-turn",
+      sessionKey: "agent:main:large-prefix-turn",
+      storePath: path.join(tempDir, "sessions.json"),
+    };
+    await upsertSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const padding = "x".repeat(3 * 1024 * 1024);
+    let prior = await appendTranscriptMessage(target, {
+      message: { role: "assistant", content: `prefix-0 ${padding}` },
+      now: 1_000,
+    });
+    for (let index = 1; index < 3; index += 1) {
+      prior = await appendTranscriptMessage(target, {
+        message: { role: "assistant", content: `prefix-${index} ${padding}` },
+        parentId: prior?.messageId,
+        now: 1_000 + index,
+      });
+    }
+    const admitted = await appendTranscriptMessage(target, {
+      message: { role: "user", content: "current" },
+      parentId: prior?.messageId,
+      now: 4_000,
+    });
+    const terminal = await appendTranscriptMessage(target, {
+      message: { role: "assistant", content: "answer" },
+      parentId: admitted?.messageId,
+      now: 5_000,
+    });
+    if (!admitted?.anchor || !terminal?.anchor) {
+      throw new Error("expected admitted turn transcript");
+    }
+
+    const commitTurn = vi.fn<NonNullable<ContextEngine["commitTurn"]>>(async () => ({
+      status: "committed" as const,
+    }));
+    const engine: ContextEngine = {
+      info: {
+        id: "test",
+        name: "Test",
+        transcriptSemantics: {
+          currentTurnFence: "before-current-turn-entry-v1",
+          turnAdvancementIdempotency: "atomic-idempotent-v1",
+        },
+      },
+      ingest: async () => ({ ingested: true }),
+      assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
+      compact: async () => ({ ok: true, compacted: false }),
+      commitTurn,
+    };
+    const lease = {
+      engine,
+      effectiveEngine: engine,
+      effectiveEngineId: "test",
+      effectiveEnginePluginId: undefined,
+      degraded: false,
+      degradedReason: undefined,
+      selectForHost: vi.fn(),
+      degradeBeforeStart: vi.fn(),
+      begin: vi.fn(),
+      deferDisposalUntil: () => undefined,
+      dispose: async () => undefined,
+    } satisfies ContextEngineLogicalTurnLease;
+    const admission = {
+      ...admitted.anchor,
+      logicalTurnId: "logical-turn-large-prefix",
+      role: "user" as const,
+    };
+    const database = openOpenClawAgentDatabase({
+      agentId: target.agentId,
+      path: admission.storePath,
+    });
+    enqueueContextEngineTurnIntent({
+      admission,
+      database,
+      engineId: "test",
+      isHeartbeat: false,
+    });
+    const warn = vi.fn();
+
+    await finalizeAcceptedContextEngineTurn({
+      facts: {
+        boundary: { admission, terminal: terminal.anchor },
+        sessionIdUsed: target.sessionId,
+        sessionKey: target.sessionKey,
+        sessionTarget: target,
+        sessionFile: "sqlite://large-prefix-turn",
+        promptError: false,
+        aborted: false,
+        yieldAborted: false,
+      },
+      lease,
+      warn,
+    });
+
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("accepted context-engine transcript range is too-large"),
+    );
+    expect(commitTurn).toHaveBeenCalledOnce();
+    const commitParams = commitTurn.mock.calls[0]?.[0];
+    expect(commitParams?.prePromptMessageCount).toBe(3);
+    expect(commitParams?.messages).toHaveLength(5);
+    expect(commitParams?.messages[0]).toMatchObject({
+      role: "assistant",
+      content: expect.stringContaining("prefix-0"),
+    });
+    expect(commitParams?.messages[3]).toMatchObject({ role: "user", content: "current" });
+    expect(commitParams?.messages[4]).toMatchObject({ role: "assistant", content: "answer" });
+  });
+
+  it("still blocks an accepted turn whose own range exceeds the cap", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-turn-own-cap-"));
+    const target = {
+      agentId: "main",
+      sessionId: "oversized-turn",
+      sessionKey: "agent:main:oversized-turn",
+      storePath: path.join(tempDir, "sessions.json"),
+    };
+    await upsertSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const prior = await appendTranscriptMessage(target, {
+      message: { role: "assistant", content: "prior" },
+      now: 1_000,
+    });
+    const admitted = await appendTranscriptMessage(target, {
+      message: { role: "user", content: "current" },
+      parentId: prior?.messageId,
+      now: 2_000,
+    });
+    const terminal = await appendTranscriptMessage(target, {
+      message: { role: "assistant", content: `answer ${"x".repeat(9 * 1024 * 1024)}` },
+      parentId: admitted?.messageId,
+      now: 3_000,
+    });
+    if (!admitted?.anchor || !terminal?.anchor) {
+      throw new Error("expected admitted turn transcript");
+    }
+
+    const commitTurn = vi.fn(async () => ({ status: "committed" as const }));
+    const engine: ContextEngine = {
+      info: {
+        id: "test",
+        name: "Test",
+        transcriptSemantics: {
+          currentTurnFence: "before-current-turn-entry-v1",
+          turnAdvancementIdempotency: "atomic-idempotent-v1",
+        },
+      },
+      ingest: async () => ({ ingested: true }),
+      assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
+      compact: async () => ({ ok: true, compacted: false }),
+      commitTurn,
+    };
+    const lease = {
+      engine,
+      effectiveEngine: engine,
+      effectiveEngineId: "test",
+      effectiveEnginePluginId: undefined,
+      degraded: false,
+      degradedReason: undefined,
+      selectForHost: vi.fn(),
+      degradeBeforeStart: vi.fn(),
+      begin: vi.fn(),
+      deferDisposalUntil: () => undefined,
+      dispose: async () => undefined,
+    } satisfies ContextEngineLogicalTurnLease;
+    const admission = {
+      ...admitted.anchor,
+      logicalTurnId: "logical-turn-oversized",
+      role: "user" as const,
+    };
+    const database = openOpenClawAgentDatabase({
+      agentId: target.agentId,
+      path: admission.storePath,
+    });
+    enqueueContextEngineTurnIntent({
+      admission,
+      database,
+      engineId: "test",
+      isHeartbeat: false,
+    });
+    const warn = vi.fn();
+
+    await finalizeAcceptedContextEngineTurn({
+      facts: {
+        boundary: { admission, terminal: terminal.anchor },
+        sessionIdUsed: target.sessionId,
+        sessionKey: target.sessionKey,
+        sessionTarget: target,
+        sessionFile: "sqlite://oversized-turn",
+        promptError: false,
+        aborted: false,
+        yieldAborted: false,
+      },
+      lease,
+      warn,
+    });
+
+    expect(commitTurn).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "[context-engine] skipped accepted turn advancement: accepted context-engine transcript range is too-large",
+    );
+    expect(
+      JSON.parse(
+        (
+          database.db
+            .prepare(
+              "SELECT payload_json FROM context_engine_turn_outbox WHERE advancement_key = ?",
+            )
+            .get(admission.logicalTurnId) as { payload_json: string }
+        ).payload_json,
+      ),
+    ).toMatchObject({ state: "blocked", failure: "too-large" });
   });
 });

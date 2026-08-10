@@ -219,13 +219,18 @@ export function readClosedTranscriptTurn(params: {
           .where("active.session_id", "=", target.sessionId)
           .where("active.message_position", "is not", null)
           .where("active.message_position", "<=", params.boundary.terminal.activeMessagePosition)
-          .orderBy("active.message_position", "asc")
-          .limit(params.maxEvents + 1),
+          .orderBy("active.message_position", "asc"),
       ).rows;
+      const acceptedTurnStart = params.boundary.admission.activeMessagePosition;
+      const acceptedTurnRows = rows.filter(
+        (row) => row.message_position !== null && row.message_position >= acceptedTurnStart,
+      );
       if (
-        rows.length > params.maxEvents ||
-        rows.reduce((total, row) => total + Buffer.byteLength(row.event_json, "utf8"), 0) >
-          params.maxBytes
+        acceptedTurnRows.length > params.maxEvents ||
+        acceptedTurnRows.reduce(
+          (total, row) => total + Buffer.byteLength(row.event_json, "utf8"),
+          0,
+        ) > params.maxBytes
       ) {
         return { kind: "too-large" } as const;
       }
