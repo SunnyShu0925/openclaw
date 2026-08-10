@@ -6,8 +6,6 @@ import {
 } from "../../packages/normalization-core/src/string-coerce.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway as defaultCallGateway } from "../gateway/call.js";
-import { formatErrorMessage } from "../infra/errors.js";
-import { logWarn } from "../logger.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { listAmbientGroupWatchTargets } from "../sessions/session-state-events.js";
 import {
