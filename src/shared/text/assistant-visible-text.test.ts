@@ -628,6 +628,13 @@ describe("stripAssistantInternalScaffolding", () => {
       expect(stripModelSpecialTokens("prefix <|assistant|>")).toBe("prefix ");
       expect(stripModelSpecialTokens("<|assistant|>short")).toBe("short");
     });
+
+    it("preserves Markdown emphasis through the full sanitize pipeline", () => {
+      // "**bold**" renders as strong emphasis, while "**bold **" does not.
+      // Stripping a leaked token before the closing delimiter must keep the
+      // emphasis intact end-to-end via sanitizeAssistantVisibleText.
+      expect(sanitizeAssistantVisibleText("**bold<|assistant|>**")).toBe("**bold**");
+    });
   });
 });
 
