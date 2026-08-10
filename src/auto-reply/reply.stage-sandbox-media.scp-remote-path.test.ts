@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { REMOTE_BRIDGE_GATEWAY_STAGING } from "../agents/sandbox/remote-fs-bridge.js";
 import { slugifySessionKey } from "../agents/sandbox/shared.js";
 import { CONFIG_DIR } from "../utils.js";
 import {
@@ -13,6 +14,7 @@ import {
 
 const sandboxMocks = vi.hoisted(() => ({
   ensureSandboxWorkspaceForSession: vi.fn(),
+  getSandboxBackendCanonicalStaging: vi.fn(),
   resolveSandboxConfigForAgent: vi.fn(),
   resolveSandboxContext: vi.fn(),
 }));
@@ -39,6 +41,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   processExecMocks.runCommandWithTimeout.mockReset();
   mediaRootMocks.resolveChannelRemoteInboundAttachmentRoots.mockReset();
+  sandboxMocks.getSandboxBackendCanonicalStaging.mockReset().mockReturnValue("local");
 });
 
 function createRemoteStageParams(home: string): {
@@ -241,6 +244,69 @@ describe("stageSandboxMedia scp remote paths", () => {
         recursive: true,
         force: true,
       });
+    });
+  });
+
+  it("routes remote-host attachments through the remote bridge for remote-canonical backends", async () => {
+    await withSandboxMediaTempHome("openclaw-triggers-", async (home) => {
+      const { cfg, workspaceDir, sessionKey } = createRemoteStageParams(home);
+      const sandboxWorkspace = join(home, "sandbox-workspace");
+      vi.mocked(sandboxMocks.ensureSandboxWorkspaceForSession).mockResolvedValue({
+        workspaceDir: sandboxWorkspace,
+      });
+      vi.mocked(sandboxMocks.resolveSandboxConfigForAgent).mockReturnValue({ backend: "ssh" });
+      sandboxMocks.getSandboxBackendCanonicalStaging.mockReturnValue("remote");
+      const writeFile = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(sandboxMocks.resolveSandboxContext).mockResolvedValue({
+        workspaceDir: sandboxWorkspace,
+        backendId: "ssh",
+        fsBridge: {
+          writeFile,
+          mkdirp: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      const remotePath = "/Users/demo/Library/Messages/Attachments/ab/cd/photo.jpg";
+      const { ctx, sessionCtx } = createRemoteContexts(remotePath);
+      ctx.media = [{ path: remotePath }];
+      sessionCtx.media = ctx.media;
+      processExecMocks.runCommandWithTimeout.mockImplementation(async (argvUnknown) => {
+        const argv = argvUnknown as string[];
+        const localPath = argv.at(-1);
+        if (!localPath) {
+          throw new Error("missing scp destination");
+        }
+        await fs.writeFile(localPath, "staged-image-bytes");
+        return { code: 0, stdout: "", stderr: "" };
+      });
+
+      const result = await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        sessionKey,
+        workspaceDir,
+      });
+
+      expect(result.staged.get(0)).toBe(`media/inbound/${basename(remotePath)}`);
+      expect(writeFile).toHaveBeenCalledTimes(1);
+      const writeCall = writeFile.mock.calls[0]?.[0];
+      expect(writeCall).toMatchObject({
+        filePath: `media/inbound/${basename(remotePath)}`,
+        mkdir: true,
+      });
+      expect(writeCall?.gatewayStaging).toBe(REMOTE_BRIDGE_GATEWAY_STAGING);
+      expect(Buffer.isBuffer(writeCall?.data)).toBe(true);
+      expect(writeCall?.data.toString("utf8")).toBe("staged-image-bytes");
+      // The remote-canonical workspace must not receive a gateway-local copy.
+      await expectPathMissing(join(sandboxWorkspace, "media", "inbound", basename(remotePath)));
+      const remoteCachePath = join(
+        CONFIG_DIR,
+        "media",
+        "remote-cache",
+        slugifySessionKey(sessionKey),
+        basename(remotePath),
+      );
+      await expectPathMissing(remoteCachePath);
     });
   });
 });

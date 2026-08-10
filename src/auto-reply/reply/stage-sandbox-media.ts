@@ -133,13 +133,24 @@ export async function stageSandboxMedia(params: {
 
     try {
       if (ctx.MediaRemoteHost) {
-        await stageRemoteFileIntoRoot({
-          remoteHost: ctx.MediaRemoteHost,
-          remotePath: source.physicalPath,
-          rootDir: effectiveWorkspaceDir,
-          relativeDestPath: relativeDest,
-          maxBytes: STAGED_MEDIA_MAX_BYTES,
-        });
+        const remoteBridge = remoteSandboxFsBridge;
+        if (remoteBridge) {
+          await stageRemoteFileIntoRemoteSandboxBridge({
+            bridge: remoteBridge,
+            remoteHost: ctx.MediaRemoteHost,
+            remotePath: source.physicalPath,
+            relativeDestPath: toPosixRelativePath(relativeDest),
+            maxBytes: STAGED_MEDIA_MAX_BYTES,
+          });
+        } else {
+          await stageRemoteFileIntoRoot({
+            remoteHost: ctx.MediaRemoteHost,
+            remotePath: source.physicalPath,
+            rootDir: effectiveWorkspaceDir,
+            relativeDestPath: relativeDest,
+            maxBytes: STAGED_MEDIA_MAX_BYTES,
+          });
+        }
       } else {
         const copySource = await fs.realpath(source.physicalPath).catch(() => source.physicalPath);
         const remoteBridge = remoteSandboxFsBridge;
@@ -376,6 +387,36 @@ async function stageRemoteFileIntoRoot(params: {
     await stageLocalFileIntoRoot({
       sourcePath: tmpPath,
       rootDir: params.rootDir,
+      relativeDestPath: params.relativeDestPath,
+      maxBytes: params.maxBytes,
+    });
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Remote-host attachments for a remote-canonical backend: SCP the source to a
+ * bounded temporary file, then stage it through the backend filesystem bridge
+ * with the same gateway capability as local-origin media. The gateway-local
+ * workspace is never the destination for remote-canonical sandboxes.
+ */
+async function stageRemoteFileIntoRemoteSandboxBridge(params: {
+  bridge: SandboxFsBridge;
+  remoteHost: string;
+  remotePath: string;
+  relativeDestPath: string;
+  maxBytes?: number;
+}): Promise<void> {
+  const tmpRoot = resolvePreferredOpenClawTmpDir();
+  await fs.mkdir(tmpRoot, { recursive: true });
+  const tmpDir = await fs.mkdtemp(path.join(tmpRoot, "stage-sandbox-media-remote-"));
+  const tmpPath = path.join(tmpDir, "download");
+  try {
+    await scpFile(params.remoteHost, params.remotePath, tmpPath);
+    await stageFileIntoRemoteSandboxBridge({
+      bridge: params.bridge,
+      sourcePath: tmpPath,
       relativeDestPath: params.relativeDestPath,
       maxBytes: params.maxBytes,
     });
