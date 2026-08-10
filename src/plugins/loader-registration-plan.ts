@@ -80,7 +80,7 @@ export function resolvePluginRegistrationPlan(params: {
       runFullActivationOnlyRegistrations: false,
     };
   }
-  const runtimeRegistration = params.runtimeRegistration === true && !params.shouldActivate;
+  const runtimeRegistration = params.runtimeRegistration && !params.shouldActivate;
   const mode = params.shouldActivate || runtimeRegistration ? "full" : "discovery";
   return {
     mode,
