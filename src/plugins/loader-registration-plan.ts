@@ -26,6 +26,8 @@ export function resolvePluginRegistrationPlan(params: {
   shouldLoadModules: boolean;
   validateOnly: boolean;
   shouldActivate: boolean;
+  /** Caller-owned handles that run production turns register with full mode without activating. */
+  runtimeRegistration: boolean;
   manifestRecord: PluginManifestRecord;
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
@@ -78,12 +80,13 @@ export function resolvePluginRegistrationPlan(params: {
       runFullActivationOnlyRegistrations: false,
     };
   }
-  const mode = params.shouldActivate ? "full" : "discovery";
+  const runtimeRegistration = params.runtimeRegistration === true && !params.shouldActivate;
+  const mode = params.shouldActivate || runtimeRegistration ? "full" : "discovery";
   return {
     mode,
     loadSetupEntry: false,
     loadSetupRuntimeEntry: false,
     runRuntimeCapabilityPolicy: true,
-    runFullActivationOnlyRegistrations: mode === "full",
+    runFullActivationOnlyRegistrations: params.shouldActivate,
   };
 }

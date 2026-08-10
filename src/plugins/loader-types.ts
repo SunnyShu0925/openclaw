@@ -43,6 +43,12 @@ export type PluginLoadOptions = {
   preferBuiltPluginArtifacts?: boolean;
   toolDiscovery?: boolean;
   activate?: boolean;
+  /**
+   * Declare a caller-owned registry handle as a production runtime: plugins
+   * register with full runtime semantics while the handle never installs
+   * process-global state. Only meaningful together with `activate: false`.
+   */
+  runtimeRegistration?: boolean;
   loadModules?: boolean;
   throwOnLoadError?: boolean;
   manifestRegistry?: PluginManifestRegistry;

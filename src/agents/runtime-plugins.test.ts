@@ -57,6 +57,7 @@ describe("agent runtime plugin registries", () => {
     });
     expect(hoisted.loadPluginRegistryHandle).toHaveBeenCalledWith({
       activate: false,
+      runtimeRegistration: true,
       config,
       activationSourceConfig: config,
       env,
@@ -74,6 +75,7 @@ describe("agent runtime plugin registries", () => {
     expect(hoisted.resolveAgentRuntimePluginLoadPlan).not.toHaveBeenCalled();
     expect(hoisted.loadPluginRegistryHandle).toHaveBeenCalledWith({
       activate: false,
+      runtimeRegistration: true,
       activationSourceConfig: params.config,
       config: params.config,
       onlyPluginIds: [],

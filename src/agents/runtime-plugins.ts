@@ -113,7 +113,11 @@ export function loadAgentRuntimePluginRegistryHandle(
   params: AgentRuntimePluginRegistryParams,
 ): PluginRegistry {
   const load = resolveAgentRuntimePluginRegistryLoad(params);
-  return loadPluginRegistryHandle({ ...load.loadOptions, activate: false });
+  return loadPluginRegistryHandle({
+    ...load.loadOptions,
+    activate: false,
+    runtimeRegistration: true,
+  });
 }
 
 /** Binds a scoped plugin generation when a direct host has no Gateway owner. */

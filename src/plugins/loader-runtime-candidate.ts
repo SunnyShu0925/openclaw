@@ -257,6 +257,7 @@ export function loadRuntimePluginCandidate(params: {
     shouldLoadModules: context.shouldLoadModules,
     validateOnly: params.validateOnly,
     shouldActivate: context.shouldActivate,
+    runtimeRegistration: context.runtimeRegistration,
     manifestRecord,
     cfg: context.cfg,
     env: context.env,

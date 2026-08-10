@@ -16,7 +16,11 @@ import {
   loadPluginRegistryHandle,
   resolveRuntimePluginRegistry,
 } from "./loader.js";
-import { makeTempDir, resetPluginLoaderTestStateForTest } from "./loader.test-fixtures.js";
+import {
+  writePlugin,
+  makeTempDir,
+  resetPluginLoaderTestStateForTest,
+} from "./loader.test-fixtures.js";
 import {
   getRegisteredMemoryEmbeddingProvider,
   registerMemoryEmbeddingProvider,
@@ -37,6 +41,70 @@ it("keeps an empty scoped handle load from replacing the root registry", () => {
 
   expect(handle).not.toBe(root);
   expect(getActivePluginRegistry()).toBe(root);
+});
+
+it("registers full-mode-only context engines on runtime handles without activating", () => {
+  const plugin = writePlugin({
+    id: "ce-probe",
+    body: `module.exports = {
+      id: "ce-probe",
+      register(api) {
+        if (api.registrationMode === "full") {
+          api.registerContextEngine("ce-probe", async () => ({
+            info: { id: "ce-probe", name: "CE Probe" },
+            dispose: async () => {},
+          }));
+        }
+      },
+    };`,
+  });
+  const root = loadAndActivateRootPluginRegistry({ cache: false, config: {} });
+  const handle = loadPluginRegistryHandle({
+    cache: false,
+    runtimeRegistration: true,
+    config: {
+      plugins: {
+        load: { paths: [plugin.dir] },
+        allow: ["ce-probe"],
+        slots: { contextEngine: "ce-probe" },
+      },
+    },
+    onlyPluginIds: ["ce-probe"],
+  });
+
+  expect(handle).not.toBe(root);
+  expect(getActivePluginRegistry()).toBe(root);
+  expect(handle.contextEngines.get("ce-probe")?.lifecycle).toBe("runtime");
+});
+
+it("keeps plain discovery handles from registering full-mode-only context engines", () => {
+  const plugin = writePlugin({
+    id: "ce-probe-discovery",
+    body: `module.exports = {
+      id: "ce-probe-discovery",
+      register(api) {
+        if (api.registrationMode === "full") {
+          api.registerContextEngine("ce-probe-discovery", async () => ({
+            info: { id: "ce-probe-discovery", name: "CE Probe" },
+            dispose: async () => {},
+          }));
+        }
+      },
+    };`,
+  });
+  const handle = loadPluginRegistryHandle({
+    cache: false,
+    config: {
+      plugins: {
+        load: { paths: [plugin.dir] },
+        allow: ["ce-probe-discovery"],
+        slots: { contextEngine: "ce-probe-discovery" },
+      },
+    },
+    onlyPluginIds: ["ce-probe-discovery"],
+  });
+
+  expect(handle.contextEngines.get("ce-probe-discovery")).toBeUndefined();
 });
 
 function requireMemoryEmbeddingProvider(providerId: string) {
@@ -116,6 +184,26 @@ describe("resolvePluginLoadCacheContext", () => {
         },
       }).cacheKey,
     ).not.toBe(firstKey);
+  });
+
+  it("partitions runtime registration from plain discovery snapshots", () => {
+    const discoveryKey = resolvePluginLoadCacheContext({ config: {} }).cacheKey;
+    const runtimeKey = resolvePluginLoadCacheContext({
+      config: {},
+      runtimeRegistration: true,
+    }).cacheKey;
+
+    expect(runtimeKey).not.toBe(discoveryKey);
+    expect(
+      resolvePluginLoadCacheContext({ config: {}, runtimeRegistration: true }).runtimeRegistration,
+    ).toBe(true);
+    expect(
+      resolvePluginLoadCacheContext({
+        config: {},
+        runtimeRegistration: true,
+        activate: true,
+      }).runtimeRegistration,
+    ).toBe(false);
   });
 
   it("reuses prepared install records from the compatible metadata generation", () => {

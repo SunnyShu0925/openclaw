@@ -190,6 +190,7 @@ function buildCacheKey(params: {
   pluginSdkResolution?: PluginSdkResolutionPreference;
   coreGatewayMethodNames?: string[];
   activate?: boolean;
+  runtimeRegistration?: boolean;
 }): string {
   const discoveryContext = resolvePluginDiscoveryContext({
     workspaceDir: params.workspaceDir,
@@ -227,7 +228,12 @@ function buildCacheKey(params: {
     params.resolveRawConfigEnvVars === true ? "resolve-raw-env" : "runtime-config";
   const moduleLoadMode = params.loadModules === false ? "manifest-only" : "load-modules";
   const discoveryMode = params.toolDiscovery === true ? "tool-discovery" : "default-discovery";
-  const activationMode = params.activate === false ? "snapshot" : "active";
+  const activationMode =
+    params.runtimeRegistration === true
+      ? "runtime"
+      : params.activate === false
+        ? "snapshot"
+        : "active";
   const cacheIdentity = `${roots.workspace ?? ""}::${roots.global ?? ""}::${roots.stock ?? ""}::${JSON.stringify(
     {
       bundledPackage,
@@ -388,6 +394,7 @@ export function resolvePluginLoadCacheContext(options: PluginLoadOptions = {}) {
     pluginSdkResolution: options.pluginSdkResolution,
     coreGatewayMethodNames,
     activate: options.activate,
+    runtimeRegistration: options.runtimeRegistration,
   });
   return {
     env,
@@ -404,6 +411,7 @@ export function resolvePluginLoadCacheContext(options: PluginLoadOptions = {}) {
     channelPluginLoadIntent,
     preferBuiltPluginArtifacts,
     shouldActivate: options.activate !== false,
+    runtimeRegistration: options.runtimeRegistration === true && options.activate !== true,
     shouldLoadModules: options.loadModules !== false,
     runtimeSubagentMode,
     installRecords,
