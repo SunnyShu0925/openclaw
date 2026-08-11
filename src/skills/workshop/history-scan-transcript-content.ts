@@ -34,7 +34,7 @@ function hasLegacyHookTranscriptContent(messages: readonly unknown[]): boolean {
     return (
       (rendered.includes("<<<EXTERNAL_UNTRUSTED_CONTENT") &&
         /(?:^|\n)Source: (?:Email|Webhook)(?:\n|$)/.test(rendered)) ||
-      /(?:^|\n)\[cron:[^\]\n]+\](?: |$)/.test(rendered)
+      /(?:^|\n)\[cron:[^\]\n]+\](?: |$)/i.test(rendered)
     );
   });
 }

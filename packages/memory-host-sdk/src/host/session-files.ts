@@ -52,7 +52,7 @@ export {
 const SESSION_EXPORT_CONTENT_WRAP_CHARS = 800;
 const SESSION_ENTRY_PARSE_YIELD_LINES = 250;
 const MAX_DATE_TIMESTAMP_MS = 8_640_000_000_000_000;
-const DIRECT_CRON_PROMPT_RE = /^\[cron:[^\]]+\]\s*/;
+const DIRECT_CRON_PROMPT_RE = /^\[cron:[^\]]+\]\s*/i;
 
 export type SessionFileEntry = {
   path: string;

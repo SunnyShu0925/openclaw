@@ -52,6 +52,6 @@ export function includesSystemEventToken(cleanedBody: string, eventText: string)
     // that one known wrapper before matching so the dream sentinel still triggers
     // without falling back to a broad substring match (which would let any user
     // message embedding the token surface as a dream cron firing).
-    return trimmed.replace(/^\[cron:[^\]]+\]\s*/, "") === normalizedEventText;
+    return trimmed.replace(/^\[cron:[^\]]+\]\s*/i, "") === normalizedEventText;
   });
 }
