@@ -5,6 +5,7 @@ import {
   createNewerSqliteSchemaVersionError,
   readSqliteUserVersion,
 } from "../infra/sqlite-user-version.js";
+import { applySqliteJournalModePolicy } from "../infra/sqlite-wal.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import {
@@ -76,6 +77,15 @@ export function migrateOpenClawAgentDatabaseForMaintenance(options: {
   const database = openNodeSqliteDatabase(options.pathname);
   try {
     database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+    // Apply the filesystem journal-mode policy BEFORE any schema metadata read
+    // or maintenance write: an existing WAL database on a network/virtiofs-backed
+    // volume must transition to rollback (DELETE) before agent maintenance can
+    // touch the WAL sidecars (issue #120549).
+    applySqliteJournalModePolicy(database, {
+      busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+      databaseLabel: "openclaw-agent:maintenance",
+      databasePath: options.pathname,
+    });
     const metadata = readExistingAgentSchemaMeta(database);
     if (!metadata) {
       return;

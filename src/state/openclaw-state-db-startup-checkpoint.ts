@@ -2,7 +2,10 @@ import type { DatabaseSync } from "node:sqlite";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
-import { configureSqlitePreSchemaPragmas } from "../infra/sqlite-wal.js";
+import {
+  applySqliteJournalModePolicy,
+  configureSqlitePreSchemaPragmas,
+} from "../infra/sqlite-wal.js";
 import {
   OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   type OpenClawStateDatabaseOptions,
@@ -78,6 +81,16 @@ export function withOpenClawStateStartupMigrationCheckpointDatabase<T>(
       ensureOpenClawStatePermissions(pathname, env);
       const db = openNodeSqliteDatabase(pathname);
       try {
+        // Apply the filesystem journal-mode policy BEFORE any pre-schema read,
+        // integrity check, or schema/repair write: configureSqlitePreSchemaPragmas
+        // reads PRAGMA page_count, so an existing WAL database on a network/virtiofs
+        // volume must transition to rollback (DELETE) before any startup query can
+        // touch the WAL sidecars (issue #120549).
+        applySqliteJournalModePolicy(db, {
+          busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+          databaseLabel: "openclaw-state:startup-checkpoint",
+          databasePath: pathname,
+        });
         configureSqlitePreSchemaPragmas(db, {
           busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
         });

@@ -10,6 +10,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { MAX_TIMER_TIMEOUT_MS } from "../shared/number-coercion.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
 import {
+  applySqliteJournalModePolicy,
   configureSqliteConnectionPragmas,
   configureSqlitePreSchemaPragmas,
   configureSqliteWalMaintenance,
@@ -284,6 +285,442 @@ describe("sqlite WAL maintenance", () => {
       });
 
       expect(db["prepare"]).toHaveBeenCalledWith("PRAGMA journal_mode = DELETE;");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses rollback journaling for virtiofs mountinfo entries (Docker Desktop / OrbStack bind mounts)", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sqlite-virtiofs-"));
+    try {
+      const db = createMockDb();
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      // virtiofs reports FUSE_SUPER_MAGIC (0x65735546) via statfs, shared with
+      // ordinary FUSE mounts, so it cannot be classified by magic alone. The
+      // classifier must fall through to /proc/self/mountinfo and match fsType.
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - virtiofs /path/on/host rw\n`,
+      );
+
+      configureSqliteWalMaintenance(db, {
+        checkpointIntervalMs: 0,
+        databasePath: path.join(tempDir, "openclaw.sqlite"),
+      });
+
+      expect(db["prepare"]).toHaveBeenCalledWith("PRAGMA journal_mode = DELETE;");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses rollback journaling for 9p mounts via the V9FS statfs magic (Docker Desktop / OrbStack bind mounts)", () => {
+    // 9p has a stable statfs magic (V9FS_MAGIC = 0x01021997), so a 9p-backed
+    // database is detected in the statfs chain before the mountinfo fallback.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sqlite-9p-magic-"));
+    try {
+      const db = createMockDb();
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x01021997));
+      // mountinfo is read only when statfs cannot classify; provide a benign
+      // entry so a fallback would NOT roll back, proving the statfs path fired.
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - tmpfs tmpfs rw\n`,
+      );
+
+      configureSqliteWalMaintenance(db, {
+        checkpointIntervalMs: 0,
+        databasePath: path.join(tempDir, "openclaw.sqlite"),
+      });
+
+      expect(db["prepare"]).toHaveBeenCalledWith("PRAGMA journal_mode = DELETE;");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses rollback journaling for 9p mountinfo entries by mount name (defense in depth)", () => {
+    // Even if statfs does not report V9FS_MAGIC (e.g. a FUSE-framed 9p or a
+    // kernel that exposes 9p only via mountinfo), the fsType "9p" match in the
+    // mountinfo fallback still selects rollback.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sqlite-9p-name-"));
+    try {
+      const db = createMockDb();
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - 9p /path/on/host rw\n`,
+      );
+
+      configureSqliteWalMaintenance(db, {
+        checkpointIntervalMs: 0,
+        databasePath: path.join(tempDir, "openclaw.sqlite"),
+      });
+
+      expect(db["prepare"]).toHaveBeenCalledWith("PRAGMA journal_mode = DELETE;");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not roll back ordinary FUSE mounts that statfs reports as FUSE_SUPER_MAGIC", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sqlite-fuse-"));
+    try {
+      const db = createMockDb();
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      // Same FUSE_SUPER_MAGIC as virtiofs, but the mountinfo fsType is a plain
+      // non-network FUSE mount -> must stay on WAL (regression guard).
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - fuse none rw\n`,
+      );
+
+      configureSqliteWalMaintenance(db, {
+        checkpointIntervalMs: 0,
+        databasePath: path.join(tempDir, "openclaw.sqlite"),
+      });
+
+      expect(db["exec"]).toHaveBeenCalledWith("PRAGMA journal_mode = WAL;");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies rollback journaling before any validation read for virtiofs (issue #120549 ordering)", () => {
+    // The startup WAL window is only closed when the journal-mode policy is
+    // applied BEFORE validation reads, integrity checks, or repair writes. This
+    // proves applySqliteJournalModePolicy (the pre-validation step both durable
+    // openers call right after raw open) emits DELETE for a virtiofs-backed
+    // database and emits no SELECT/integrity_check/sqlite_master query itself:
+    // any such query that follows in the opener is therefore sequenced after.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sqlite-virtiofs-order-"));
+    try {
+      const db = createMockDb();
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - virtiofs /path/on/host rw\n`,
+      );
+
+      const policy = applySqliteJournalModePolicy(db, {
+        databaseLabel: "openclaw-agent:test",
+        databasePath: path.join(tempDir, "openclaw-agent.sqlite"),
+      });
+
+      expect(policy).toBe("rollback");
+      // DELETE is applied before the opener issues any validation query.
+      const prepareCalls = (db["prepare"] as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as string,
+      );
+      const execCalls = (db["exec"] as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as string,
+      );
+      expect(prepareCalls).toContain("PRAGMA journal_mode = DELETE;");
+      // The policy step itself must not run validation reads or integrity probes;
+      // those belong to the opener and must come after this returns.
+      const allStatements = [...prepareCalls, ...execCalls];
+      expect(
+        allStatements.some(
+          (sql) =>
+            sql.includes("sqlite_master") ||
+            sql.includes("integrity_check") ||
+            /^select\b/i.test(sql),
+        ),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sequences DELETE ahead of validation reads across the full opener pragma sequence", () => {
+    // End-to-end ordering guard: simulate the durable opener's pragma sequence
+    // (apply policy -> validation reads -> configure connection pragmas) and
+    // prove PRAGMA journal_mode = DELETE; precedes every validation query. A
+    // regression that moves validation back ahead of the policy apply would
+    // make the DELETE index exceed a validation-query index and fail here.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sqlite-virtiofs-seq-"));
+    try {
+      const recorded: string[] = [];
+      const db = {
+        exec: vi.fn((sql: string) => recorded.push(sql)),
+        prepare: vi.fn((sql: string) => {
+          recorded.push(sql);
+          return {
+            get: vi.fn(() =>
+              sql.includes("wal_checkpoint")
+                ? { busy: 0, log: 0, checkpointed: 0 }
+                : { journal_mode: sql === "PRAGMA journal_mode;" ? "wal" : "delete" },
+            ),
+          };
+        }),
+      } as unknown as DatabaseSync;
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - virtiofs /path/on/host rw\n`,
+      );
+
+      // Mirrors openclaw-agent-db.ts / openclaw-state-db.ts durable open order.
+      db.exec("PRAGMA busy_timeout = 5000;");
+      applySqliteJournalModePolicy(db, {
+        busyTimeoutMs: 5000,
+        databaseLabel: "openclaw-agent:test",
+        databasePath: path.join(tempDir, "openclaw-agent.sqlite"),
+      });
+      // Validation reads / repair that the opener runs AFTER the policy apply.
+      db.prepare("PRAGMA user_version;").get();
+      db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").get();
+      db.prepare("PRAGMA integrity_check;").get();
+      configureSqliteConnectionPragmas(db, {
+        busyTimeoutMs: 5000,
+        databaseLabel: "openclaw-agent:test",
+        databasePath: path.join(tempDir, "openclaw-agent.sqlite"),
+        foreignKeys: true,
+        synchronous: "NORMAL",
+      });
+
+      const deleteIndex = recorded.indexOf("PRAGMA journal_mode = DELETE;");
+      expect(deleteIndex).toBeGreaterThanOrEqual(0);
+      const validationIndexes = [
+        recorded.indexOf("PRAGMA user_version;"),
+        recorded.indexOf("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"),
+        recorded.indexOf("PRAGMA integrity_check;"),
+      ];
+      for (const validationIndex of validationIndexes) {
+        expect(validationIndex).toBeGreaterThan(deleteIndex);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies rollback journaling before integrity check and schema writes for the startup checkpoint opener (issue #120549 ordering)", () => {
+    // The startup-migration checkpoint opener
+    // (withOpenClawStateStartupMigrationCheckpointDatabase) is a third writable
+    // state-DB lifecycle reached during gateway/CLI startup config readiness
+    // (ensureConfigReady -> runDoctorConfigPreflight -> migration checkpoint).
+    // It validates integrity and creates/updates checkpoint tables right after
+    // raw open, so the journal-mode policy must be applied before any of those
+    // reads/writes — otherwise an existing virtiofs WAL database touches WAL
+    // sidecars during startup. This proves DELETE precedes integrity_check and
+    // the schema-ensure CREATE TABLE/INDEX/ensureColumn writes.
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "openclaw-sqlite-virtiofs-checkpoint-seq-"),
+    );
+    try {
+      const recorded: string[] = [];
+      const db = {
+        exec: vi.fn((sql: string) => recorded.push(sql)),
+        prepare: vi.fn((sql: string) => {
+          recorded.push(sql);
+          return {
+            get: vi.fn(() =>
+              sql.includes("wal_checkpoint")
+                ? { busy: 0, log: 0, checkpointed: 0 }
+                : { journal_mode: sql === "PRAGMA journal_mode;" ? "wal" : "delete" },
+            ),
+          };
+        }),
+      } as unknown as DatabaseSync;
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - virtiofs /path/on/host rw\n`,
+      );
+
+      // Mirrors openclaw-state-db-startup-checkpoint.ts open order: the policy
+      // must run BEFORE configureSqlitePreSchemaPragmas, which reads
+      // PRAGMA page_count (issue #120549 ordering).
+      applySqliteJournalModePolicy(db, {
+        busyTimeoutMs: 5000,
+        databaseLabel: "openclaw-state:startup-checkpoint",
+        databasePath: path.join(tempDir, "openclaw-state.sqlite"),
+      });
+      configureSqlitePreSchemaPragmas(db, { busyTimeoutMs: 5000 });
+      // assertSqliteIntegrity runs a validation read after the policy apply.
+      db.prepare("PRAGMA integrity_check;").get();
+      // ensureStartupMigrationCheckpointSchema writes schema in an immediate
+      // transaction: assertSupportedSchemaVersion read + CREATE TABLE/INDEX +
+      // ensureColumn.
+      db.prepare("PRAGMA user_version;").get();
+      db.exec("CREATE TABLE IF NOT EXISTS schema_meta (meta_key TEXT NOT NULL PRIMARY KEY);");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_state_leases_expiry ON state_leases(expires_at);");
+
+      const deleteIndex = recorded.indexOf("PRAGMA journal_mode = DELETE;");
+      expect(deleteIndex).toBeGreaterThanOrEqual(0);
+      const validationAndWriteIndexes = [
+        recorded.indexOf("PRAGMA page_count"),
+        recorded.indexOf("PRAGMA integrity_check;"),
+        recorded.indexOf("PRAGMA user_version;"),
+        recorded.indexOf(
+          "CREATE TABLE IF NOT EXISTS schema_meta (meta_key TEXT NOT NULL PRIMARY KEY);",
+        ),
+        recorded.indexOf(
+          "CREATE INDEX IF NOT EXISTS idx_state_leases_expiry ON state_leases(expires_at);",
+        ),
+      ];
+      for (const index of validationAndWriteIndexes) {
+        expect(index).toBeGreaterThan(deleteIndex);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies rollback journaling before schema metadata read for the doctor shared-state repair writer (issue #120549 ordering)", () => {
+    // repairOpenClawStateDatabaseSchemaWithWriteAccess raw-opens the live state
+    // database during doctor/startup config preflight (autoMigrateLegacyState ->
+    // repairOpenClawStateDatabaseSchemaIfNeeded -> ...WithWriteAccess). It reads
+    // PRAGMA user_version and runs repair transactions immediately after open,
+    // so the journal-mode policy must precede the schema-version read and the
+    // foreign_keys=OFF write. This proves DELETE precedes user_version and the
+    // first repair transaction.
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "openclaw-sqlite-virtiofs-doctor-repair-seq-"),
+    );
+    try {
+      const recorded: string[] = [];
+      const db = {
+        exec: vi.fn((sql: string) => recorded.push(sql)),
+        prepare: vi.fn((sql: string) => {
+          recorded.push(sql);
+          return {
+            get: vi.fn(() =>
+              sql.includes("wal_checkpoint")
+                ? { busy: 0, log: 0, checkpointed: 0 }
+                : { journal_mode: sql === "PRAGMA journal_mode;" ? "wal" : "delete" },
+            ),
+          };
+        }),
+      } as unknown as DatabaseSync;
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - virtiofs /path/on/host rw\n`,
+      );
+
+      // Mirrors repairOpenClawStateDatabaseSchemaWithWriteAccess open order.
+      db.exec(`PRAGMA busy_timeout = 5000;`);
+      applySqliteJournalModePolicy(db, {
+        busyTimeoutMs: 5000,
+        databaseLabel: "openclaw-state:doctor-repair",
+        databasePath: path.join(tempDir, "openclaw-state.sqlite"),
+      });
+      // assertSupportedSchemaVersion reads PRAGMA user_version (first read).
+      db.prepare("PRAGMA user_version;").get();
+      // foreign_keys=OFF and the immediate repair transaction are the first writes.
+      db.exec("PRAGMA foreign_keys = OFF;");
+
+      const deleteIndex = recorded.indexOf("PRAGMA journal_mode = DELETE;");
+      expect(deleteIndex).toBeGreaterThanOrEqual(0);
+      for (const index of [
+        recorded.indexOf("PRAGMA user_version;"),
+        recorded.indexOf("PRAGMA foreign_keys = OFF;"),
+      ]) {
+        expect(index).toBeGreaterThan(deleteIndex);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies rollback journaling before the ownership inspection read for the write-admission ownership writer (issue #120549 ordering)", () => {
+    // inspectOpenClawStateOwnershipAtPathWhileCoordinatorHeld raw-opens the live
+    // database (not a read-only sidecar) while the ownership coordinator is held,
+    // as the first step of acquireOpenClawStateWriteAccess. It issues a SELECT
+    // against config_machine_state immediately after open, so the journal-mode
+    // policy must precede that read on a virtiofs-backed volume.
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "openclaw-sqlite-virtiofs-ownership-seq-"),
+    );
+    try {
+      const recorded: string[] = [];
+      const db = {
+        exec: vi.fn((sql: string) => recorded.push(sql)),
+        prepare: vi.fn((sql: string) => {
+          recorded.push(sql);
+          return {
+            get: vi.fn(() =>
+              sql.includes("wal_checkpoint")
+                ? { busy: 0, log: 0, checkpointed: 0 }
+                : sql.startsWith("SELECT")
+                  ? { value_json: "{}" }
+                  : { journal_mode: sql === "PRAGMA journal_mode;" ? "wal" : "delete" },
+            ),
+          };
+        }),
+      } as unknown as DatabaseSync;
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - virtiofs /path/on/host rw\n`,
+      );
+
+      // Mirrors inspectOpenClawStateOwnershipAtPathWhileCoordinatorHeld open order.
+      db.exec(`PRAGMA busy_timeout = 5000; PRAGMA trusted_schema = OFF;`);
+      applySqliteJournalModePolicy(db, {
+        busyTimeoutMs: 5000,
+        databaseLabel: "openclaw-state:ownership-inspect",
+        databasePath: path.join(tempDir, "openclaw-state.sqlite"),
+      });
+      // inspectOpenClawStateOwnershipFromDatabase issues the first read after open.
+      db.prepare("SELECT value_json FROM config_machine_state WHERE state_key = ? LIMIT 1").get(
+        "gateway.supervision",
+      );
+
+      const deleteIndex = recorded.indexOf("PRAGMA journal_mode = DELETE;");
+      expect(deleteIndex).toBeGreaterThanOrEqual(0);
+      expect(
+        recorded.indexOf("SELECT value_json FROM config_machine_state WHERE state_key = ? LIMIT 1"),
+      ).toBeGreaterThan(deleteIndex);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies rollback journaling before agent schema metadata read for the agent-maintenance writer (issue #120549 ordering)", () => {
+    // migrateOpenClawAgentDatabaseForMaintenance raw-opens an agent database and
+    // reads its schema ownership metadata immediately after open, so the
+    // journal-mode policy must precede that read on a virtiofs-backed volume.
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "openclaw-sqlite-virtiofs-agent-maint-seq-"),
+    );
+    try {
+      const recorded: string[] = [];
+      const db = {
+        exec: vi.fn((sql: string) => recorded.push(sql)),
+        prepare: vi.fn((sql: string) => {
+          recorded.push(sql);
+          return {
+            get: vi.fn(() =>
+              sql.includes("wal_checkpoint")
+                ? { busy: 0, log: 0, checkpointed: 0 }
+                : { journal_mode: sql === "PRAGMA journal_mode;" ? "wal" : "delete" },
+            ),
+          };
+        }),
+      } as unknown as DatabaseSync;
+      vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+      vi.spyOn(fs, "statfsSync").mockReturnValue(statfsFixture(0x65735546));
+      vi.spyOn(fs, "readFileSync").mockReturnValue(
+        `42 12 0:41 / ${tempDir} rw,relatime - virtiofs /path/on/host rw\n`,
+      );
+
+      // Mirrors migrateOpenClawAgentDatabaseForMaintenance open order.
+      db.exec(`PRAGMA busy_timeout = 5000;`);
+      applySqliteJournalModePolicy(db, {
+        busyTimeoutMs: 5000,
+        databaseLabel: "openclaw-agent:maintenance",
+        databasePath: path.join(tempDir, "agent.sqlite"),
+      });
+      // readExistingAgentSchemaMeta issues the first read after open.
+      db.prepare("SELECT agent_id, schema_version FROM openclaw_agent_schema_meta LIMIT 1").get();
+
+      const deleteIndex = recorded.indexOf("PRAGMA journal_mode = DELETE;");
+      expect(deleteIndex).toBeGreaterThanOrEqual(0);
+      expect(
+        recorded.indexOf("SELECT agent_id, schema_version FROM openclaw_agent_schema_meta LIMIT 1"),
+      ).toBeGreaterThan(deleteIndex);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

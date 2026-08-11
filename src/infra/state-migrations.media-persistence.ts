@@ -43,6 +43,7 @@ import { replaceFileAtomicSync } from "./replace-file.js";
 import { repairCanonicalSqliteIndexes } from "./sqlite-index-schema.js";
 import { runSqliteImmediateTransactionSync } from "./sqlite-transaction.js";
 import { readSqliteUserVersion } from "./sqlite-user-version.js";
+import { applySqliteJournalModePolicy } from "./sqlite-wal.js";
 import { resolveAgentDatabaseMediaMigrationTargets } from "./state-migrations.media-persistence-targets.js";
 import type { MigrationMessages } from "./state-migrations.types.js";
 
@@ -312,6 +313,16 @@ function migrateAgentDatabase(params: {
   const database = openNodeSqliteDatabase(params.pathname);
   try {
     database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+    // Apply the filesystem journal-mode policy BEFORE any ownership/version
+    // metadata read or migration write: Doctor invokes this migration, so an
+    // existing WAL database on a virtiofs/9p-backed volume must transition to
+    // rollback (DELETE) before the media-persistence migration can touch the
+    // WAL sidecars (issue #120549).
+    applySqliteJournalModePolicy(database, {
+      busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+      databaseLabel: `openclaw-agent:media-migration:${params.agentId}`,
+      databasePath: params.pathname,
+    });
     let metadata = assertOpenClawAgentDatabaseOwner(database, {
       agentId: params.agentId,
       pathname: params.pathname,

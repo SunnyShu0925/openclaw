@@ -21,6 +21,10 @@ const LINUX_NFS_SUPER_MAGIC = 0x6969;
 const LINUX_SMB_SUPER_MAGIC = 0x517b;
 const LINUX_CIFS_SUPER_MAGIC = 0xff534d42;
 const LINUX_SMB2_SUPER_MAGIC = 0xfe534d42;
+// V9FS_MAGIC (include/uapi/linux/magic.h) — 9p mounts exposed by Docker
+// Desktop / OrbStack / Podman host<->guest bind mounts. Unlike virtiofs, 9p
+// has a stable statfs magic, so it is detected here in the statfs chain.
+const LINUX_V9FS_SUPER_MAGIC = 0x01021997;
 const PROC_MOUNTINFO_PATH = "/proc/self/mountinfo";
 // Filesystem classification runs during database open, so never let the fallback probe stall it.
 const MOUNT_COMMAND_TIMEOUT_MS = 1_000;
@@ -232,6 +236,14 @@ function resolveMountTypeJournalPolicy(entry: MountEntry): SqliteFilesystemJourn
   if (normalized.startsWith("nfs") || NETWORK_FILESYSTEM_TYPES.has(normalized)) {
     return "rollback";
   }
+  // virtiofs and 9p (Docker Desktop / OrbStack / Podman host<->guest bind
+  // mounts) cannot guarantee WAL's shared-memory/locking coherence across the
+  // VM boundary. virtiofs reports FUSE_SUPER_MAGIC via statfs (shared with
+  // ordinary FUSE), so it must be classified here by mount name; 9p has a
+  // stable statfs magic but is also matched by name for defense in depth.
+  if (normalized === "virtiofs" || normalized === "9p") {
+    return "rollback";
+  }
   if (normalized === "fuse.sshfs") {
     return "unsupported";
   }
@@ -310,13 +322,18 @@ function resolvePathJournalPolicy(targetPath: string): SqliteFilesystemJournalPo
       filesystemType === LINUX_NFS_SUPER_MAGIC ||
       filesystemType === LINUX_SMB_SUPER_MAGIC ||
       filesystemType === LINUX_CIFS_SUPER_MAGIC ||
-      filesystemType === LINUX_SMB2_SUPER_MAGIC
+      filesystemType === LINUX_SMB2_SUPER_MAGIC ||
+      filesystemType === LINUX_V9FS_SUPER_MAGIC
     ) {
       return "rollback";
     }
   } catch {
     return combineMountEntryJournalPolicies(mountLookupPaths);
   }
+  // virtiofs (Docker Desktop / OrbStack host<->guest bind mounts) reports
+  // FUSE_SUPER_MAGIC via statfs, which is shared with ordinary FUSE mounts and
+  // cannot be distinguished by magic alone. Let it fall through to the
+  // mountinfo fallback, which classifies fsType "virtiofs" as rollback (issue #120549).
   return combineMountEntryJournalPolicies(mountLookupPaths);
 }
 
@@ -430,6 +447,45 @@ function refuseUnsupportedFilesystem(options: SqliteWalMaintenanceOptions): neve
   throw new Error(
     `${label}${location} is on SSHFS, which cannot safely coordinate SQLite writes across mounts; refusing to open the database.`,
   );
+}
+
+/**
+ * Resolve and apply the filesystem journal-mode policy immediately after a raw
+ * database open, BEFORE any validation read, integrity check, or schema/repair
+ * query. On a network/virtiofs-backed volume this transitions an existing WAL
+ * database to rollback (DELETE) journaling before any startup query can touch
+ * the WAL sidecars, closing the startup WAL window (issue #120549).
+ *
+ * Only the rollback policy is applied here: enabling WAL writes the first page
+ * and would defeat `auto_vacuum = INCREMENTAL` (which must be set while the
+ * database is still empty), so WAL enablement is left to the caller's later
+ * {@link configureSqliteConnectionPragmas} call, preserving the existing
+ * pre-schema pragma ordering for local databases. Rollback (DELETE) journaling
+ * creates no WAL sidecars and does not write the first page, so applying it
+ * early is safe.
+ *
+ * Returns the resolved policy. The caller still invokes
+ * {@link configureSqliteConnectionPragmas} after validation/repair to install
+ * `synchronous`/`foreign_keys`, enable WAL for local databases, and build the
+ * WAL checkpoint maintenance handle.
+ */
+export function applySqliteJournalModePolicy(
+  db: DatabaseSync,
+  options: SqliteWalMaintenanceOptions = {},
+): SqliteFilesystemJournalPolicy {
+  if (options.busyTimeoutMs !== undefined) {
+    configureSqliteBusyTimeout(db, options.busyTimeoutMs);
+  }
+  const journalPolicy = options.databasePath
+    ? resolvePathJournalPolicy(options.databasePath)
+    : "wal";
+  if (journalPolicy === "unsupported") {
+    refuseUnsupportedFilesystem(options);
+  }
+  if (journalPolicy === "rollback") {
+    requireRollbackJournalMode(db, options);
+  }
+  return journalPolicy;
 }
 
 /** Configure safe journaling pragmas and return a handle for checkpoint/close maintenance. */

@@ -31,6 +31,7 @@ import {
 } from "../infra/sqlite-transaction.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import {
+  applySqliteJournalModePolicy,
   configureSqliteConnectionPragmas,
   configureSqlitePreSchemaPragmas,
   type SqliteWalMaintenance,
@@ -150,6 +151,15 @@ function repairOpenClawStateDatabaseSchemaWithWriteAccess(
   let ownershipRefused = false;
   try {
     db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+    // Apply the filesystem journal-mode policy BEFORE any validation read,
+    // integrity check, or schema/repair write: an existing WAL database on a
+    // network/virtiofs-backed volume must transition to rollback (DELETE)
+    // before doctor repair can touch the WAL sidecars (issue #120549).
+    applySqliteJournalModePolicy(db, {
+      busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+      databaseLabel: "openclaw-state:doctor-repair",
+      databasePath: pathname,
+    });
     assertSupportedSchemaVersion(db, pathname);
     db.exec("PRAGMA foreign_keys = OFF;");
     const changes = runSqliteImmediateTransactionSync(
@@ -517,6 +527,15 @@ function openUnpublishedOpenClawStateDatabase(
     let maintenance: SqliteWalMaintenance | undefined;
     try {
       db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+      // Apply the filesystem journal-mode policy BEFORE any validation read,
+      // integrity check, or repair write: an existing WAL database on a
+      // network/virtiofs-backed volume must transition to rollback (DELETE)
+      // before startup queries can touch the WAL sidecars (issue #120549).
+      applySqliteJournalModePolicy(db, {
+        busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+        databaseLabel: "openclaw-state",
+        databasePath: pathname,
+      });
       assertSupportedSchemaVersion(db, pathname);
       assertStateDatabaseIntegrityBeforeMutation(db, pathname);
       configureSqlitePreSchemaPragmas(db, {

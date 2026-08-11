@@ -16,6 +16,7 @@ import {
   type SqliteTransactionOptions,
 } from "../infra/sqlite-transaction.js";
 import {
+  applySqliteJournalModePolicy,
   configureSqliteConnectionPragmas,
   configureSqlitePreSchemaPragmas,
   registerSqliteCacheExitClose,
@@ -316,6 +317,15 @@ export function openOpenClawAgentDatabase(
       let maintenance: OpenClawAgentDatabase["walMaintenance"] | undefined;
       try {
         db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+        // Apply the filesystem journal-mode policy BEFORE any validation read,
+        // integrity check, or repair write: an existing WAL database on a
+        // network/virtiofs-backed volume must transition to rollback (DELETE)
+        // before startup queries can touch the WAL sidecars (issue #120549).
+        applySqliteJournalModePolicy(db, {
+          busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+          databaseLabel: `openclaw-agent:${agentId}`,
+          databasePath: pathname,
+        });
         if (!isValidatedReopen) {
           assertSupportedAgentSchemaVersion(db, pathname);
           assertExistingAgentSchemaOwner(readExistingAgentSchemaMeta(db), agentId, pathname);

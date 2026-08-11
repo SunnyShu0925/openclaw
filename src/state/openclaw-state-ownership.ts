@@ -17,6 +17,7 @@ import {
   SqliteCoordinatorError,
 } from "../infra/sqlite-coordinator.js";
 import { prepareSqliteReadOnlyLocationSync } from "../infra/sqlite-readonly-location.js";
+import { applySqliteJournalModePolicy } from "../infra/sqlite-wal.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db-contract.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import { resolveOpenClawStateDirForDatabasePath } from "./openclaw-state-db.paths.js";
@@ -168,6 +169,18 @@ function inspectOpenClawStateOwnershipAtPathWhileCoordinatorHeld(
     database.exec(
       `PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS}; PRAGMA trusted_schema = OFF;`,
     );
+    // Apply the filesystem journal-mode policy BEFORE the ownership read: this
+    // raw-opens the live database (not a read-only sidecar), so on a
+    // network/virtiofs-backed volume an existing WAL database must transition
+    // to rollback (DELETE) before the inspection query can touch the WAL
+    // sidecars (issue #120549). The coordinator guarantees single-writer
+    // admission, so switching mode here is race-free and makes the subsequent
+    // write opener's policy call a no-op.
+    applySqliteJournalModePolicy(database, {
+      busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+      databaseLabel: "openclaw-state:ownership-inspect",
+      databasePath: resolvedPath,
+    });
     return inspectOpenClawStateOwnershipFromDatabase(database, resolvedPath);
   } finally {
     database.close();
