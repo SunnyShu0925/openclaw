@@ -105,6 +105,15 @@ describe("stripModelSpecialTokens", () => {
     expect(stripModelSpecialTokens("a<|x|>\u0301<|y|>b")).toBe("a\u0301 b");
   });
 
+  it("handles supplementary-plane combining marks between removed tokens", () => {
+    // A supplementary-plane combining mark (U+1D165) is encoded as a surrogate
+    // pair; the backward mark scan must read it as a full code point, not a lone
+    // UTF-16 code unit, so the mark stays attached and only one separator fires.
+    const supMark = "\u{1D165}";
+    expect(stripModelSpecialTokens("a<|x|>" + supMark + "<|y|>b")).toBe("a" + supMark + " b");
+    expect(stripModelSpecialTokens("a<|x|><|y|>" + supMark + "b")).toBe("a" + supMark + " b");
+  });
+
   it("coalesces a long run of consecutive removed tokens into one separator", () => {
     // A long run of leaked tokens must not make the shared sanitizer quadratic:
     // the span-indexed lookup keeps the boundary decision linear in the run length

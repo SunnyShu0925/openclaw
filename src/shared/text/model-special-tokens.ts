@@ -58,11 +58,14 @@ function charBefore(text: string, pos: number): string | undefined {
   }
   let end = pos;
   while (end > 0) {
-    const prev = text[end - 1];
+    // Use a full code point (surrogate-pair aware) so supplementary-plane
+    // combining marks like U+1D165 are recognized, not just their low
+    // surrogate code unit which \p{M} would not match.
+    const prev = lastCodePointBefore(text, end);
     if (prev === undefined || !/\p{M}/u.test(prev)) {
       break;
     }
-    end -= 1;
+    end -= prev.length;
   }
   if (end <= 0) {
     return text.slice(0, pos);
