@@ -19,6 +19,7 @@ export function supportsContextEngineDurableTurnAdvancement(engine: ContextEngin
   return contract === "atomic-idempotent-v1"
     ? typeof engine.commitTurn === "function"
     : contract === "atomic-idempotent-turn-local-v1" &&
+        typeof engine.commitTurn === "function" &&
         typeof engine.commitTurnLocal === "function";
 }
 

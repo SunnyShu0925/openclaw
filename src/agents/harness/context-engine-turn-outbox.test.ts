@@ -74,6 +74,7 @@ function createPayload(params: {
     boundary,
     isHeartbeat: false,
     messages: [],
+    prePromptMessageCount: params.sequence,
   };
 }
 
@@ -135,6 +136,52 @@ describe("context-engine turn outbox", () => {
         .prepare("SELECT 1 FROM context_engine_turn_outbox WHERE advancement_key = ?")
         .get(payload.boundary.admission.logicalTurnId),
     ).toBeUndefined();
+  });
+
+  it("drains a versionless v1 row after an engine adds the turn-local contract", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-outbox-upgrade-"));
+    tempDirs.push(stateDir);
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    const payload = createPayload({
+      advancementKey: "session-a:legacy-ready",
+      databasePath: database.path,
+      sequence: 3,
+      sessionId: "session-a",
+    });
+    enqueueContextEngineTurnCommit({ database, engineId: "test", payload });
+    const commitTurn = vi.fn<NonNullable<ContextEngine["commitTurn"]>>(async () => ({
+      status: "committed",
+    }));
+    const commitTurnLocal = vi.fn<NonNullable<ContextEngine["commitTurnLocal"]>>(async () => ({
+      status: "committed",
+    }));
+    const engine = {
+      info: {
+        id: "test",
+        name: "Test",
+        transcriptSemantics: {
+          turnAdvancementIdempotency: "atomic-idempotent-turn-local-v1",
+        },
+      },
+      ingest: async () => ({ ingested: true }),
+      assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
+      compact: async () => ({ ok: true, compacted: false }),
+      commitTurn,
+      commitTurnLocal,
+    } satisfies ContextEngine;
+
+    await drainContextEngineTurnOutbox({
+      database,
+      engine,
+      engineId: "test",
+      warn: vi.fn(),
+    });
+
+    expect(commitTurn).toHaveBeenCalledWith(expect.objectContaining({ prePromptMessageCount: 3 }));
+    expect(commitTurnLocal).not.toHaveBeenCalled();
   });
 
   it("drains prior work before fresh-turn assembly and records dispatch admission", async () => {
@@ -220,6 +267,7 @@ describe("context-engine turn outbox", () => {
       ingest: async () => ({ ingested: true }),
       assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
       compact: async () => ({ ok: true, compacted: false }),
+      commitTurn: async () => ({ status: "committed" as const }),
       commitTurnLocal,
     } satisfies ContextEngine;
     const lease = {

@@ -166,6 +166,14 @@ export default function register(api) {
       return { ok: true, compacted: true };
     },
 
+    async commitTurn({ advancementKey, messages, prePromptMessageCount }) {
+      // Retain v1 while durable rows from older plugin versions can exist.
+      return await commitAcceptedTurn({
+        advancementKey,
+        messages: messages.slice(prePromptMessageCount),
+      });
+    },
+
     async commitTurnLocal({ advancementKey, messages }) {
       // Atomically store the accepted turn and advancementKey. Return
       // "duplicate" when that exact key was committed by an earlier retry.
@@ -238,11 +246,11 @@ then see the exact transcript prefix before the admitted user message. The host
 calls `commitTurnLocal` only for the accepted successful turn; failed or aborted
 turns do not advance context-engine state.
 
-The older `atomic-idempotent-v1` contract remains supported for installed
-plugins. It uses `commitTurn(...)` with transcript history through the terminal
-entry plus `prePromptMessageCount`. New and updated plugins should use the
-turn-local contract so transcript history is obtained through the cursor API
-instead of being repeated in every durable commit.
+The turn-local contract is additive: engines must also retain `commitTurn(...)`
+with the older `atomic-idempotent-v1` full-history semantics. OpenClaw uses it
+to drain durable v1 work queued before a plugin upgrade. New commits use
+`commitTurnLocal(...)`, so transcript history is obtained through the cursor
+API instead of being repeated in every durable commit.
 
 Without the full declaration and method, OpenClaw uses the legacy context path
 for the whole logical turn, including retries. The configured context-engine

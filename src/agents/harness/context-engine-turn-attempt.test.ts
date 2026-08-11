@@ -44,6 +44,7 @@ function createTurnLocalDurableLease() {
     ingest: async () => ({ ingested: true }),
     assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
     compact: async () => ({ ok: true, compacted: false }),
+    commitTurn: async () => ({ status: "committed" }),
     commitTurnLocal,
   };
   const lease = {
