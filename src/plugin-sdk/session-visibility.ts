@@ -6,7 +6,7 @@ import {
 } from "../../packages/normalization-core/src/string-coerce.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway as defaultCallGateway } from "../gateway/call.js";
-import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { listAmbientGroupWatchTargets } from "../sessions/session-state-events.js";
 import {
   listSpawnedSessionKeysWithResult,
@@ -297,6 +297,21 @@ function treeVisibilityMessage(action: SessionAccessAction): string {
   return `${actionPrefix(action)} visibility is restricted to the current session tree and any watched same-agent group sessions (tools.sessions.visibility=tree).`;
 }
 
+function resolveIncognitoSessionAccessDenial(
+  targetSessionKey: string,
+): SessionAccessResult | undefined {
+  // Session-tool output is persisted into the caller transcript. Process-only
+  // incognito sessions must stay hidden even from owners and scoped grants.
+  if (!isIncognitoSessionKey(targetSessionKey)) {
+    return undefined;
+  }
+  return {
+    allowed: false,
+    status: "forbidden",
+    error: `Session not visible from session tools: ${targetSessionKey}`,
+  };
+}
+
 type SessionVisibilityCheckerParams = {
   action: SessionAccessAction;
   defaultAgentId?: string;
@@ -323,6 +338,10 @@ function createSessionVisibilityCheckerWithResult(
   });
 
   const check = (targetSessionKey: string): SessionAccessResult => {
+    const incognitoDenial = resolveIncognitoSessionAccessDenial(targetSessionKey);
+    if (incognitoDenial) {
+      return incognitoDenial;
+    }
     if (params.action !== "list") {
       const scoped = resolveScopedSessionAccess({
         action: params.action,
@@ -422,6 +441,10 @@ export function createSessionVisibilityRowChecker(params: {
 
   const check = (row: SessionVisibilityRow): SessionAccessResult => {
     const targetSessionKey = row.key;
+    const incognitoDenial = resolveIncognitoSessionAccessDenial(targetSessionKey);
+    if (incognitoDenial) {
+      return incognitoDenial;
+    }
     const isRequesterSession =
       targetSessionKey === params.requesterSessionKey || targetSessionKey === "current";
     let targetAgentId = normalizeLowercaseStringOrEmpty(row.agentId);

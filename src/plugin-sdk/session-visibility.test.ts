@@ -161,6 +161,41 @@ describe("scoped session access providers", () => {
     expect(history.check(target).allowed).toBe(false);
   });
 
+  it("keeps incognito sessions hidden from scoped and ownership grants", () => {
+    const requesterSessionKey = "agent:main:main";
+    const targetSessionKey = "agent:main:dashboard:incognito-private";
+    const expected = {
+      allowed: false,
+      status: "forbidden",
+      error: `Session not visible from session tools: ${targetSessionKey}`,
+    } as const;
+    const unregister = createSessionVisibilityChecker.registerScopedAccessProvider(() => ({
+      expectedSessionId: "incognito-incarnation",
+    }));
+    try {
+      const direct = createSessionVisibilityChecker({
+        action: "history",
+        requesterSessionKey,
+        visibility: "all",
+        a2aPolicy: createAgentToAgentPolicy({}),
+        spawnedKeys: new Set([targetSessionKey]),
+      });
+      const row = createSessionVisibilityRowChecker({
+        action: "history",
+        requesterSessionKey,
+        visibility: "all",
+        a2aPolicy: createAgentToAgentPolicy({}),
+      });
+
+      expect(direct.check(targetSessionKey)).toEqual(expected);
+      expect(row.check({ key: targetSessionKey, spawnedBy: requesterSessionKey })).toEqual(
+        expected,
+      );
+    } finally {
+      unregister();
+    }
+  });
+
   it("fails closed when a provider throws", () => {
     const unregister = createSessionVisibilityChecker.registerScopedAccessProvider(() => {
       throw new Error("provider failure");

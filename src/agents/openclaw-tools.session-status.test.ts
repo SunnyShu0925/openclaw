@@ -2343,6 +2343,39 @@ describe("session_status tool", () => {
     expect(updateSessionStoreMock).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks explicit incognito session_status before opening its store", async () => {
+    const incognitoSessionKey = "agent:main:dashboard:incognito-private";
+    resetSessionStore({
+      "agent:main:main": { sessionId: "s-main", updatedAt: 10 },
+      [incognitoSessionKey]: {
+        sessionId: "s-incognito",
+        updatedAt: 20,
+        incognito: true,
+      },
+    });
+    mockConfig = {
+      session: { mainKey: "main", scope: "per-sender" },
+      tools: {
+        sessions: { visibility: "agent" },
+        agentToAgent: { enabled: true, allow: ["*"] },
+      },
+      agents: { defaults: { model: { primary: "openai/gpt-5.4" }, models: {} } },
+    };
+
+    const tool = getSessionStatusTool("agent:main:main");
+
+    await expect(
+      tool.execute("call-incognito-status", {
+        sessionKey: incognitoSessionKey,
+        model: "default",
+      }),
+    ).rejects.toThrow(`Session not visible from session tools: ${incognitoSessionKey}`);
+
+    expect(loadSessionStoreMock).not.toHaveBeenCalled();
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(buildStatusMessageMock).not.toHaveBeenCalled();
+  });
+
   it("blocks unsandboxed sessionId session_status outside tree visibility before mutation", async () => {
     installSameAgentVisibility("tree");
     callGatewayMock.mockImplementation(async (opts: unknown) => {
