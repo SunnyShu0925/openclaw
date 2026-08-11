@@ -13,6 +13,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
+  listSpawnedSessionKeysWithResult,
   logSessionOwnershipLookupFailure,
   lookupFailedDenialMessage,
   lookupFailedOperationMessage,
@@ -100,6 +101,14 @@ export function isExpectedSessionLookupMiss(error: unknown): boolean {
   );
 }
 
+function isUnsupportedSpawnedSessionResolve(error: unknown): boolean {
+  return (
+    error instanceof GatewayClientRequestError &&
+    error.gatewayCode === "INVALID_REQUEST" &&
+    error.message === "unknown method: sessions.resolve"
+  );
+}
+
 export async function lookupRequesterSessionOwnership(params: {
   requesterSessionKey: string;
   requesterAgentId: string;
@@ -128,6 +137,20 @@ export async function lookupRequesterSessionOwnership(params: {
   } catch (error) {
     if (isExpectedSessionLookupMiss(error)) {
       return ok(false);
+    }
+    if (isUnsupportedSpawnedSessionResolve(error)) {
+      // Older gateways may lack the exact spawned-session selector. Preserve
+      // their list-based contract without hiding operational resolver failures.
+      const listed = await listSpawnedSessionKeysWithResult({
+        requesterSessionKey: params.requesterSessionKey,
+        callGateway: gatewayCall,
+      });
+      return listed.ok
+        ? ok(
+            params.targetAgentId === params.requesterAgentId &&
+              listed.value.has(params.targetSessionKey),
+          )
+        : err(listed.error);
     }
     return err(sessionOwnershipLookupFailure(error));
   }

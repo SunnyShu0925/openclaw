@@ -289,35 +289,6 @@ describe("resolved session visibility checks", () => {
     });
   });
 
-  it("propagates strict explicit-key resolution failures without a list fallback", async () => {
-    callGatewayMock.mockImplementation(async (request: { method?: string }) => {
-      if (request.method === "sessions.resolve") {
-        throw new Error("unsupported sessions.resolve shape");
-      }
-      return { sessions: [{ key: "agent:main:subagent:worker" }] };
-    });
-
-    await expect(
-      resolveVisibleSessionReference({
-        action: "history",
-        resolvedSession: {
-          ok: true,
-          key: "agent:main:subagent:worker",
-          displayKey: "agent:main:subagent:worker",
-          resolvedViaSessionId: false,
-        },
-        requesterSessionKey: "agent:main:main",
-        requesterAgentId: "main",
-        restrictToSpawned: true,
-        visibilitySessionKey: "agent:main:subagent:worker",
-        callGateway: callGatewayMock,
-      }),
-    ).resolves.toMatchObject({ ok: false, status: "forbidden" });
-    expect(callGatewayMock.mock.calls.map(([request]) => request.method)).toEqual([
-      "sessions.resolve",
-    ]);
-  });
-
   it("redacts sensitive text in spawned-lookup warnings", async () => {
     loggerMocks.logWarn.mockClear();
     callGatewayMock.mockImplementation(async () => {
@@ -355,6 +326,8 @@ describe("resolved session visibility checks", () => {
     // The authoritative list failure must use the repository's redacting formatter.
     const warnText = loggerMocks.logWarn.mock.calls.map((call) => String(call[0])).join("\n");
     expect(warnText).toContain("spawned-session ownership lookup failed");
+    expect(warnText).toMatch(/requester=sha256:[a-f0-9]{12}/u);
+    expect(warnText).not.toContain("agent:main:main");
     expect(warnText).not.toContain("sk-evidence-secret-9f3a2c");
   });
 

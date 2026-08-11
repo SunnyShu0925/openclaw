@@ -11,6 +11,7 @@ import { GatewayClientRequestError } from "../gateway/client.js";
 import { GatewaySecretRefUnavailableError } from "../gateway/credentials.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { logWarn } from "../logger.js";
+import { redactIdentifier } from "../logging/redact-identifier.js";
 
 type GatewayCaller = typeof defaultCallGateway;
 
@@ -85,7 +86,7 @@ export function logSessionOwnershipLookupFailure(params: {
   failure: SessionOwnershipLookupFailure;
 }): void {
   logWarn(
-    `session-visibility: spawned-session ownership lookup failed for requester=${params.requesterSessionKey}: ${params.failure.diagnostic}`,
+    `session-visibility: spawned-session ownership lookup failed for requester=${redactIdentifier(params.requesterSessionKey)}: ${params.failure.diagnostic}`,
   );
 }
 

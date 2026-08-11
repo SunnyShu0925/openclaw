@@ -622,7 +622,8 @@ describe("createSessionVisibilityGuard", () => {
       expect(result.error).toMatch(/transient\); retry/i);
     }
     const warnText = loggerMocks.logWarn.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(warnText).toContain("requester=agent:main:main");
+    expect(warnText).toMatch(/requester=sha256:[a-f0-9]{12}/u);
+    expect(warnText).not.toContain("agent:main:main");
     expect(warnText).not.toContain("sk-evidence-secret-9f3a2c");
   });
 
