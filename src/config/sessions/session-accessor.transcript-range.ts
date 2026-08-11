@@ -17,6 +17,7 @@ export type ClosedTranscriptTurnReadResult =
   | {
       kind: "ok";
       messages: AgentMessage[];
+      prePromptMessageCount: number;
     }
   | {
       kind: "non-descendant" | "projection-unavailable" | "session-rebound" | "stale" | "too-large";
@@ -98,6 +99,7 @@ export function readClosedTranscriptTurn(params: {
   boundary: TranscriptTurnBoundary;
   maxEvents: number;
   maxBytes: number;
+  messageRange: "full-transcript-v1" | "turn-local-v1";
 }): ClosedTranscriptTurnReadResult {
   if (!anchorsShareTarget(params.boundary)) {
     return { kind: "session-rebound" };
@@ -217,7 +219,13 @@ export function readClosedTranscriptTurn(params: {
           .select("event.event_json")
           .where("active.session_id", "=", target.sessionId)
           .where("active.message_position", "is not", null)
-          .where("active.message_position", ">=", params.boundary.admission.activeMessagePosition)
+          .where(
+            "active.message_position",
+            ">=",
+            params.messageRange === "turn-local-v1"
+              ? params.boundary.admission.activeMessagePosition
+              : 0,
+          )
           .where("active.message_position", "<=", params.boundary.terminal.activeMessagePosition)
           .orderBy("active.message_position", "asc")
           // Read one sentinel row so an oversized turn is rejected without
@@ -238,6 +246,10 @@ export function readClosedTranscriptTurn(params: {
       return {
         kind: "ok",
         messages,
+        prePromptMessageCount:
+          params.messageRange === "turn-local-v1"
+            ? 0
+            : params.boundary.admission.activeMessagePosition,
       } as const;
     },
     {

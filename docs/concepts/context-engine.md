@@ -132,7 +132,7 @@ export default function register(api) {
       acceptedHostParams: ["sessionKey", "runtimeContext"],
       transcriptSemantics: {
         currentTurnFence: "before-current-turn-entry-v1",
-        turnAdvancementIdempotency: "atomic-idempotent-v1",
+        turnAdvancementIdempotency: "atomic-idempotent-turn-local-v1",
       },
     },
 
@@ -166,7 +166,7 @@ export default function register(api) {
       return { ok: true, compacted: true };
     },
 
-    async commitTurn({ advancementKey, messages }) {
+    async commitTurnLocal({ advancementKey, messages }) {
       // Atomically store the accepted turn and advancementKey. Return
       // "duplicate" when that exact key was committed by an earlier retry.
       return await commitAcceptedTurn({
@@ -224,9 +224,9 @@ receive every current host field.
 For durable admitted turns, declare both transcript semantics:
 
 - `currentTurnFence: "before-current-turn-entry-v1"`
-- `turnAdvancementIdempotency: "atomic-idempotent-v1"`
+- `turnAdvancementIdempotency: "atomic-idempotent-turn-local-v1"`
 
-and implement `commitTurn(...)` as one atomic, idempotent write keyed by
+and implement `commitTurnLocal(...)` as one atomic, idempotent write keyed by
 `advancementKey`. Return `{ status: "committed" }` for the first write and
 `{ status: "duplicate" }` when a host retry presents an already-committed key.
 The `messages` payload contains only the inclusive range from the admitted user
@@ -235,8 +235,14 @@ transcript during bootstrap or rebuild should read it through the transcript
 cursor API, `readSessionTranscriptVisibleMessageDelta(...)`.
 Pre-turn transcript reads during bootstrap, maintenance, assembly, and retries
 then see the exact transcript prefix before the admitted user message. The host
-calls `commitTurn` only for the accepted successful turn; failed or aborted
+calls `commitTurnLocal` only for the accepted successful turn; failed or aborted
 turns do not advance context-engine state.
+
+The older `atomic-idempotent-v1` contract remains supported for installed
+plugins. It uses `commitTurn(...)` with transcript history through the terminal
+entry plus `prePromptMessageCount`. New and updated plugins should use the
+turn-local contract so transcript history is obtained through the cursor API
+instead of being repeated in every durable commit.
 
 Without the full declaration and method, OpenClaw uses the legacy context path
 for the whole logical turn, including retries. The configured context-engine
