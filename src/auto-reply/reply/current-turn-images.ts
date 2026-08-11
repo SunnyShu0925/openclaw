@@ -167,6 +167,7 @@ export async function resolveCurrentTurnImages(params: {
       ctx: createUndescribedImageContext(params.ctx, undescribedImageAttachments),
       cfg: params.cfg,
       includeRecentHistoryImages: false,
+      includeAttachmentIndexes: true,
     });
     const images = resolved.attachments.map(
       (attachment): ImageContent => ({
@@ -175,24 +176,45 @@ export async function resolveCurrentTurnImages(params: {
         mimeType: attachment.mediaType,
       }),
     );
+    const resolvedIndexes = resolved.attachmentIndexes ?? [];
     if (images.length < undescribedImageAttachments.length) {
       logVerbose(
-        `agent-runner: native OpenClaw media resolution produced ${images.length}/${undescribedImageAttachments.length} current image attachment(s); falling back to prompt image refs`,
+        `agent-runner: native OpenClaw media resolution produced ${images.length}/${undescribedImageAttachments.length} current image attachment(s); retaining resolved images and offloading unresolved refs`,
       );
-      return resolveMergedTurnImages(entries);
     }
-    for (const [index, image] of images.entries()) {
-      appendOrderedImages({
-        entries,
-        images: [image],
-        sourceIndex: undescribedImageAttachments[index]?.index,
-      });
+    const imageByResolvedIndex = new Map(
+      resolvedIndexes.map((resolvedIndex, imageIndex) => [resolvedIndex, images[imageIndex]]),
+    );
+    for (const [subsetIndex, attachment] of undescribedImageAttachments.entries()) {
+      const image = imageByResolvedIndex.get(subsetIndex);
+      if (image) {
+        appendOrderedImages({
+          entries,
+          images: [image],
+          sourceIndex: attachment.index,
+        });
+      } else {
+        appendOrderedImages({
+          entries,
+          images: [],
+          imageOrder: ["offloaded"],
+          sourceIndex: attachment.index,
+        });
+      }
     }
     return resolveMergedTurnImages(entries);
   } catch (error) {
     logVerbose(
-      `agent-runner: media attachment image resolution failed, proceeding without native images: ${formatErrorMessage(error)}`,
+      `agent-runner: media attachment image resolution failed, retaining prompt image refs: ${formatErrorMessage(error)}`,
     );
+    for (const attachment of undescribedImageAttachments) {
+      appendOrderedImages({
+        entries,
+        images: [],
+        imageOrder: ["offloaded"],
+        sourceIndex: attachment.index,
+      });
+    }
     return resolveMergedTurnImages(entries);
   }
 }
