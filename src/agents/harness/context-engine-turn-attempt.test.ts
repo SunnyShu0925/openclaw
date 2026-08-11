@@ -1,7 +1,6 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   appendTranscriptMessage,
   readActiveTranscriptEntryAnchor,
@@ -21,13 +20,10 @@ import {
 } from "./context-engine-turn-attempt.js";
 import { enqueueContextEngineTurnIntent } from "./context-engine-turn-outbox.js";
 
-const tempDirs: string[] = [];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 afterEach(() => {
   closeOpenClawAgentDatabasesForTest();
-  for (const tempDir of tempDirs.splice(0)) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
 });
 
 // Keep durable-engine setup identical across range and recovery cases so each
@@ -74,8 +70,7 @@ async function createAcceptedTurnFixture(params: {
   prefix: string[];
   sessionId: string;
 }) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-turn-range-"));
-  tempDirs.push(tempDir);
+  const tempDir = tempDirs.make("openclaw-context-turn-range-");
   const target = {
     agentId: "main",
     sessionId: params.sessionId,
@@ -219,8 +214,7 @@ describe("accepted context-engine turn finalization", () => {
   });
 
   it("advances only the admitted durable range and rejects stale admission facts", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-context-turn-attempt-"));
-    tempDirs.push(tempDir);
+    const tempDir = tempDirs.make("openclaw-context-turn-attempt-");
     const target = {
       agentId: "main",
       sessionId: "accepted-turn",
