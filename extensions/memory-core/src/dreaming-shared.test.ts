@@ -13,7 +13,7 @@ describe("includesSystemEventToken", () => {
     expect(includesSystemEventToken(`[cron:abc-123] ${TOKEN}`, TOKEN)).toBe(true);
   });
 
-  it("matches a token wrapped by the `[Cron:<id>]` prefix used since the DeepSeek deprioritization fix", () => {
+  it("matches a token wrapped by the `[Cron:<id>]` prefix used to avoid the reserved provider prefix", () => {
     expect(includesSystemEventToken(`[Cron:abc-123] ${TOKEN}`, TOKEN)).toBe(true);
   });
 

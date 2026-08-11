@@ -543,13 +543,10 @@ export async function prepareCronRunContext(params: {
     const message = currentConversationContext
       ? `${currentConversationContext}\n\n${originalMessage}`
       : originalMessage;
-    // DeepSeek's API edge deprioritizes requests whose first user message starts
-    // with `[cron:` (case-sensitive, anchored at message start); use `[Cron:` so
-    // scheduled turns are not queued behind interactive traffic. The cron-prompt
-    // recognizers in dreaming-shared.ts / session-files.ts /
-    // history-scan-transcript-content.ts match case-insensitively, so legacy
-    // `[cron:` transcripts still parse. logWarn lines below keep `[cron:` because
-    // they never reach the provider.
+    // `[Cron:` (capital C): some provider API edges deprioritize first-user-message
+    // `^\[cron:` (case-sensitive); this spelling avoids that reserved prefix.
+    // Recognizers match case-insensitively so legacy `[cron:` transcripts still parse.
+    // logWarn lines keep `[cron:` (never sent to a provider).
     const base = `[Cron:${input.job.id} ${input.job.name}] ${message}`.trim();
     const isExternalHook =
       hookExternalContentSource !== undefined || isExternalHookSession(baseSessionKey);

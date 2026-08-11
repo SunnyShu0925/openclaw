@@ -1,8 +1,9 @@
 // Regression: cron agentTurn user-message prefix must not start with `[cron:`
-// (lowercase). DeepSeek's API edge deprioritizes requests whose first user
+// (lowercase). Some provider API edges deprioritize requests whose first user
 // message starts with `[cron:` (case-sensitive, anchored), stalling scheduled
-// turns under load. The prefix uses `[Cron:` (capital C); the cron-prompt
-// recognizers match case-insensitively to keep reading legacy `[cron:` transcripts.
+// turns under load. The prefix uses `[Cron:` (capital C) to avoid that reserved
+// prefix; the cron-prompt recognizers match case-insensitively to keep reading
+// legacy `[cron:` transcripts.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearFastTestEnv,
@@ -66,7 +67,7 @@ describe("runCronIsolatedAgentTurn cron prefix shape", () => {
   it("does not prefix the agentTurn user message with lowercase `[cron:`", async () => {
     await runCronIsolatedAgentTurn(makeParams());
     const prompt = expectEmbeddedRunPrompt();
-    // DeepSeek deprioritization trigger is `^\[cron:` (case-sensitive, anchored).
+    // Reserved provider prefix trigger is `^\[cron:` (case-sensitive, anchored).
     expect(prompt.startsWith("[cron:")).toBe(false);
   });
 

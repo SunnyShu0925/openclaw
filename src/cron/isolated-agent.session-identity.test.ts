@@ -168,8 +168,8 @@ describe("runCronIsolatedAgentTurn session identity", () => {
 
       const call = lastEmbeddedAgentCall();
       const lines = (call.prompt ?? "").split("\n");
-      // The envelope uses `[Cron:` (capital C) so DeepSeek's API edge does not
-      // deprioritize the request (see #121953); recognizers match case-insensitively.
+      // The envelope uses `[Cron:` (capital C) to avoid a reserved provider prefix;
+      // recognizers match case-insensitively.
       expect(lines[0]).toContain("[Cron:job-1");
       expect(lines[0]).toContain("do it");
       expect(lines[1]).toMatch(/^Current time: .+ \(.+\)$/);
