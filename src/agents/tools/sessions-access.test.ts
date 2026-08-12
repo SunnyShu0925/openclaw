@@ -1,7 +1,7 @@
 // Sessions access tests cover session-tool visibility policy, sandbox clamps,
 // and agent-to-agent allow rules.
-import { describe, expect, it, vi } from "vitest";
-import { cleanupTempDirs, makeTempDir } from "../../../test/helpers/temp-dir.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { GatewayCredentialsRequiredError } from "../../gateway/call.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
@@ -239,9 +239,10 @@ describe("createAgentToAgentPolicy", () => {
 });
 
 describe("createSessionVisibilityGuard", () => {
+  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
   it("allows watched group reads under tree while denying unwatched peers", () => {
-    const tempDirs: string[] = [];
-    const stateDir = makeTempDir(tempDirs, "openclaw-session-visibility-");
+    const stateDir = tempDirs.make("openclaw-session-visibility-");
     closeOpenClawStateDatabaseForTest();
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     try {
@@ -309,7 +310,6 @@ describe("createSessionVisibilityGuard", () => {
     } finally {
       closeOpenClawStateDatabaseForTest();
       vi.unstubAllEnvs();
-      cleanupTempDirs(tempDirs);
     }
   });
 
@@ -485,7 +485,9 @@ describe("createSessionVisibilityGuard", () => {
 
     const access = await resolveSessionToolAccess({
       action: "history",
+      requesterAgentId: "main",
       requesterSessionKey: "agent:main:main",
+      targetAgentId: "main",
       targetSessionKey: "agent:main:subagent:worker-999",
       requesterOwned: false,
       visibility: "tree",
@@ -496,6 +498,96 @@ describe("createSessionVisibilityGuard", () => {
     expect(access).toEqual({ allowed: true });
     expect(gateway).toHaveBeenCalledTimes(1);
     expect(gateway).toHaveBeenCalledWith(expect.objectContaining({ method: "sessions.resolve" }));
+  });
+
+  it("falls back to spawned-session listing when the exact resolver is unavailable", async () => {
+    const gateway = vi.fn(async (request: { method?: string }) => {
+      if (request.method === "sessions.resolve") {
+        throw new GatewayClientRequestError({
+          code: "INVALID_REQUEST",
+          message: "unknown method: sessions.resolve",
+        });
+      }
+      return { sessions: [{ key: "agent:main:subagent:worker" }] };
+    });
+
+    const access = await resolveSessionToolAccess({
+      action: "history",
+      requesterAgentId: "main",
+      requesterSessionKey: "agent:main:main",
+      targetAgentId: "main",
+      targetSessionKey: "agent:main:subagent:worker",
+      requesterOwned: false,
+      visibility: "tree",
+      a2aPolicy: createAgentToAgentPolicy({} as unknown as OpenClawConfig),
+      callGateway: gateway as never,
+    });
+
+    expect(access).toEqual({ allowed: true });
+    expect(gateway.mock.calls.map(([request]) => request.method)).toEqual([
+      "sessions.resolve",
+      "sessions.list",
+    ]);
+  });
+
+  it("preserves an ordinary cross-agent denial when exact ownership lookup fails", async () => {
+    const gateway = vi.fn(async () => {
+      throw new GatewayClientRequestError({
+        code: "UNAVAILABLE",
+        message: "transport timeout",
+        retryable: true,
+      });
+    });
+
+    const access = await resolveSessionToolAccess({
+      action: "send",
+      requesterAgentId: "main",
+      requesterSessionKey: "agent:main:main",
+      targetAgentId: "ops",
+      targetSessionKey: "agent:ops:main",
+      requesterOwned: false,
+      visibility: "all",
+      a2aPolicy: createAgentToAgentPolicy({} as unknown as OpenClawConfig),
+      callGateway: gateway as never,
+    });
+
+    expect(access).toEqual({
+      allowed: false,
+      status: "forbidden",
+      error:
+        "Agent-to-agent messaging is disabled. Set tools.agentToAgent.enabled=true to allow cross-agent sends.",
+    });
+    expect(gateway).not.toHaveBeenCalled();
+  });
+
+  it("retains lookup-failure guidance for a cross-agent ACP child candidate", async () => {
+    const gateway = vi.fn(async () => {
+      throw new GatewayClientRequestError({
+        code: "UNAVAILABLE",
+        message: "transport timeout",
+        retryable: true,
+      });
+    });
+
+    const access = await resolveSessionToolAccess({
+      action: "history",
+      requesterAgentId: "main",
+      requesterSessionKey: "agent:main:main",
+      targetAgentId: "codex",
+      targetSessionKey: "agent:codex:acp:child-1",
+      requesterOwned: false,
+      visibility: "tree",
+      a2aPolicy: createAgentToAgentPolicy({} as unknown as OpenClawConfig),
+      callGateway: gateway as never,
+    });
+
+    expect(access).toEqual({
+      allowed: false,
+      status: "forbidden",
+      error:
+        "Session history denied because spawned-session ownership lookup failed (transient); retry once, then ask the operator to inspect OpenClaw logs.",
+    });
+    expect(gateway).toHaveBeenCalledTimes(1);
   });
 
   it("blocks cross-agent send when agent-to-agent is disabled", async () => {
@@ -691,8 +783,7 @@ describe("createSessionVisibilityGuard", () => {
 
   it("keeps watched same-agent group reads allowed when the spawned lookup throws", async () => {
     loggerMocks.logWarn.mockClear();
-    const tempDirs: string[] = [];
-    const stateDir = makeTempDir(tempDirs, "openclaw-session-visibility-");
+    const stateDir = tempDirs.make("openclaw-session-visibility-");
     closeOpenClawStateDatabaseForTest();
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     try {
@@ -744,7 +835,6 @@ describe("createSessionVisibilityGuard", () => {
     } finally {
       closeOpenClawStateDatabaseForTest();
       vi.unstubAllEnvs();
-      cleanupTempDirs(tempDirs);
     }
   });
 });

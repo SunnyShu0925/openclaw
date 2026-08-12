@@ -165,7 +165,7 @@ describe("session reference shape detection", () => {
 });
 
 describe("resolved session visibility checks", () => {
-  it("rejects incognito targets even when the requester is the same session", async () => {
+  it("rejects incognito targets without consulting Gateway", async () => {
     const sessionKey = "agent:main:dashboard:incognito-private";
 
     await expect(
@@ -551,5 +551,215 @@ describe("resolveSessionReference", () => {
       resolvedViaSessionId: false,
     });
     expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves the main alias without probing configured-main bootstrap", async () => {
+    const result = await resolveSessionReference({
+      action: "history",
+      sessionKey: "main",
+      alias: "main",
+      mainKey: "main",
+      requesterInternalKey: "agent:main:dashboard:requester",
+      restrictToSpawned: false,
+    });
+
+    expectResolvedSessionReference(result, {
+      key: "main",
+      displayKey: "main",
+      resolvedViaSessionId: false,
+    });
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("defers explicit-key lookup to action-aware visibility resolution", async () => {
+    const result = await resolveSessionReference({
+      action: "history",
+      sessionKey: "agent:main:worker",
+      alias: "main",
+      mainKey: "main",
+      requesterInternalKey: "agent:main:main",
+      restrictToSpawned: false,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      key: "agent:main:worker",
+      displayKey: "agent:main:worker",
+      resolvedViaSessionId: false,
+      requesterOwned: false,
+    });
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown explicit session key for history", async () => {
+    callGatewayMock.mockRejectedValueOnce(
+      new GatewayClientRequestError({
+        code: "INVALID_REQUEST",
+        message: "No session found: agent:main:missing",
+      }),
+    );
+
+    const resolvedSession = await resolveSessionReference({
+      action: "history",
+      sessionKey: "agent:main:missing",
+      alias: "main",
+      mainKey: "main",
+      requesterInternalKey: "agent:main:main",
+      restrictToSpawned: false,
+    });
+    if (!resolvedSession.ok) {
+      throw new Error("Expected session reference");
+    }
+    const result = await resolveVisibleSessionReference({
+      action: "history",
+      resolvedSession,
+      requesterSessionKey: "agent:main:main",
+      restrictToSpawned: false,
+      visibilitySessionKey: "agent:main:missing",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: "error",
+      error: "No session found: agent:main:missing",
+      displayKey: "agent:main:missing",
+    });
+    expect(callGatewayMock).toHaveBeenCalledWith({
+      method: "sessions.resolve",
+      params: {
+        key: "agent:main:missing",
+        spawnedBy: undefined,
+      },
+    });
+  });
+
+  it("canonicalizes an existing explicit session key", async () => {
+    callGatewayMock.mockResolvedValueOnce({ key: "agent:ops:main" });
+
+    const resolvedSession = await resolveSessionReference({
+      action: "send",
+      sessionKey: "agent:OPS:main",
+      alias: "main",
+      mainKey: "main",
+      requesterInternalKey: "agent:main:main",
+      restrictToSpawned: false,
+    });
+    if (!resolvedSession.ok) {
+      throw new Error("Expected session reference");
+    }
+    const result = await resolveVisibleSessionReference({
+      action: "send",
+      resolvedSession,
+      requesterSessionKey: "agent:main:main",
+      restrictToSpawned: false,
+      visibilitySessionKey: "agent:OPS:main",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      key: "agent:ops:main",
+      displayKey: "agent:ops:main",
+      requesterOwned: false,
+    });
+  });
+
+  it("rejects an explicit key that canonicalizes to an incognito session", async () => {
+    callGatewayMock.mockResolvedValueOnce({ key: "agent:ops:dashboard:incognito-private" });
+
+    const resolvedSession = await resolveSessionReference({
+      action: "history",
+      sessionKey: "agent:OPS:dashboard:private",
+      alias: "main",
+      mainKey: "main",
+      requesterInternalKey: "agent:main:main",
+      restrictToSpawned: false,
+    });
+    if (!resolvedSession.ok) {
+      throw new Error("Expected session reference");
+    }
+    const result = await resolveVisibleSessionReference({
+      action: "history",
+      resolvedSession,
+      requesterSessionKey: "agent:main:main",
+      restrictToSpawned: false,
+      visibilitySessionKey: "agent:OPS:dashboard:private",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: "forbidden",
+      error: "Session not visible from session tools: agent:OPS:dashboard:private",
+      displayKey: "agent:ops:dashboard:incognito-private",
+    });
+  });
+
+  it("propagates explicit-key gateway failures", async () => {
+    callGatewayMock.mockRejectedValueOnce(new Error("gateway unavailable"));
+
+    const resolvedSession = await resolveSessionReference({
+      action: "send",
+      sessionKey: "agent:main:worker",
+      alias: "main",
+      mainKey: "main",
+      requesterInternalKey: "agent:main:main",
+      restrictToSpawned: false,
+    });
+    if (!resolvedSession.ok) {
+      throw new Error("Expected session reference");
+    }
+    const result = await resolveVisibleSessionReference({
+      action: "send",
+      resolvedSession,
+      requesterSessionKey: "agent:main:main",
+      restrictToSpawned: false,
+      visibilitySessionKey: "agent:main:worker",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: "error",
+      error: "gateway unavailable",
+      displayKey: "agent:main:worker",
+    });
+  });
+
+  it("reports an allowed missing explicit key for deliberate bootstrap", async () => {
+    callGatewayMock.mockResolvedValueOnce({});
+
+    const resolvedSession = await resolveSessionReference({
+      action: "send",
+      sessionKey: "agent:main:main",
+      alias: "main",
+      mainKey: "main",
+      requesterInternalKey: "agent:main:dashboard:requester",
+      restrictToSpawned: false,
+    });
+    if (!resolvedSession.ok) {
+      throw new Error("Expected session reference");
+    }
+    const result = await resolveVisibleSessionReference({
+      action: "send",
+      resolvedSession,
+      requesterSessionKey: "agent:main:dashboard:requester",
+      restrictToSpawned: false,
+      visibilitySessionKey: "agent:main:main",
+      allowMissingKey: true,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      key: "agent:main:main",
+      displayKey: "agent:main:main",
+      missing: true,
+      requesterOwned: false,
+    });
+    expect(callGatewayMock).toHaveBeenCalledWith({
+      method: "sessions.resolve",
+      params: {
+        key: "agent:main:main",
+        spawnedBy: undefined,
+        allowMissing: true,
+      },
+    });
   });
 });

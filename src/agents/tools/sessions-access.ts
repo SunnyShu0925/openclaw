@@ -18,7 +18,7 @@ import {
   type SessionAccessResult,
   type SessionToolsVisibility,
 } from "../../plugin-sdk/session-visibility.js";
-import { isSubagentSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { isSubagentSessionKey } from "../../routing/session-key.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
 import {
   lookupRequesterSessionOwnership,
@@ -40,7 +40,7 @@ export async function resolveSessionToolAccess(params: {
   requesterAgentId: string;
   requesterSessionKey: string;
   authorizationTargetSessionKey?: string;
-  targetAgentId?: string;
+  targetAgentId: string;
   targetSessionKey: string;
   requesterOwned: boolean;
   visibility: SessionToolsVisibility;
@@ -70,7 +70,7 @@ export async function resolveSessionToolAccess(params: {
   const check = (requesterOwned: boolean) =>
     rowChecker.check({
       key: authorizationTargetSessionKey,
-      ...(params.targetAgentId ? { agentId: params.targetAgentId } : {}),
+      agentId: params.targetAgentId,
       ...(requesterOwned ? { spawnedBy: params.requesterSessionKey } : {}),
     });
   const initial = check(false);
@@ -86,27 +86,11 @@ export async function resolveSessionToolAccess(params: {
   if (!requesterOwnedAccess.allowed) {
     return initial;
   }
-  if (params.visibility !== "tree" && params.visibility !== "all") {
-    return initial;
-  }
-  if (
-    params.targetSessionKey === params.requesterSessionKey ||
-    params.targetSessionKey === "current"
-  ) {
-    return initial;
-  }
-  try {
-    resolveAgentIdFromSessionKey(params.targetSessionKey, params.defaultAgentId);
-  } catch {
-    return initial;
-  }
   const ownership = await lookupRequesterSessionOwnership({
     requesterSessionKey: params.requesterSessionKey,
     requesterAgentId: params.requesterAgentId,
     targetSessionKey: params.targetSessionKey,
-    targetAgentId:
-      params.targetAgentId ??
-      resolveAgentIdFromSessionKey(params.targetSessionKey, params.defaultAgentId),
+    targetAgentId: params.targetAgentId,
     callGateway: params.callGateway,
   });
   if (!ownership.ok) {

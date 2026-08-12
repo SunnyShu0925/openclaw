@@ -271,11 +271,32 @@ async function requestResolvedSession(
     const agentId = normalizeOptionalString(result?.agentId);
     return { key, ...(agentId ? { agentId } : {}) };
   };
-  const result = await callGateway<{ agentId?: unknown; key?: unknown }>({
-    method: "sessions.resolve",
-    params,
-  });
-  return toResolvedSession(result);
+  try {
+    const result = await callGateway<{ agentId?: unknown; key?: unknown }>({
+      method: "sessions.resolve",
+      params,
+    });
+    return toResolvedSession(result);
+  } catch (error) {
+    const olderGatewayRejectedProbe =
+      params.allowMissing === true &&
+      error instanceof GatewayClientRequestError &&
+      error.gatewayCode === "INVALID_REQUEST" &&
+      error.message.includes("invalid sessions.resolve params") &&
+      error.message.includes("unexpected property 'allowMissing'");
+    if (!olderGatewayRejectedProbe) {
+      throw error;
+    }
+    // Protocol v4 gateways predating allowMissing reject the additive field.
+    // Retry without it for mixed-version correctness; remove at the next protocol break.
+    const legacyParams: Record<string, unknown> = { ...params };
+    delete legacyParams.allowMissing;
+    const result = await callGateway<{ agentId?: unknown; key?: unknown }>({
+      method: "sessions.resolve",
+      params: legacyParams,
+    });
+    return toResolvedSession(result);
+  }
 }
 
 function buildSessionResolveQuery(params: {

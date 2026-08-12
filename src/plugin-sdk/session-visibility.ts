@@ -6,7 +6,12 @@ import {
 } from "../../packages/normalization-core/src/string-coerce.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway as defaultCallGateway } from "../gateway/call.js";
-import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import {
+  isAcpSessionKey,
+  isIncognitoSessionKey,
+  isSubagentSessionKey,
+  resolveAgentIdFromSessionKey,
+} from "../routing/session-key.js";
 import { listAmbientGroupWatchTargets } from "../sessions/session-state-events.js";
 import {
   listSpawnedSessionKeysWithResult,
@@ -359,14 +364,18 @@ function createSessionVisibilityCheckerWithResult(
       spawnedBy: isSpawnedSession ? params.requesterSessionKey : undefined,
     });
     if (!result.allowed) {
-      // Valid targets may still be requester-owned; malformed targets keep the row checker's
-      // deterministic ownership error instead of being relabeled as a lookup failure.
+      const ownedResult = rowChecker.check({
+        key: targetSessionKey,
+        spawnedBy: params.requesterSessionKey,
+      });
+      // Preserve denials that ownership cannot change; only ownership-dependent
+      // denials should be replaced by lookup-failure guidance.
       const lookupFailed =
         spawnedKeys !== null &&
         !spawnedKeys.ok &&
         targetSessionKey !== params.requesterSessionKey &&
         targetSessionKey !== "current" &&
-        hasResolvableTargetAgent(targetSessionKey, params.defaultAgentId);
+        ownedResult.allowed;
       if (lookupFailed) {
         if (!lookupFailureLogged) {
           lookupFailureLogged = true;
@@ -386,19 +395,6 @@ function createSessionVisibilityCheckerWithResult(
   };
 
   return { check };
-}
-
-function hasResolvableTargetAgent(
-  targetSessionKey: string,
-  defaultAgentId: string | undefined,
-): boolean {
-  try {
-    resolveAgentIdFromSessionKey(targetSessionKey, defaultAgentId);
-    return true;
-  } catch {
-    // The row checker already owns the deterministic target-ownership denial.
-    return false;
-  }
 }
 
 /** Create a direct session-key visibility checker for one requester/action pair. */
@@ -477,16 +473,21 @@ export function createSessionVisibilityRowChecker(params: {
         targetSessionKey,
       );
     const isRequesterOwned = rowOwnedByRequester(row, params.requesterSessionKey) || isWatchedRead;
+    const isCrossAgent = targetAgentId !== requesterAgentId;
     // Row ownership is stronger than agent ids: ACP children may use a backend
-    // agent id while still belonging to the requester that spawned them.
+    // agent id while still belonging to the requester that spawned them. Only
+    // native child namespaces can cross that agent boundary; ordinary sessions
+    // remain subject to A2A policy even if malformed lineage claims otherwise.
     if (
       !isRequesterSession &&
       isRequesterOwned &&
+      (!isCrossAgent ||
+        isAcpSessionKey(targetSessionKey) ||
+        isSubagentSessionKey(targetSessionKey)) &&
       (params.visibility === "tree" || params.visibility === "all")
     ) {
       return { allowed: true };
     }
-    const isCrossAgent = targetAgentId !== requesterAgentId;
     if (isCrossAgent) {
       if (params.visibility !== "all") {
         return {

@@ -2493,14 +2493,16 @@ describe("session_status tool", () => {
       sessionId: "s-other",
       callId: "call6-session-id",
       expectedError: "Session status visibility is restricted.",
+      checksOwnership: false,
     },
     {
       name: "blocks sandboxed child session_status parent sessionId access outside its tree",
       sessionId: "s-parent",
       callId: "call7-parent-session-id",
       expectedError: "Session status visibility is restricted to the current session tree",
+      checksOwnership: true,
     },
-  ])("$name", async ({ sessionId, callId, expectedError }) => {
+  ])("$name", async ({ sessionId, callId, expectedError, checksOwnership }) => {
     resetSessionStore({
       "agent:main:subagent:child": {
         sessionId: "s-child",
@@ -2537,7 +2539,7 @@ describe("session_status tool", () => {
 
     expect(loadSessionStoreMock).not.toHaveBeenCalled();
     expect(updateSessionStoreMock).not.toHaveBeenCalled();
-    expect(callGatewayMock).toHaveBeenCalledTimes(3);
+    expect(callGatewayMock).toHaveBeenCalledTimes(checksOwnership ? 3 : 2);
     expect(callGatewayMock).toHaveBeenNthCalledWith(1, {
       method: "sessions.resolve",
       params: {
@@ -2556,15 +2558,17 @@ describe("session_status tool", () => {
         includeUnknown: true,
       },
     });
-    expect(callGatewayMock).toHaveBeenNthCalledWith(3, {
-      method: "sessions.resolve",
-      params: {
-        agentId: sessionId === "s-other" ? "other" : "main",
-        allowMissing: true,
-        key: sessionId === "s-other" ? "agent:other:main" : "agent:main:main",
-        spawnedBy: "agent:main:subagent:child",
-      },
-    });
+    if (checksOwnership) {
+      expect(callGatewayMock).toHaveBeenNthCalledWith(3, {
+        method: "sessions.resolve",
+        params: {
+          agentId: "main",
+          allowMissing: true,
+          key: "agent:main:main",
+          spawnedBy: "agent:main:subagent:child",
+        },
+      });
+    }
   });
 
   it("keeps legacy main requester keys for sandboxed session tree checks", async () => {
