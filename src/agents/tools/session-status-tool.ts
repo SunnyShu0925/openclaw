@@ -27,6 +27,7 @@ import {
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import {
   buildAgentMainSessionKey,
+  isIncognitoSessionKey,
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
@@ -755,7 +756,11 @@ export function createSessionStatusTool(opts?: {
             targetSessionKey: requestedKeyInput,
             requesterAgentId,
           });
-      if (!isSemanticCurrentRequest && !deferTargetOwnerResolution) {
+      // Semantic current is self for ordinary visibility, but its live-run key can
+      // still be process-only. Preserve that target for the shared guard before storage.
+      const mustCheckRequestedKeyBeforeStore =
+        !isSemanticCurrentRequest || isIncognitoSessionKey(requestedKeyInput);
+      if (mustCheckRequestedKeyBeforeStore && !deferTargetOwnerResolution) {
         const access = await checkVisibilityAccess({
           targetSessionKey: requestedKeyInput,
           targetAgentId: agentId,
@@ -942,9 +947,10 @@ export function createSessionStatusTool(opts?: {
         (!resolvedViaSessionId &&
           (requestedKeyInput === "current" ||
             (resolved.key === requestedKeyInput && agentId === requesterAgentId)));
-      const visibilityTargetKey = shouldTreatVisibilityTargetAsSelf
-        ? visibilityRequesterKey
-        : normalizeVisibilityTargetSessionKey(resolved.key, agentId);
+      const visibilityTargetKey =
+        shouldTreatVisibilityTargetAsSelf && !isIncognitoSessionKey(resolved.key)
+          ? visibilityRequesterKey
+          : normalizeVisibilityTargetSessionKey(resolved.key, agentId);
       const access = await checkVisibilityAccess({
         targetSessionKey: resolved.key,
         targetAgentId: agentId,

@@ -2373,6 +2373,46 @@ describe("session_status tool", () => {
 
     expect(loadSessionStoreMock).not.toHaveBeenCalled();
     expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(callGatewayMock).not.toHaveBeenCalled();
+    expect(buildStatusMessageMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "semantic current", args: { sessionKey: "current" } },
+    { label: "implicit no-arg", args: {} },
+  ])("blocks $label incognito live-run status before opening its store", async ({ args }) => {
+    const requesterSessionKey = "agent:main:telegram:default:direct:1234";
+    const incognitoSessionKey = "agent:main:dashboard:incognito-live-run";
+    resetSessionStore({
+      [requesterSessionKey]: { sessionId: "s-requester", updatedAt: 10 },
+      [incognitoSessionKey]: {
+        sessionId: "s-incognito-live-run",
+        updatedAt: 20,
+        incognito: true,
+      },
+    });
+    mockConfig = {
+      session: { mainKey: "main", scope: "per-sender" },
+      tools: {
+        sessions: { visibility: "agent" },
+        agentToAgent: { enabled: true, allow: ["*"] },
+      },
+      agents: { defaults: { model: { primary: "openai/gpt-5.4" }, models: {} } },
+    };
+
+    const tool = createSessionStatusTool({
+      agentSessionKey: requesterSessionKey,
+      runSessionKey: incognitoSessionKey,
+      config: mockConfig as never,
+    });
+
+    await expect(
+      tool.execute(`call-incognito-${args.sessionKey ?? "implicit"}`, args),
+    ).rejects.toThrow(`Session not visible from session tools: ${incognitoSessionKey}`);
+
+    expect(loadSessionStoreMock).not.toHaveBeenCalled();
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(callGatewayMock).not.toHaveBeenCalled();
     expect(buildStatusMessageMock).not.toHaveBeenCalled();
   });
 
