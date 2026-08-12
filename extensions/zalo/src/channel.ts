@@ -85,7 +85,7 @@ function looksLikeZaloChatId(raw: string, normalized?: string): boolean {
 
 const loadZaloChannelRuntime = createLazyRuntimeModule(() => import("./channel.runtime.js"));
 const zaloSetupWizard = createZaloSetupWizardProxy(
-  async () => (await import("./setup-surface.js")).zaloSetupWizard,
+  async () => (await import("../setup-surface.js")).zaloSetupWizard,
 );
 const zaloTextChunkLimit = 2000;
 

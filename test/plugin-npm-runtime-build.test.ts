@@ -220,6 +220,25 @@ describe("plugin npm runtime build planning", () => {
     expect(plan.runtimeBuildOutputs).toContain("./dist/setup-api.js");
   });
 
+  it("plans Zalo setup surface as a stable top-level runtime entry", () => {
+    // Regression for #122801: the published Zalo setup API lazily loads
+    // ./setup-surface.js through loadBundledEntryExportSync, so the package
+    // build must emit it as a stable top-level public surface entry. When the
+    // file lived under src/, collectTopLevelPublicSurfaceEntries skipped it and
+    // the installed package failed with "Cannot find module './setup-surface.js'".
+    const plan = expectPluginNpmRuntimeBuildPlan(
+      resolvePluginNpmRuntimeBuildPlan({
+        repoRoot,
+        packageDir: path.join(repoRoot, "extensions", "zalo"),
+      }),
+    );
+
+    expect(plan.entry["setup-surface"]).toBe(
+      path.join(repoRoot, "extensions", "zalo", "setup-surface.ts"),
+    );
+    expect(plan.runtimeBuildOutputs).toContain("./dist/setup-surface.js");
+  });
+
   it("keeps published Codex runtime imports resolvable from the host package", async () => {
     const result = await buildPluginNpmRuntime({
       repoRoot,

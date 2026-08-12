@@ -11,9 +11,9 @@ import {
   type SecretInput,
   createSetupTranslator,
 } from "openclaw/plugin-sdk/setup";
-import { inspectZaloAccount } from "./accounts.js";
-import { noteZaloTokenHelp, promptZaloAllowFrom } from "./setup-allow-from.js";
-import { zaloDmPolicy } from "./setup-core.js";
+import { inspectZaloAccount } from "./src/accounts.js";
+import { noteZaloTokenHelp, promptZaloAllowFrom } from "./src/setup-allow-from.js";
+import { zaloDmPolicy } from "./src/setup-core.js";
 
 const t = createSetupTranslator();
 
@@ -96,7 +96,7 @@ function setZaloUpdateMode(
   } as OpenClawConfig;
 }
 
-export { zaloSetupAdapter } from "./setup-core.js";
+export { zaloSetupAdapter } from "./src/setup-core.js";
 
 export const zaloSetupWizard: ChannelSetupWizard = {
   channel,
