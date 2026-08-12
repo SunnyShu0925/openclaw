@@ -434,7 +434,7 @@ describe("resolveCurrentTurnImages", () => {
     });
   });
 
-  it("retains resolved native images and offloads unresolved refs when current media partially resolves", async () => {
+  it("retains resolved native images when current media partially resolves", async () => {
     await withTestDir({ prefix: "openclaw-current-turn-partial-" }, async (base) => {
       const imagePath = path.join(base, "present.png");
       const imageBytes = Buffer.from("present-image");
@@ -462,12 +462,12 @@ describe("resolveCurrentTurnImages", () => {
           mimeType: "image/png",
         },
       ]);
-      expect(result.imageOrder).toEqual(["inline", "offloaded"]);
-      expect(result.imageSourceIndexes).toEqual([0, 1]);
+      expect(result.imageOrder).toEqual(["inline"]);
+      expect(result.imageSourceIndexes).toEqual([0]);
     });
   });
 
-  it("keeps prompt image refs when current media resolution throws", async () => {
+  it("proceeds without native images when current media resolution throws", async () => {
     vi.mocked(resolveAgentTurnAttachments).mockRejectedValueOnce(new Error("boom"));
     await withTestDir({ prefix: "openclaw-current-turn-throw-" }, async (base) => {
       const imagePath = path.join(base, "present.png");
@@ -482,8 +482,8 @@ describe("resolveCurrentTurnImages", () => {
       });
 
       expect(result.images).toBeUndefined();
-      expect(result.imageOrder).toEqual(["offloaded"]);
-      expect(result.imageSourceIndexes).toEqual([0]);
+      expect(result.imageOrder).toBeUndefined();
+      expect(result.imageSourceIndexes).toBeUndefined();
     });
   });
 });

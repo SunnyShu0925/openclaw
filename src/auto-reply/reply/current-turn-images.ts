@@ -179,7 +179,7 @@ export async function resolveCurrentTurnImages(params: {
     const resolvedIndexes = resolved.attachmentIndexes ?? [];
     if (images.length < undescribedImageAttachments.length) {
       logVerbose(
-        `agent-runner: native OpenClaw media resolution produced ${images.length}/${undescribedImageAttachments.length} current image attachment(s); retaining resolved images and offloading unresolved refs`,
+        `agent-runner: native OpenClaw media resolution produced ${images.length}/${undescribedImageAttachments.length} current image attachment(s); retaining resolved images`,
       );
     }
     const imageByResolvedIndex = new Map(
@@ -193,28 +193,13 @@ export async function resolveCurrentTurnImages(params: {
           images: [image],
           sourceIndex: attachment.index,
         });
-      } else {
-        appendOrderedImages({
-          entries,
-          images: [],
-          imageOrder: ["offloaded"],
-          sourceIndex: attachment.index,
-        });
       }
     }
     return resolveMergedTurnImages(entries);
   } catch (error) {
     logVerbose(
-      `agent-runner: media attachment image resolution failed, retaining prompt image refs: ${formatErrorMessage(error)}`,
+      `agent-runner: media attachment image resolution failed, proceeding without native images: ${formatErrorMessage(error)}`,
     );
-    for (const attachment of undescribedImageAttachments) {
-      appendOrderedImages({
-        entries,
-        images: [],
-        imageOrder: ["offloaded"],
-        sourceIndex: attachment.index,
-      });
-    }
     return resolveMergedTurnImages(entries);
   }
 }
