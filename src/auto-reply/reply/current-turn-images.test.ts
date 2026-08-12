@@ -6,8 +6,8 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
 import type { MsgContext } from "../templating.js";
-import { resolveCurrentTurnImages } from "./current-turn-images.js";
 import { resolveAgentTurnAttachments } from "./agent-turn-attachments.js";
+import { resolveCurrentTurnImages } from "./current-turn-images.js";
 
 vi.mock("./agent-turn-attachments.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./agent-turn-attachments.js")>();
