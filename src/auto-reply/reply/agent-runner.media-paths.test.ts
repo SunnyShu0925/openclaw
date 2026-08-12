@@ -980,6 +980,5 @@ describe("runReplyAgent media path normalization", () => {
     expect(call?.images).toHaveLength(1);
     expect(call?.images?.[0]).toMatchObject({ type: "image", mimeType: "image/png" });
     expect(call?.imageOrder).toEqual(["inline"]);
-    console.log("DEBUG keys:", Object.keys(call ?? {}).join(","));
   });
 });

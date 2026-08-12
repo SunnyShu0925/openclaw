@@ -216,8 +216,8 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   );
   const promptMediaForRun =
     unresolvedPaths.size > 0
-      ? promptMedia.map((fact) =>
-          unresolvedPaths.has(fact.path ?? fact.url)
+      ? (promptMedia ?? []).map((fact) =>
+          unresolvedPaths.has(fact.path ?? fact.url ?? "")
             ? { ...fact, hydrationSuppressed: true }
             : fact,
         )
