@@ -160,45 +160,26 @@ export function parseInboundMediaUri(source: string): InboundMediaUri | null {
   };
 }
 
-/**
- * Rewrites a host-local managed inbound file path to its canonical `media://inbound/<id>` URI.
- *
- * Chat-history persistence may store the physical absolute path of a managed inbound
- * media file (e.g. `<stateDir>/media/inbound/<id>`) on the `__openclaw.media[].path` fact.
- * The privacy projection must not expose that host path, but erasing it entirely leaves
- * the UI with no renderable reference. This helper returns the canonical inbound URI the
- * UI already loads through the authenticated assistant-media route when — and only when —
- * the path is provably inside the configured inbound store; every other path returns
- * `undefined` so the caller falls back to redaction.
- *
- * Safety: containment is established by resolving the candidate against
- * `getMediaDir()/inbound` and requiring a single non-escaping relative component, mirroring
- * the ownership check in `resolveInboundMediaReference` (which is async because it also
- * realpath-resolves; the projection runs synchronously and accepts the same direct-path
- * contract). A lookalike path such as `/tmp/media/inbound/<id>` is not inside the
- * configured store and is redacted, so it cannot be promoted to an authenticated media
- * capability. Malformed percent-encoded ids are also redacted: `parseInboundMediaUri`
- * throws on invalid escapes, so failures here are caught and mapped to `undefined`.
- */
+/** Converts a managed inbound path to a URI without exposing paths outside its store. */
 export function buildInboundMediaUriFromPath(source: string): string | undefined {
-  const trimmed = source.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const localPath = maybeLocalPathFromSource(trimmed);
+  const localPath = maybeLocalPathFromSource(source.trim());
   if (!localPath) {
     return undefined;
   }
   const inboundDir = path.resolve(getMediaDir(), "inbound");
-  const rel = path.relative(inboundDir, path.resolve(localPath));
+  const relativePath = path.relative(inboundDir, path.resolve(localPath));
   // The inbound id must be a single path component that does not escape the store bucket;
   // reject traversal, nested segments, and absolute/empty results.
-  if (!rel || relativePathEscapesBase(rel) || rel.includes(path.sep) || rel.includes("\\")) {
+  if (
+    !relativePath ||
+    relativePathEscapesBase(relativePath) ||
+    relativePath.includes(path.sep) ||
+    relativePath.includes("\\")
+  ) {
     return undefined;
   }
-  const candidate = `media://inbound/${rel}`;
   try {
-    const parsed = parseInboundMediaUri(candidate);
+    const parsed = parseInboundMediaUri(`media://inbound/${relativePath}`);
     return parsed?.normalizedSource;
   } catch {
     // Malformed percent-encoded ids (e.g. a stray `%`) make the URI decoder throw;
