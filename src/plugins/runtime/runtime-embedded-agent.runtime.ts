@@ -18,6 +18,9 @@ export const runPluginEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] 
   if ("admittedRunContext" in params || "preparedRunAdmission" in params) {
     throw new Error("Plugin embedded-agent execution cannot supply host run authority.");
   }
+  if ("suppressCompactionRecovery" in params || "runRecoveryMemoryFlushTurn" in params) {
+    throw new Error("Plugin embedded-agent execution cannot supply host recovery controls.");
+  }
   params.abortSignal?.throwIfAborted();
   const preparedRunAdmission = prepareAgentRunAdmission({
     cfg: params.config ?? getRuntimeConfig(),

@@ -164,4 +164,25 @@ describe("plugin embedded-agent runtime admission", () => {
       expect(mocks.runEmbeddedAgentCore).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ["suppressCompactionRecovery", true],
+    ["runRecoveryMemoryFlushTurn", async () => ({ payloads: [] })],
+  ] as const)("rejects a plugin-supplied recovery control %s", async (field, value) => {
+    await expect(
+      withPluginRuntimePluginIdScope("memory-plugin", () =>
+        runPluginEmbeddedAgent({ ...params, [field]: value } as never),
+      ),
+    ).rejects.toThrow("cannot supply host recovery controls");
+    expect(mocks.prepareAgentRunAdmission).not.toHaveBeenCalled();
+    expect(mocks.runEmbeddedAgentCore).not.toHaveBeenCalled();
+  });
+
+  it("keeps recovery controls out of the plugin-callable params type", () => {
+    const pluginParams: Parameters<PluginRuntime["agent"]["runEmbeddedAgent"]>[0] = params;
+    // @ts-expect-error suppressCompactionRecovery is host-only recovery authority
+    void pluginParams.suppressCompactionRecovery;
+    // @ts-expect-error runRecoveryMemoryFlushTurn is host-only recovery authority
+    void pluginParams.runRecoveryMemoryFlushTurn;
+  });
 });

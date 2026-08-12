@@ -10,18 +10,17 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
-import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
 import { isBenignCompactionSkipResult } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
-import { isCliRuntimeAliasForProvider } from "../../agents/model-runtime-aliases.js";
-import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { resolveSandboxConfigForAgent, resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import {
+  ownsNativeCompaction,
   resolvePersistedSessionRuntimeId,
   resolveSessionRuntimeOverrideForProvider,
+  usesCliRuntime,
 } from "../../agents/session-runtime-compat.js";
 import {
   resolveCandidateThinkingLevel,
@@ -268,13 +267,12 @@ type FollowupRuntimeParams = {
 };
 
 function followupUsesCliRuntime(params: FollowupRuntimeParams, runtimeId: string): boolean {
-  const provider = params.followupRun.run.provider;
-  if (isCliProvider(provider, params.cfg)) {
-    return true;
-  }
-  return [resolvePersistedSessionRuntimeId(params.sessionEntry), runtimeId].some((runtime) =>
-    isCliRuntimeAliasForProvider({ provider, runtime, cfg: params.cfg }),
-  );
+  return usesCliRuntime({
+    provider: params.followupRun.run.provider,
+    runtimeId,
+    cfg: params.cfg,
+    entry: params.sessionEntry,
+  });
 }
 
 function resolveFollowupContextConfigProvider(params: FollowupRuntimeParams): string {
@@ -308,11 +306,11 @@ function resolveFollowupAgentRuntimeId(params: FollowupRuntimeParams): string {
 function followupOwnsNativeCompaction(params: FollowupRuntimeParams, runtimeId: string): boolean {
   // Backends that persist resumable native transcripts must remain the sole
   // compaction owner; OpenClaw maintenance would corrupt that runtime state.
-  return (
-    resolveCliBackendConfig(runtimeId, params.cfg, {
-      agentId: params.followupRun.run.agentId,
-    })?.ownsNativeCompaction === true
-  );
+  return ownsNativeCompaction({
+    runtimeId,
+    cfg: params.cfg,
+    agentId: params.followupRun.run.agentId,
+  });
 }
 
 function resolveVisibleMemoryFlushErrorPayloads(payloads?: ReplyPayload[]): ReplyPayload[] {

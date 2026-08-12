@@ -296,7 +296,11 @@ export type LlmCompleteResult = {
 
 type RuntimeRunEmbeddedAgentParams = Omit<
   import("../../agents/embedded-agent-runner/run/params.js").RunEmbeddedAgentParams,
-  "admittedRunContext" | "preparedRunAdmission" | "skillWorkshopCollectionReconcile"
+  | "admittedRunContext"
+  | "preparedRunAdmission"
+  | "skillWorkshopCollectionReconcile"
+  | "suppressCompactionRecovery"
+  | "runRecoveryMemoryFlushTurn"
 >;
 
 type RuntimeRunEmbeddedAgent = (
