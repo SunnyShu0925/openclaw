@@ -21,6 +21,7 @@ import {
   resolvePersistedUserTurnText,
 } from "../../sessions/user-turn-transcript.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
+import { buildInboundMediaNoteProjection } from "../media-note.js";
 import type { OriginatingChannelType } from "../templating.js";
 import { resolveCurrentTurnImages } from "./current-turn-images.js";
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
@@ -28,6 +29,7 @@ import type { PreparedReplyRunAdmission } from "./get-reply-run-admission.js";
 import {
   buildPersistedMediaImageLayout,
   normalizeMessageTimestampMs,
+  suppressUnresolvedPromptMedia,
   updateRoomEventAmbientTranscriptWatermark,
 } from "./get-reply-run-helpers.js";
 import { hasInboundAudio } from "./inbound-media.js";
@@ -209,19 +211,12 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     unresolvedSourceIndexes.has(index) ? { ...fact, hydrationSuppressed: true } : fact,
   );
   const userTurnMediaForPersistence = [...persistedCtxMedia, ...(opts?.media ?? [])];
-  const unresolvedPaths = new Set(
-    [...unresolvedSourceIndexes]
-      .map((index) => persistedCtxMedia[index]?.path ?? persistedCtxMedia[index]?.url)
-      .filter((value): value is string => Boolean(value)),
-  );
-  const promptMediaForRun =
-    unresolvedPaths.size > 0
-      ? (promptMedia ?? []).map((fact) =>
-          unresolvedPaths.has(fact.path ?? fact.url ?? "")
-            ? { ...fact, hydrationSuppressed: true }
-            : fact,
-        )
-      : promptMedia;
+  const inboundMediaIndexes = buildInboundMediaNoteProjection(ctx).mediaIndexes ?? [];
+  const promptMediaForRun = suppressUnresolvedPromptMedia({
+    promptMedia: promptMedia ?? [],
+    inboundMediaIndexes,
+    unresolvedSourceIndexes,
+  });
   const mediaImageLayout = buildPersistedMediaImageLayout({
     ctx,
     media: userTurnMediaForPersistence,
