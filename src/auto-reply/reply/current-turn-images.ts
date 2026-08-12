@@ -134,6 +134,7 @@ export async function resolveCurrentTurnImages(params: {
   images?: ImageContent[];
   imageOrder?: PromptImageOrderEntry[];
   imageSourceIndexes?: Array<number | undefined>;
+  unresolvedSourceIndexes?: number[];
 }> {
   const entries: OrderedTurnImage[] = [];
   appendOrderedImages({
@@ -185,6 +186,7 @@ export async function resolveCurrentTurnImages(params: {
     const imageByResolvedIndex = new Map(
       resolvedIndexes.map((resolvedIndex, imageIndex) => [resolvedIndex, images[imageIndex]]),
     );
+    const unresolvedSourceIndexes: number[] = [];
     for (const [subsetIndex, attachment] of undescribedImageAttachments.entries()) {
       const image = imageByResolvedIndex.get(subsetIndex);
       if (image) {
@@ -193,13 +195,25 @@ export async function resolveCurrentTurnImages(params: {
           images: [image],
           sourceIndex: attachment.index,
         });
+      } else {
+        unresolvedSourceIndexes.push(attachment.index);
       }
     }
-    return resolveMergedTurnImages(entries);
+    const merged = resolveMergedTurnImages(entries);
+    return unresolvedSourceIndexes.length > 0
+      ? Object.assign(merged, { unresolvedSourceIndexes })
+      : merged;
   } catch (error) {
     logVerbose(
       `agent-runner: media attachment image resolution failed, proceeding without native images: ${formatErrorMessage(error)}`,
     );
-    return resolveMergedTurnImages(entries);
+    const merged = resolveMergedTurnImages(entries);
+    return undescribedImageAttachments.length > 0
+      ? Object.assign(merged, {
+          unresolvedSourceIndexes: undescribedImageAttachments.map(
+            (attachment) => attachment.index,
+          ),
+        })
+      : merged;
   }
 }

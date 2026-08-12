@@ -464,6 +464,7 @@ describe("resolveCurrentTurnImages", () => {
       ]);
       expect(result.imageOrder).toEqual(["inline"]);
       expect(result.imageSourceIndexes).toEqual([0]);
+      expect(result.unresolvedSourceIndexes).toEqual([1]);
     });
   });
 
@@ -484,6 +485,7 @@ describe("resolveCurrentTurnImages", () => {
       expect(result.images).toBeUndefined();
       expect(result.imageOrder).toBeUndefined();
       expect(result.imageSourceIndexes).toBeUndefined();
+      expect(result.unresolvedSourceIndexes).toEqual([0]);
     });
   });
 });

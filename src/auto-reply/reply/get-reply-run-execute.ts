@@ -204,7 +204,24 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   setChannelSourceTurnId(sessionCtx, sourceTurnId);
   const persistGroupSender = replyRoute.chatType === "group" || replyRoute.chatType === "channel";
   const ctxMediaForPersistence = normalizeMediaFacts(ctx.media);
-  const userTurnMediaForPersistence = [...ctxMediaForPersistence, ...(opts?.media ?? [])];
+  const unresolvedSourceIndexes = new Set(currentTurnImages.unresolvedSourceIndexes ?? []);
+  const persistedCtxMedia = ctxMediaForPersistence.map((fact, index) =>
+    unresolvedSourceIndexes.has(index) ? { ...fact, hydrationSuppressed: true } : fact,
+  );
+  const userTurnMediaForPersistence = [...persistedCtxMedia, ...(opts?.media ?? [])];
+  const unresolvedPaths = new Set(
+    [...unresolvedSourceIndexes]
+      .map((index) => persistedCtxMedia[index]?.path ?? persistedCtxMedia[index]?.url)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const promptMediaForRun =
+    unresolvedPaths.size > 0
+      ? promptMedia.map((fact) =>
+          unresolvedPaths.has(fact.path ?? fact.url)
+            ? { ...fact, hydrationSuppressed: true }
+            : fact,
+        )
+      : promptMedia;
   const mediaImageLayout = buildPersistedMediaImageLayout({
     ctx,
     media: userTurnMediaForPersistence,
@@ -330,7 +347,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     enqueuedAt: Date.now(),
     images: currentTurnImages.images,
     imageOrder: currentTurnImages.imageOrder,
-    media: promptMedia,
+    media: promptMediaForRun,
     // Originating channel for reply routing.
     originatingChannel: replyRoute.channel,
     originatingTo: replyRoute.to,

@@ -51,4 +51,25 @@ describe("persisted media image layout", () => {
 
     expect(layout).toEqual(image ? { slots: [{ kind: "offloaded", factIndex: 0 }] } : undefined);
   });
+
+  it("does not resurrect hydration-suppressed image facts as offloaded slots", () => {
+    const normalized = normalizeMediaFacts([
+      { path: "/tmp/readable.png", contentType: "image/png" },
+      {
+        path: "/tmp/missing.png",
+        contentType: "image/png",
+        hydrationSuppressed: true,
+      },
+    ]);
+    const layout = buildPersistedMediaImageLayout({
+      ctx: {},
+      media: normalized,
+      ctxMediaCount: normalized.length,
+      imageOrder: ["inline"],
+      imageSourceIndexes: [0],
+    });
+
+    expect(layout?.slots).toEqual([{ kind: "inline", factIndex: 0 }]);
+    expect(layout?.suppressedFactIndexes).toEqual([1]);
+  });
 });
