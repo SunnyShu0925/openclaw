@@ -24,9 +24,12 @@ export function resolveRunRetryKind(params: {
   retryingFromTranscript: boolean;
   toolMetas: Array<{ isError?: boolean; meta?: string; toolName: string }>;
 }): RunRetryKind {
+  // Only real truncation (truncatedCount > 0) is progress: a no-op recovery
+  // (truncatedCount === 0) changes no state and would otherwise refund itself
+  // into an unbounded billed loop with no retry-limit exit.
   return params.retryingFromTranscript &&
     params.preflightRecovery.route === "truncate_tool_results_only" &&
-    params.preflightRecovery.truncatedCount === 0 &&
+    (params.preflightRecovery.truncatedCount ?? 0) > 0 &&
     params.toolMetas.some((tool) => tool.isError !== true)
     ? "progress_continuation"
     : "recovery";

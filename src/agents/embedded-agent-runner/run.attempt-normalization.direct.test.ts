@@ -181,7 +181,7 @@ describe("normalizeEmbeddedRunAttempt", () => {
     expect(state.continueFromCurrentTranscript).toHaveBeenCalledOnce();
   });
 
-  it("marks a successful no-op mid-turn retry as a progress continuation", async () => {
+  it("keeps a no-op mid-turn retry (nothing trimmed) in the recovery budget", async () => {
     const state = makePromptState();
     const attempt = makeAttempt({
       route: "truncate_tool_results_only",
@@ -199,6 +199,33 @@ describe("normalizeEmbeddedRunAttempt", () => {
     if (result.action !== "retry") {
       throw new Error(`expected retry, got ${result.action}`);
     }
+    // A mid-turn recovery that trimmed nothing (truncatedCount === 0) changed no
+    // session state, so it is a fixed-point retry that must spend budget like any
+    // other recovery — not a refunded progress continuation.
+    expect(result.retryKind).toBe("recovery");
+    expect(state.continueFromCurrentTranscript).toHaveBeenCalledOnce();
+  });
+
+  it("marks a mid-turn retry that actually trimmed content as a progress continuation", async () => {
+    const state = makePromptState();
+    const attempt = makeAttempt({
+      route: "truncate_tool_results_only",
+      source: "mid-turn",
+      handled: true,
+      truncatedCount: 2,
+    });
+    attempt.toolMetas = [{ toolName: "read", isError: false }];
+
+    const input = makeNormalizationInput(attempt, state);
+    input.lastRunPromptUsage = { input: 42_000, output: 1_000, total: 43_000 };
+    const result = await normalizeEmbeddedRunAttempt(input);
+
+    expect(result.action).toBe("retry");
+    if (result.action !== "retry") {
+      throw new Error(`expected retry, got ${result.action}`);
+    }
+    // A real truncation (truncatedCount > 0) shortened the context, so the retry
+    // is genuine progress and refunds the budget.
     expect(result.retryKind).toBe("progress_continuation");
     expect(state.continueFromCurrentTranscript).toHaveBeenCalledOnce();
   });
