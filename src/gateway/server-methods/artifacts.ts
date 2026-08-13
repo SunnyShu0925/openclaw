@@ -247,13 +247,13 @@ function resolveBlockDownload(
   mimeType?: string;
   sizeBytes?: number;
 } {
-  const data = asNonEmptyString(block.data);
-  const content = asNonEmptyString(block.content);
+  const data = typeof block.data === "string" ? block.data : undefined;
+  const content = typeof block.content === "string" ? block.content : undefined;
   const url = asNonEmptyString(block.url) ?? asNonEmptyString(block.openUrl);
   const imageUrl = mediaUrlValue(block.image_url);
   const audioUrl = asNonEmptyString(block.audio_url);
   const source = asOptionalRecord(block.source);
-  const sourceData = asNonEmptyString(source?.data);
+  const sourceData = typeof source?.data === "string" ? source.data : undefined;
   const sourceUrl = asNonEmptyString(source?.url);
   const dataUrl = [url, sourceUrl, imageUrl, audioUrl, data, content, sourceData].find(
     (value) => typeof value === "string" && /^data:/i.test(value),
@@ -284,7 +284,7 @@ function resolveBlockDownload(
   if (base64) {
     return {
       mode: "bytes",
-      ...(base64.data ? { data: base64.data } : {}),
+      ...(base64.data !== undefined ? { data: base64.data } : {}),
       mimeType,
       sizeBytes,
     };
@@ -310,9 +310,9 @@ function isArtifactBlock(block: Record<string, unknown>): boolean {
   ) {
     return true;
   }
-  return Boolean(
-    block.url || block.openUrl || block.data || block.source || block.image_url || block.audio_url,
-  );
+  return typeof block.data === "string"
+    ? true
+    : Boolean(block.url || block.openUrl || block.source || block.image_url || block.audio_url);
 }
 
 function collectArtifactsFromMessage(params: {
@@ -378,7 +378,7 @@ function collectArtifactsFromMessage(params: {
       messageSeq,
       source: "session-transcript",
       download: { mode: download.mode },
-      ...(download.data ? { data: download.data } : {}),
+      ...(download.data !== undefined ? { data: download.data } : {}),
       ...(download.url ? { url: download.url } : {}),
     };
     params.artifacts.push(summary);
