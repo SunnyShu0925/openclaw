@@ -3,7 +3,7 @@ import path from "node:path";
 import {
   listAgentIds,
   resolveAgentWorkspaceDir,
-  resolveDefaultAgentId,
+  tryResolveSoleAgentId,
 } from "../agents/agent-scope.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -51,9 +51,7 @@ function proposalWorkspace(record: SkillProposalRecord): string {
 }
 
 function configuredAgentIds(config: OpenClawConfig): string[] {
-  return [
-    ...new Set([resolveDefaultAgentId(config), ...listAgentIds(config)].map(normalizeAgentId)),
-  ];
+  return [...new Set(listAgentIds(config).map(normalizeAgentId))];
 }
 
 function inferOwnerAgentId(params: {
@@ -69,7 +67,7 @@ function inferOwnerAgentId(params: {
     try {
       return resolveAgentIdFromSessionKey(
         params.record.origin.sessionKey,
-        resolveDefaultAgentId(params.config),
+        tryResolveSoleAgentId(params.config),
       );
     } catch {
       // Fall through to the workspace and single-agent evidence below.

@@ -389,4 +389,74 @@ describe("doctor Skill Workshop SQLite migration", () => {
     ]);
     await expect(fs.access(path.join(ambiguousDir, "proposal.json"))).resolves.toBeUndefined();
   });
+
+  it("migrates a proposal under a multi-agent config without a default marker", async () => {
+    // Regression for BUG-055: configuredAgentIds previously called the deprecated
+    // resolveDefaultAgentId, which throws AgentSelectionRequiredError whenever more
+    // than one agent is configured without a sole default marker. That crash escaped
+    // migrateProposal as a per-proposal warning, silently skipping every legacy
+    // proposal during `openclaw doctor` repair.
+    const mainWorkspace = await tempDirs.make("openclaw-workshop-multi-main-");
+    const otherWorkspace = await tempDirs.make("openclaw-workshop-multi-other-");
+    const proposalId = "multi-agent-workshop-20260813-1234567890";
+    const proposalDir = path.join(testState.stateDir, "skill-workshop", "proposals", proposalId);
+    const targetDir = path.join(otherWorkspace, "skills", "multi-agent-workshop");
+    const now = "2026-08-13T00:00:00.000Z";
+    const content = renderProposalMarkdown({
+      name: "multi-agent-workshop",
+      description: "Migrate under a multi-agent config with no default marker",
+      content: "# Multi-Agent Workshop\n\nOwner inferred from workspace.\n",
+      date: now,
+    });
+    const record: SkillProposalRecord = {
+      schema: SKILL_WORKSHOP_SCHEMA,
+      id: proposalId,
+      kind: "create",
+      status: "pending",
+      title: "Create Multi-Agent Workshop",
+      description: "Migrate under a multi-agent config with no default marker",
+      createdAt: now,
+      updatedAt: now,
+      createdBy: "cli",
+      // No origin.agentId or origin.sessionKey: forces inferOwnerAgentId through the
+      // configuredAgentIds + workspace-match path that previously crashed.
+      origin: { runId: "multi-agent-run" },
+      originRunIds: ["multi-agent-run"],
+      originRunMutationCounts: { "multi-agent-run": 1 },
+      proposedVersion: "v1",
+      draftFile: "PROPOSAL.md",
+      draftHash: hashSkillProposalContent(content),
+      target: {
+        skillName: "Multi-Agent Workshop",
+        skillKey: "multi-agent-workshop",
+        skillDir: targetDir,
+        skillFile: path.join(targetDir, "SKILL.md"),
+        source: "openclaw-workspace",
+      },
+      scan: {
+        state: "clean",
+        scannedAt: now,
+        critical: 0,
+        warn: 0,
+        info: 0,
+        findings: [],
+      },
+    };
+    await fs.mkdir(proposalDir, { recursive: true });
+    await fs.writeFile(path.join(proposalDir, "proposal.json"), JSON.stringify(record), "utf8");
+    await fs.writeFile(path.join(proposalDir, "PROPOSAL.md"), content, "utf8");
+
+    const result = await migrateLegacySkillWorkshopProposals({
+      config: {
+        agents: {
+          entries: {
+            main: { workspace: mainWorkspace },
+            other: { workspace: otherWorkspace },
+          },
+        },
+      },
+    });
+    expect(result).toMatchObject({ detected: 1, migrated: 1, warnings: [] });
+    await expect(fs.access(path.join(proposalDir, "proposal.json"))).rejects.toThrow();
+  });
 });
