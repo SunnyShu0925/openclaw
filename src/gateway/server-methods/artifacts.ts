@@ -247,13 +247,13 @@ function resolveBlockDownload(
   mimeType?: string;
   sizeBytes?: number;
 } {
-  const data = typeof block.data === "string" ? block.data : undefined;
-  const content = typeof block.content === "string" ? block.content : undefined;
+  const data = block.data === "" ? "" : asNonEmptyString(block.data);
+  const content = block.content === "" ? "" : asNonEmptyString(block.content);
   const url = asNonEmptyString(block.url) ?? asNonEmptyString(block.openUrl);
   const imageUrl = mediaUrlValue(block.image_url);
   const audioUrl = asNonEmptyString(block.audio_url);
   const source = asOptionalRecord(block.source);
-  const sourceData = typeof source?.data === "string" ? source.data : undefined;
+  const sourceData = source?.data === "" ? "" : asNonEmptyString(source?.data);
   const sourceUrl = asNonEmptyString(source?.url);
   const dataUrl = [url, sourceUrl, imageUrl, audioUrl, data, content, sourceData].find(
     (value) => typeof value === "string" && /^data:/i.test(value),

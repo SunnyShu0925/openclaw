@@ -1037,43 +1037,39 @@ describe("artifacts RPC handlers", () => {
   });
 
   it.each([
-    { name: "direct empty data", block: { type: "file", data: "", sizeBytes: 0 } },
-    {
-      name: "empty data URL",
-      block: { type: "file", data: "data:application/octet-stream;base64," },
-    },
-    { name: "empty content field", block: { type: "file", content: "" } },
-    { name: "empty source data", block: { type: "file", source: { data: "" } } },
-  ])("preserves $name as a zero-byte bytes download", async ({ block }) => {
+    ["direct empty data", { type: "file", data: "", sizeBytes: 0 }, 0, ""],
+    ["empty data URL", { type: "file", data: "data:application/octet-stream;base64," }, 0, ""],
+    ["empty content field", { type: "file", content: "" }, 0, ""],
+    ["empty source data", { type: "file", source: { data: "" } }, 0, ""],
+    [
+      "padded data URL",
+      { type: "file", data: " data:application/octet-stream;base64,aGVsbG8= " },
+      5,
+      "aGVsbG8=",
+    ],
+  ])("preserves %s as a bytes download", async (_name, block, sizeBytes, data) => {
     mockedMessages([{ role: "assistant", content: [block], __openclaw: { seq: 9 } }]);
     const listed = await listArtifacts({ sessionKey: "agent:main:main" });
     const artifact = expectArtifactList(listed.calls).artifacts?.[0];
     const artifactId = requireNonEmptyString(artifact?.id, "expected listed artifact id");
-    expectFields(artifact, { sizeBytes: 0 });
+    expectFields(artifact, { sizeBytes });
     expectFields(artifact?.download, { mode: "bytes" });
     const download = await downloadArtifact({ sessionKey: "agent:main:main", artifactId });
     const downloadPayload = expectOkPayload(download.calls) as Record<string, unknown>;
-    expectFields(downloadPayload, { encoding: "base64", data: "" });
-    expectFields(downloadPayload.artifact as Record<string, unknown>, { sizeBytes: 0 });
+    expectFields(downloadPayload, { encoding: "base64", data });
+    expectFields(downloadPayload.artifact as Record<string, unknown>, { sizeBytes });
   });
 
-  it("keeps absent artifact data unsupported instead of synthesizing bytes", async () => {
-    mockedMessages([
-      {
-        role: "assistant",
-        content: [{ type: "file", title: "no-data.txt" }],
-        __openclaw: { seq: 12 },
-      },
-    ]);
+  it.each([
+    ["absent data", { type: "file", title: "no-data.txt" }],
+    ["whitespace-only data", { type: "file", data: "   " }],
+  ])("keeps %s unsupported instead of synthesizing bytes", async (_name, block) => {
+    mockedMessages([{ role: "assistant", content: [block], __openclaw: { seq: 12 } }]);
     const listed = await listArtifacts({ sessionKey: "agent:main:main" });
     const artifact = expectArtifactList(listed.calls).artifacts?.[0];
-    expectFields(artifact, { title: "no-data.txt" });
     expectFields(artifact?.download, { mode: "unsupported" });
     const artifactId = requireNonEmptyString(artifact?.id, "expected listed artifact id");
-    const download = await downloadArtifact({
-      sessionKey: "agent:main:main",
-      artifactId,
-    });
+    const download = await downloadArtifact({ sessionKey: "agent:main:main", artifactId });
     expectFields(expectErrorDetails(download.calls), { type: "artifact_download_unsupported" });
   });
 

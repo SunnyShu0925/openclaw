@@ -55,6 +55,12 @@ export function readArtifactBase64Payload(
   if (value === undefined) {
     return undefined;
   }
+  if (value === "") {
+    return {
+      ...(opts.includeData ? { data: "" } : {}),
+      sizeBytes: 0,
+    };
+  }
   let encodedLength = 0;
   let padding = 0;
   let sawPadding = false;
@@ -85,6 +91,9 @@ export function readArtifactBase64Payload(
   }
   const remainder = encodedLength % 4;
   if ((padding > 0 && remainder !== 0) || remainder === 1) {
+    return undefined;
+  }
+  if (encodedLength === 0) {
     return undefined;
   }
   if (data !== undefined && padding === 0 && remainder > 0) {
