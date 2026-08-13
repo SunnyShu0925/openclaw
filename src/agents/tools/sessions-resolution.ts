@@ -343,9 +343,7 @@ async function lookupSessionReference(params: {
         kind: params.kind,
         agentId:
           params.kind === "key"
-            ? (parseAgentSessionKey(params.input)?.agentId ??
-              params.keyAgentId ??
-              params.agentId)
+            ? (parseAgentSessionKey(params.input)?.agentId ?? params.keyAgentId ?? params.agentId)
             : params.agentId,
         requesterInternalKey: params.requesterInternalKey,
         restrictToSpawned: params.restrictToSpawned,
@@ -606,8 +604,7 @@ export async function resolveVisibleSessionReference(params: {
     displayKey,
     requesterOwned:
       requesterOwnedByResolution ||
-      (params.requesterSessionKey === resolvedKey &&
-        resolvedAgentId === params.requesterAgentId),
+      (params.requesterSessionKey === resolvedKey && resolvedAgentId === params.requesterAgentId),
     ...(missing ? { missing: true } : {}),
   };
 }

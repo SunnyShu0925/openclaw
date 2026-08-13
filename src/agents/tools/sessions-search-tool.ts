@@ -440,9 +440,7 @@ export function createSessionsSearchTool(opts?: {
       });
       if (sessionKey) {
         const authorizationTargetSessionKey =
-          sessionAgentId &&
-          sessionAgentId !== requesterAgentId &&
-          !parseAgentSessionKey(sessionKey)
+          sessionAgentId && sessionAgentId !== requesterAgentId && !parseAgentSessionKey(sessionKey)
             ? `agent:${sessionAgentId}:${sessionKey}`
             : sessionKey;
         const access = await resolveSessionToolAccess({
