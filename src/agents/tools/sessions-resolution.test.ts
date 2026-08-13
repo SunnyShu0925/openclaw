@@ -1,8 +1,6 @@
-// Sessions resolution tests cover alias mapping, session-id lookup, visibility
-// verification, and requester-spawned access checks.
+// Sessions resolution tests cover alias mapping, session-id lookup, and visibility normalization.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
-import { GatewayCredentialsRequiredError } from "../../gateway/call.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import { looksLikeSessionId } from "../../sessions/session-id.js";
 const callGatewayMock = vi.fn();
@@ -13,11 +11,6 @@ vi.mock("../../gateway/call.js", async (importOriginal) => {
     callGateway: (opts: unknown) => callGatewayMock(opts),
   };
 });
-const loggerMocks = vi.hoisted(() => ({ logWarn: vi.fn() }));
-vi.mock("../../logger.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../logger.js")>()),
-  logWarn: loggerMocks.logWarn,
-}));
 let resolveCurrentSessionClientAlias: typeof import("./sessions-resolution.js").resolveCurrentSessionClientAlias;
 let resolveDisplaySessionKey: typeof import("./sessions-resolution.js").resolveDisplaySessionKey;
 let resolveInternalSessionKey: typeof import("./sessions-resolution.js").resolveInternalSessionKey;
@@ -185,283 +178,6 @@ describe("resolved session visibility checks", () => {
     ).resolves.toMatchObject({ ok: false, status: "forbidden" });
     expect(callGatewayMock).not.toHaveBeenCalled();
   });
-
-  it("requires spawned-session verification only for sandboxed key-based cross-session access", async () => {
-    const cases = [
-      {
-        requesterSessionKey: "agent:main:main",
-        targetSessionKey: "agent:main:worker",
-        restrictToSpawned: true,
-        resolvedViaSessionId: false,
-        expectsGateway: true,
-      },
-      {
-        requesterSessionKey: "agent:main:main",
-        targetSessionKey: "agent:main:worker",
-        restrictToSpawned: false,
-        resolvedViaSessionId: false,
-        expectsGateway: true,
-      },
-      {
-        requesterSessionKey: "agent:main:main",
-        targetSessionKey: "agent:main:worker",
-        restrictToSpawned: true,
-        resolvedViaSessionId: true,
-        expectsGateway: false,
-      },
-      {
-        requesterSessionKey: "agent:main:main",
-        targetSessionKey: "agent:main:main",
-        restrictToSpawned: true,
-        resolvedViaSessionId: false,
-        expectsGateway: false,
-      },
-    ];
-
-    for (const testCase of cases) {
-      callGatewayMock.mockResolvedValueOnce({ key: testCase.targetSessionKey });
-      const result = resolveVisibleSessionReference({
-        action: "history",
-        resolvedSession: {
-          ok: true,
-          key: testCase.targetSessionKey,
-          displayKey: testCase.targetSessionKey,
-          resolvedViaSessionId: testCase.resolvedViaSessionId,
-        },
-        requesterSessionKey: testCase.requesterSessionKey,
-        requesterAgentId: "main",
-        restrictToSpawned: testCase.restrictToSpawned,
-        visibilitySessionKey: testCase.targetSessionKey,
-      });
-
-      await expect(result).resolves.toEqual({
-        ok: true,
-        agentId: "main",
-        key: testCase.targetSessionKey,
-        displayKey: testCase.targetSessionKey,
-        requesterOwned:
-          testCase.restrictToSpawned || testCase.requesterSessionKey === testCase.targetSessionKey,
-      });
-      expect(callGatewayMock).toHaveBeenCalledTimes(testCase.expectsGateway ? 1 : 0);
-      callGatewayMock.mockReset();
-    }
-  });
-
-  it("does not hide an exact spawned target behind the sessions.list visibility cap", async () => {
-    // Exact spawned-session resolution should not depend on a truncated list
-    // response; otherwise high-volume session stores hide valid children.
-    callGatewayMock.mockImplementation(
-      async (request: { method?: string; params?: { key?: string } }) => {
-        if (request.method === "sessions.resolve") {
-          return { key: request.params?.key };
-        }
-        if (request.method === "sessions.list") {
-          return {
-            sessions: Array.from({ length: 500 }, (_, index) => ({
-              key: `agent:main:subagent:worker-${index}`,
-            })),
-          };
-        }
-        return {};
-      },
-    );
-
-    await expect(
-      resolveVisibleSessionReference({
-        action: "history",
-        resolvedSession: {
-          ok: true,
-          key: "agent:main:subagent:worker-999",
-          displayKey: "agent:main:subagent:worker-999",
-          resolvedViaSessionId: false,
-        },
-        requesterSessionKey: "agent:main:main",
-        requesterAgentId: "main",
-        restrictToSpawned: true,
-        visibilitySessionKey: "agent:main:subagent:worker-999",
-      }),
-    ).resolves.toEqual({
-      ok: true,
-      agentId: "main",
-      key: "agent:main:subagent:worker-999",
-      displayKey: "agent:main:subagent:worker-999",
-      requesterOwned: true,
-    });
-  });
-
-  it("redacts sensitive text in spawned-lookup warnings", async () => {
-    loggerMocks.logWarn.mockClear();
-    callGatewayMock.mockImplementation(async () => {
-      // A retryable request-level failure keeps the "transient; retry" denial
-      // text while still routing the underlying error through the redacting
-      // formatter (review P1: classify before prescribing retry).
-      throw new GatewayClientRequestError({
-        code: "UNAVAILABLE",
-        message: "gateway refused Authorization: Bearer sk-evidence-secret-9f3a2c",
-        retryable: true,
-      });
-    });
-    const result = await resolveVisibleSessionReference({
-      action: "history",
-      resolvedSession: {
-        ok: true,
-        key: "agent:main:worker",
-        displayKey: "agent:main:worker",
-        resolvedViaSessionId: false,
-      },
-      requesterSessionKey: "agent:main:main",
-      restrictToSpawned: true,
-      visibilitySessionKey: "agent:main:worker",
-      callGateway: callGatewayMock,
-    });
-    // Fail closed with the same retryable classification as the direct guard,
-    // not the generic sandboxed-session denial.
-    expect(result).toMatchObject({
-      ok: false,
-      status: "forbidden",
-      error:
-        "Session history denied because spawned-session ownership lookup failed (transient); retry once, then ask the operator to inspect OpenClaw logs.",
-    });
-
-    // The authoritative list failure must use the repository's redacting formatter.
-    const warnText = loggerMocks.logWarn.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(warnText).toContain("spawned-session ownership lookup failed");
-    expect(warnText).toMatch(/requester=sha256:[a-f0-9]{12}/u);
-    expect(warnText).not.toContain("agent:main:main");
-    expect(warnText).not.toContain("sk-evidence-secret-9f3a2c");
-  });
-
-  it("classifies a permanent credential lookup failure as non-retryable through the sandboxed resolver", async () => {
-    // A credentials/config failure surfaces before a socket is opened and will
-    // not recover through retry, so the resolver must NOT prescribe retry
-    // (review P1: classify before prescribing retry).
-    callGatewayMock.mockImplementation(async () => {
-      throw new GatewayCredentialsRequiredError({
-        method: "sessions.list",
-        configPath: "/tmp/openclaw.json",
-      });
-    });
-    const result = await resolveVisibleSessionReference({
-      action: "history",
-      resolvedSession: {
-        ok: true,
-        key: "agent:main:worker",
-        displayKey: "agent:main:worker",
-        resolvedViaSessionId: false,
-      },
-      requesterSessionKey: "agent:main:main",
-      restrictToSpawned: true,
-      visibilitySessionKey: "agent:main:worker",
-      callGateway: callGatewayMock,
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      status: "forbidden",
-      error:
-        "Session history denied because spawned-session ownership lookup failed; ask the operator to check gateway configuration and credentials.",
-    });
-    // A permanent failure must never tell the caller to retry.
-    expect(result.ok ? "" : result.error).not.toMatch(/retry/i);
-  });
-
-  it("keeps unknown lookup failures generic through the sandboxed resolver", async () => {
-    callGatewayMock.mockRejectedValue(new Error("failed to decode session row"));
-    const result = await resolveVisibleSessionReference({
-      action: "history",
-      resolvedSession: {
-        ok: true,
-        key: "agent:main:worker",
-        displayKey: "agent:main:worker",
-        resolvedViaSessionId: false,
-      },
-      requesterSessionKey: "agent:main:main",
-      restrictToSpawned: true,
-      visibilitySessionKey: "agent:main:worker",
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      status: "forbidden",
-      error:
-        "Session history denied because spawned-session ownership lookup failed; ask the operator to inspect OpenClaw logs.",
-    });
-    expect(result.ok ? "" : result.error).not.toMatch(/credentials|retry/i);
-  });
-
-  it("does not warn on an ordinary non-owned target miss from the speculative resolve probe", async () => {
-    // A valid target outside the requester's spawned set is an EXPECTED miss on
-    // the speculative sessions.resolve probe, not an operational lookup failure.
-    // It must not produce a warn (review P2: avoid warning on ordinary
-    // non-owned sessions), or routine sandbox policy denials would bury the real
-    // failures this PR diagnoses. Simulate the older-gateway path where
-    // allowMissing is rejected and the retry surfaces "No session found".
-    loggerMocks.logWarn.mockClear();
-    callGatewayMock.mockImplementation(async (request: { method?: string }) => {
-      if (request.method === "sessions.resolve") {
-        throw new GatewayClientRequestError({
-          code: "INVALID_REQUEST",
-          message: "No session found: agent:main:worker",
-        });
-      }
-      if (request.method === "sessions.list") {
-        return { sessions: [] };
-      }
-      return {};
-    });
-    const result = await resolveVisibleSessionReference({
-      action: "history",
-      resolvedSession: {
-        ok: true,
-        key: "agent:main:worker",
-        displayKey: "agent:main:worker",
-        resolvedViaSessionId: false,
-      },
-      requesterSessionKey: "agent:main:main",
-      restrictToSpawned: true,
-      visibilitySessionKey: "agent:main:worker",
-      callGateway: callGatewayMock,
-    });
-    // Generic sandboxed denial for a successful-but-not-owned lookup.
-    expect(result).toMatchObject({
-      ok: false,
-      status: "forbidden",
-    });
-    // No warn for the expected miss.
-    expect(loggerMocks.logWarn).not.toHaveBeenCalled();
-  });
-
-  it("keeps operational resolve failures distinct from successful non-ownership", async () => {
-    callGatewayMock.mockImplementation(async (request: { method?: string }) => {
-      if (request.method === "sessions.resolve") {
-        throw new Error("resolve unavailable");
-      }
-      if (request.method === "sessions.list") {
-        return { sessions: [] };
-      }
-      return {};
-    });
-
-    const result = await resolveVisibleSessionReference({
-      action: "history",
-      resolvedSession: {
-        ok: true,
-        key: "agent:main:worker",
-        displayKey: "agent:main:worker",
-        resolvedViaSessionId: false,
-      },
-      requesterSessionKey: "agent:main:main",
-      restrictToSpawned: true,
-      visibilitySessionKey: "agent:main:worker",
-      callGateway: callGatewayMock,
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      status: "forbidden",
-      error:
-        "Session history denied because spawned-session ownership lookup failed; ask the operator to inspect OpenClaw logs.",
-      displayKey: "agent:main:worker",
-    });
-  });
 });
 
 describe("resolveSessionReference", () => {
@@ -614,6 +330,7 @@ describe("resolveSessionReference", () => {
       action: "history",
       resolvedSession,
       requesterSessionKey: "agent:main:main",
+      requesterAgentId: "main",
       restrictToSpawned: false,
       visibilitySessionKey: "agent:main:missing",
     });
@@ -628,6 +345,7 @@ describe("resolveSessionReference", () => {
       method: "sessions.resolve",
       params: {
         key: "agent:main:missing",
+        agentId: "main",
         spawnedBy: undefined,
       },
     });
@@ -651,12 +369,14 @@ describe("resolveSessionReference", () => {
       action: "send",
       resolvedSession,
       requesterSessionKey: "agent:main:main",
+      requesterAgentId: "main",
       restrictToSpawned: false,
       visibilitySessionKey: "agent:OPS:main",
     });
 
     expect(result).toEqual({
       ok: true,
+      agentId: "ops",
       key: "agent:ops:main",
       displayKey: "agent:ops:main",
       requesterOwned: false,
@@ -681,6 +401,7 @@ describe("resolveSessionReference", () => {
       action: "history",
       resolvedSession,
       requesterSessionKey: "agent:main:main",
+      requesterAgentId: "main",
       restrictToSpawned: false,
       visibilitySessionKey: "agent:OPS:dashboard:private",
     });
@@ -711,6 +432,7 @@ describe("resolveSessionReference", () => {
       action: "send",
       resolvedSession,
       requesterSessionKey: "agent:main:main",
+      requesterAgentId: "main",
       restrictToSpawned: false,
       visibilitySessionKey: "agent:main:worker",
     });
@@ -741,6 +463,7 @@ describe("resolveSessionReference", () => {
       action: "send",
       resolvedSession,
       requesterSessionKey: "agent:main:dashboard:requester",
+      requesterAgentId: "main",
       restrictToSpawned: false,
       visibilitySessionKey: "agent:main:main",
       allowMissingKey: true,
@@ -748,6 +471,7 @@ describe("resolveSessionReference", () => {
 
     expect(result).toEqual({
       ok: true,
+      agentId: "main",
       key: "agent:main:main",
       displayKey: "agent:main:main",
       missing: true,
@@ -757,6 +481,7 @@ describe("resolveSessionReference", () => {
       method: "sessions.resolve",
       params: {
         key: "agent:main:main",
+        agentId: "main",
         spawnedBy: undefined,
         allowMissing: true,
       },

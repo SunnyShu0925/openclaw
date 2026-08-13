@@ -445,7 +445,10 @@ it("fails closed for cross-agent and resolution-derived bare keys", async () => 
         return {};
       }
       if (request.params?.key) {
-        throw new Error("not a session key");
+        throw new GatewayClientRequestError({
+          code: "INVALID_REQUEST",
+          message: `No session found: ${String(request.params.key)}`,
+        });
       }
       return request.params?.sessionId ? { key: "incident-42" } : {};
     });
