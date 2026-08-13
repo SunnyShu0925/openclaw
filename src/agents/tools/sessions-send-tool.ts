@@ -719,14 +719,7 @@ export function createSessionsSendTool(opts?: {
         resolvedKeyAgentId ??
         (isLiteralUnscopedMainTarget ? requesterAgentId : undefined) ??
         compatibilityTargetAgentId;
-      const mayUseRequesterForLiteralSentinel =
-        isLiteralUnscopedMainTarget &&
-        (!targetAgentId || normalizeAgentId(targetAgentId) === requesterAgentId);
-      if (
-        !targetAgentId &&
-        !resolvedKeyAgentId &&
-        (!isUnscopedSessionKeySentinel(resolvedKey) || resolvedSession.resolvedViaSessionId)
-      ) {
+      if (!targetAgentId) {
         return jsonResult({
           runId: crypto.randomUUID(),
           status: "forbidden",
@@ -735,6 +728,8 @@ export function createSessionsSendTool(opts?: {
           sessionKey: unresolvedDisplayKey,
         });
       }
+      const mayUseRequesterForLiteralSentinel =
+        isLiteralUnscopedMainTarget && normalizeAgentId(targetAgentId) === requesterAgentId;
       const rawRequesterSessionKey = opts?.agentSessionKey ? effectiveRequesterKey : undefined;
       const parsedRequesterSessionKey = parseAgentSessionKey(rawRequesterSessionKey);
       const requesterRouteBindings = cfg.bindings?.filter(

@@ -370,9 +370,7 @@ export function createSessionsSearchTool(opts?: {
         agentId: opts?.agentId,
       });
 
-      let sessionKey: string | undefined;
-      let sessionAgentId: string | undefined;
-      let requesterOwned = false;
+      let sessionTarget: { agentId: string; key: string; requesterOwned: boolean } | undefined;
       if (requestedSessionKey) {
         const normalizedRequestedKey = requestedSessionKey.trim();
         const semanticTargetAgentId =
@@ -414,14 +412,16 @@ export function createSessionsSearchTool(opts?: {
         if (!visible.ok) {
           return jsonResult({ status: visible.status, error: visible.error });
         }
-        sessionKey = visible.key;
-        sessionAgentId = resolveSessionToolTargetAgentId({
-          cfg,
-          targetSessionKey: visible.key,
-          resolvedAgentId: visible.agentId ?? semanticTargetAgentId,
-          requesterAgentId,
-        });
-        requesterOwned = visible.requesterOwned;
+        sessionTarget = {
+          key: visible.key,
+          agentId: resolveSessionToolTargetAgentId({
+            cfg,
+            targetSessionKey: visible.key,
+            resolvedAgentId: visible.agentId ?? semanticTargetAgentId,
+            requesterAgentId,
+          }),
+          requesterOwned: visible.requesterOwned,
+        };
       }
 
       const visibility = resolveEffectiveSessionToolsVisibility({
@@ -438,11 +438,12 @@ export function createSessionsSearchTool(opts?: {
         visibility,
         a2aPolicy,
       });
-      if (sessionKey) {
+      if (sessionTarget) {
+        const { agentId, key, requesterOwned } = sessionTarget;
         const authorizationTargetSessionKey =
-          sessionAgentId && sessionAgentId !== requesterAgentId && !parseAgentSessionKey(sessionKey)
-            ? `agent:${sessionAgentId}:${sessionKey}`
-            : sessionKey;
+          agentId !== requesterAgentId && !parseAgentSessionKey(key)
+            ? `agent:${agentId}:${key}`
+            : key;
         const access = await resolveSessionToolAccess({
           action: "history",
           displayAction: "search",
@@ -450,8 +451,8 @@ export function createSessionsSearchTool(opts?: {
           requesterAgentId,
           requesterSessionKey: effectiveRequesterKey,
           authorizationTargetSessionKey,
-          targetAgentId: sessionAgentId,
-          targetSessionKey: sessionKey,
+          targetAgentId: agentId,
+          targetSessionKey: key,
           requesterOwned,
           visibility,
           a2aPolicy,
@@ -462,13 +463,13 @@ export function createSessionsSearchTool(opts?: {
         }
       }
       const searchSessions = (
-        sessionKey
+        sessionTarget
           ? [
               {
-                key: sessionKey,
+                key: sessionTarget.key,
                 access: "authorized" as const,
-                ...(!parseAgentSessionKey(sessionKey) && sessionAgentId
-                  ? { agentId: sessionAgentId }
+                ...(!parseAgentSessionKey(sessionTarget.key)
+                  ? { agentId: sessionTarget.agentId }
                   : {}),
               },
             ]
