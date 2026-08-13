@@ -155,4 +155,72 @@ describe("runCapability deepgram provider options", () => {
       });
     });
   });
+
+  // Regression: providerOptions keys are stored verbatim by the config schema, but
+  // resolveProviderQuery looks them up by the canonical (normalized) provider id.
+  // A user who writes the provider name with different casing or a pre-alias form
+  // (e.g. "Deepgram" or "gemini") must still have their options applied.
+  it("applies providerOptions when the config key uses non-canonical casing", async () => {
+    await withAudioFixture("openclaw-deepgram-casing", async ({ ctx, media, cache }) => {
+      let seenQuery: Record<string, string | number | boolean> | undefined;
+
+      const providerRegistry = buildProviderRegistry({
+        deepgram: {
+          id: "deepgram",
+          capabilities: ["audio"],
+          transcribeAudio: async (req) => {
+            seenQuery = req.query;
+            return { text: "ok", model: req.model };
+          },
+        },
+      });
+
+      const cfg = {
+        models: {
+          providers: {
+            deepgram: { apiKey: "test-key", models: [] },
+          },
+        },
+        tools: {
+          media: {
+            audio: {
+              enabled: true,
+              providerOptions: {
+                // User wrote the provider key with uppercase casing; the runner
+                // normalizes the entry provider id to "deepgram" before lookup.
+                Deepgram: { punctuate: true },
+              },
+            },
+            models: [
+              {
+                provider: "deepgram",
+                model: "nova-3",
+                capabilities: ["audio"],
+                providerOptions: {
+                  // Entry-level key also uses non-canonical casing.
+                  Deepgram: { smart_format: true },
+                },
+              },
+            ],
+          },
+        },
+      } as unknown as OpenClawConfig;
+
+      const result = await runCapability({
+        capability: "audio",
+        cfg,
+        ctx,
+        attachments: cache,
+        media,
+        providerRegistry,
+      });
+      expect(result.outputs).toHaveLength(1);
+      // Both the config-level and entry-level options must be applied despite the
+      // uppercase "Deepgram" keys not matching the canonical "deepgram" lookup id.
+      expect(seenQuery).toMatchObject({
+        punctuate: true,
+        smart_format: true,
+      });
+    });
+  });
 });

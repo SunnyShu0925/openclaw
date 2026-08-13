@@ -348,6 +348,32 @@ function normalizeDeepgramQueryKeys(query: ProviderQuery): ProviderQuery {
   return normalized;
 }
 
+/**
+ * Looks up a provider's options by its normalized id. The config schema records
+ * providerOptions keys verbatim (no casing/alias normalization), so a user who
+ * writes `OpenAI` or `gemini` would otherwise miss a lookup keyed on the
+ * canonical `openai` / `google` id. Try the canonical id first, then fall back
+ * to normalizing each configured key.
+ */
+function resolveProviderOptionsEntry(
+  options: Record<string, Record<string, string | number | boolean>> | undefined,
+  providerId: string,
+): Record<string, string | number | boolean> | undefined {
+  if (!options) {
+    return undefined;
+  }
+  const direct = options[providerId];
+  if (direct) {
+    return direct;
+  }
+  for (const [key, value] of Object.entries(options)) {
+    if (normalizeMediaProviderId(key) === providerId) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function resolveProviderQuery(params: {
   providerId: string;
   config?: MediaUnderstandingConfig;
@@ -355,8 +381,8 @@ function resolveProviderQuery(params: {
 }): ProviderQuery | undefined {
   const { providerId, config, entry } = params;
   const mergedOptions = normalizeProviderQuery({
-    ...config?.providerOptions?.[providerId],
-    ...entry.providerOptions?.[providerId],
+    ...resolveProviderOptionsEntry(config?.providerOptions, providerId),
+    ...resolveProviderOptionsEntry(entry.providerOptions, providerId),
   });
   if (providerId !== "deepgram") {
     return mergedOptions;
