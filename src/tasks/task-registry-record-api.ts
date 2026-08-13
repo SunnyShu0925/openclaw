@@ -350,6 +350,10 @@ export function updateTaskStateByRunId(params: {
     }
     if (params.lastEventAt != null) {
       patch.lastEventAt = params.lastEventAt;
+    } else if (isTerminalTaskStatus(nextStatus)) {
+      // Terminal finalizers advance last activity to the completion time
+      // (mirroring markTaskTerminalById) without moving it backward.
+      patch.lastEventAt = Math.max(current.lastEventAt ?? 0, params.endedAt ?? eventAt);
     }
     if (params.childSessionKey !== undefined) {
       patch.childSessionKey = params.childSessionKey?.trim() || undefined;

@@ -31,7 +31,15 @@ export type TaskEventPayload =
   | { action: "restored" };
 
 function taskUpdatedAt(task: TaskRecord): number {
-  return task.lastEventAt ?? task.endedAt ?? task.startedAt ?? task.createdAt;
+  // Rank by the latest available activity timestamp so terminal tasks with
+  // events recorded after completion (delivery, terminal outcome) surface at
+  // their true last activity instead of trailing their completion time.
+  return Math.max(
+    task.endedAt ?? 0,
+    task.lastEventAt ?? 0,
+    task.startedAt ?? 0,
+    task.createdAt ?? 0,
+  );
 }
 
 function sanitizeOptionalTaskText(

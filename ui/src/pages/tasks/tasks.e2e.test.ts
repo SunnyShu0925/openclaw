@@ -152,7 +152,11 @@ suite.define(() => {
                 },
               },
               {
-                match: { agentId: "main", limit: 200 },
+                match: {
+                  agentId: "main",
+                  limit: 200,
+                  status: ["completed", "failed", "timed_out", "cancelled"],
+                },
                 response: { tasks: [completedTask, failedTask] },
               },
             ],
@@ -184,12 +188,12 @@ suite.define(() => {
         listRequests.filter(
           (request) => (request.params as { status?: unknown }).status !== undefined,
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(3);
       expect(
         listRequests.filter(
           (request) => (request.params as { status?: unknown }).status === undefined,
         ),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       expect(listRequests).toContainEqual({
         id: expect.any(String),
         method: "tasks.list",
@@ -198,6 +202,15 @@ suite.define(() => {
           cursor: "active-page-2",
           limit: 500,
           status: ["queued", "running"],
+        },
+      });
+      expect(listRequests).toContainEqual({
+        id: expect.any(String),
+        method: "tasks.list",
+        params: {
+          agentId: "main",
+          limit: 200,
+          status: ["completed", "failed", "timed_out", "cancelled"],
         },
       });
       await page.screenshot({
