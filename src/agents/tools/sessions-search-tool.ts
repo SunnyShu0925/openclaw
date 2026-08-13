@@ -27,7 +27,10 @@ import {
   callAgentToolGatewayRequest,
   type AgentToolGatewayRequestCaller,
 } from "./in-process-gateway.js";
-import { resolveSessionToolTargetAgentId } from "./scoped-session-access.js";
+import {
+  resolveSessionToolTargetAgentId,
+  runWithScopedSessionAccess,
+} from "./scoped-session-access.js";
 import {
   createAgentToAgentPolicy,
   createSessionVisibilityRowChecker,
@@ -110,6 +113,7 @@ type SearchSessionCandidate = {
   key: string;
   access: "authorized" | "row";
   agentId?: string;
+  expectedSessionId?: string;
   ownerSessionKey?: string;
   parentSessionKey?: string;
   spawnedBy?: string;
@@ -370,7 +374,14 @@ export function createSessionsSearchTool(opts?: {
         agentId: opts?.agentId,
       });
 
-      let sessionTarget: { agentId: string; key: string; requesterOwned: boolean } | undefined;
+      let sessionTarget:
+        | {
+            agentId: string;
+            key: string;
+            requesterOwned: boolean;
+            expectedSessionId?: string;
+          }
+        | undefined;
       if (requestedSessionKey) {
         const normalizedRequestedKey = requestedSessionKey.trim();
         const semanticTargetAgentId =
@@ -461,6 +472,9 @@ export function createSessionsSearchTool(opts?: {
         if (!access.allowed) {
           return jsonResult({ status: access.status, error: access.error });
         }
+        if (access.expectedSessionId) {
+          sessionTarget.expectedSessionId = access.expectedSessionId;
+        }
       }
       const searchSessions = (
         sessionTarget
@@ -468,6 +482,9 @@ export function createSessionsSearchTool(opts?: {
               {
                 key: sessionTarget.key,
                 access: "authorized" as const,
+                ...(sessionTarget.expectedSessionId
+                  ? { expectedSessionId: sessionTarget.expectedSessionId }
+                  : {}),
                 ...(!parseAgentSessionKey(sessionTarget.key)
                   ? { agentId: sessionTarget.agentId }
                   : {}),
@@ -509,19 +526,30 @@ export function createSessionsSearchTool(opts?: {
           offset += SESSIONS_SEARCH_MAX_SESSION_KEYS
         ) {
           const chunk = candidates.slice(offset, offset + SESSIONS_SEARCH_MAX_SESSION_KEYS);
-          const result = await gatewayCall<{
-            results?: GatewaySearchHit[];
-            indexing?: boolean;
-            truncated?: boolean;
-          }>({
-            method: "sessions.search",
-            params: {
-              agentId,
-              query,
-              limit: SESSIONS_SEARCH_MAX_LIMIT,
-              sessionKeys: chunk.map((candidate) => candidate.key),
-            },
-          });
+          const runSearch = () =>
+            gatewayCall<{
+              results?: GatewaySearchHit[];
+              indexing?: boolean;
+              truncated?: boolean;
+            }>({
+              method: "sessions.search",
+              params: {
+                agentId,
+                query,
+                limit: SESSIONS_SEARCH_MAX_LIMIT,
+                sessionKeys: chunk.map((candidate) => candidate.key),
+              },
+            });
+          const scopedCandidate = chunk.length === 1 ? chunk[0] : undefined;
+          const result = scopedCandidate?.expectedSessionId
+            ? await runWithScopedSessionAccess({
+                cfg,
+                agentId,
+                expectedSessionId: scopedCandidate.expectedSessionId,
+                targetSessionKey: scopedCandidate.key,
+                run: runSearch,
+              })
+            : await runSearch();
           indexing ||= result.indexing === true;
           backendTruncated ||= result.truncated === true;
           for (const hit of Array.isArray(result.results) ? result.results : []) {

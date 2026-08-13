@@ -62,6 +62,11 @@ function registerScopedSessionAccessProvider(provider: ScopedSessionAccessProvid
 function resolveScopedSessionAccess(
   request: ScopedSessionAccessRequest,
 ): ScopedSessionAccessGrant | undefined {
+  // Incognito transcripts must never be re-persisted through another session,
+  // including host-scoped access paths that bypass normal visibility policy.
+  if (resolveIncognitoSessionAccessDenial(request.targetSessionKey)) {
+    return undefined;
+  }
   for (const provider of scopedSessionAccessProviders) {
     try {
       const grant = provider(request);

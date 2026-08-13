@@ -53,7 +53,9 @@ export async function resolveSessionToolAccess(params: {
     const scoped = createSessionVisibilityChecker.resolveScopedAccess({
       action: params.action,
       requesterSessionKey: params.requesterSessionKey,
-      targetSessionKey: params.targetSessionKey,
+      // A bare key is not globally unique under explicit ownership. Callers
+      // qualify cross-agent targets so a grant cannot cross store owners.
+      targetSessionKey: authorizationTargetSessionKey,
     });
     if (scoped) {
       return { allowed: true, expectedSessionId: scoped.expectedSessionId };

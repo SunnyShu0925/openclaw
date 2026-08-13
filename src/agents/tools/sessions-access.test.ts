@@ -7,6 +7,7 @@ import { GatewayCredentialsRequiredError } from "../../gateway/call.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import {
   createAgentToAgentPolicy,
+  createSessionVisibilityChecker,
   createSessionVisibilityGuard,
   createSessionVisibilityRowChecker,
   resolveEffectiveSessionToolsVisibility,
@@ -558,6 +559,65 @@ describe("createSessionVisibilityGuard", () => {
         "Agent-to-agent messaging is disabled. Set tools.agentToAgent.enabled=true to allow cross-agent sends.",
     });
     expect(gateway).not.toHaveBeenCalled();
+  });
+
+  it("does not apply a bare-key scoped grant to another agent's session", async () => {
+    const targets: string[] = [];
+    const unregister = createSessionVisibilityChecker.registerScopedAccessProvider((request) => {
+      targets.push(request.targetSessionKey);
+      return request.targetSessionKey === "shared" ? { expectedSessionId: "agent-a" } : undefined;
+    });
+    try {
+      const gateway = vi.fn();
+      const access = await resolveSessionToolAccess({
+        action: "history",
+        requesterAgentId: "main",
+        requesterSessionKey: "agent:main:main",
+        authorizationTargetSessionKey: "agent:ops:shared",
+        targetAgentId: "ops",
+        targetSessionKey: "shared",
+        requesterOwned: false,
+        visibility: "self",
+        a2aPolicy: createAgentToAgentPolicy({} as unknown as OpenClawConfig),
+        callGateway: gateway as never,
+      });
+
+      expect(access.allowed).toBe(false);
+      expect(targets).toEqual(["agent:ops:shared"]);
+      expect(gateway).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("keeps incognito targets hidden from scoped grants", async () => {
+    const targetSessionKey = "agent:main:dashboard:incognito-private";
+    const unregister = createSessionVisibilityChecker.registerScopedAccessProvider(() => ({
+      expectedSessionId: "incognito-incarnation",
+    }));
+    try {
+      const gateway = vi.fn();
+      const access = await resolveSessionToolAccess({
+        action: "history",
+        requesterAgentId: "main",
+        requesterSessionKey: "agent:main:main",
+        targetAgentId: "main",
+        targetSessionKey,
+        requesterOwned: true,
+        visibility: "all",
+        a2aPolicy: createAgentToAgentPolicy({} as unknown as OpenClawConfig),
+        callGateway: gateway as never,
+      });
+
+      expect(access).toEqual({
+        allowed: false,
+        status: "forbidden",
+        error: `Session not visible from session tools: ${targetSessionKey}`,
+      });
+      expect(gateway).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
   });
 
   it("retains lookup-failure guidance for a cross-agent ACP child candidate", async () => {
