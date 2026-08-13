@@ -41,12 +41,14 @@ type SettleMockInput = {
 };
 type FixtureOverrides = {
   activeSession?: SettledInput["prepared"]["sessionRuntime"]["agentSession"]["activeSession"];
+  flushPartialAssistantText?: () => void;
   getBeforeAgentFinalizeRevisionEntryId?: () => string | undefined;
   getBeforeAgentFinalizeRevisionReason?: () => string | undefined;
   repairedRejectedProviderReplay?: boolean;
   runAbortController?: AbortController;
   sessionManager?: SettledInput["prepared"]["sessionRuntime"]["sessionManager"];
   waitForPendingEvents?: () => Promise<void>;
+  waitForPendingEventChain?: () => Promise<void>;
 };
 
 function createFixture(overrides: FixtureOverrides = {}) {
@@ -71,15 +73,23 @@ function createFixture(overrides: FixtureOverrides = {}) {
     vi.fn(async () => {
       order.push("pending-events");
     });
+  const waitForPendingEventChain =
+    overrides.waitForPendingEventChain ??
+    vi.fn(async () => {
+      order.push("pending-event-chain");
+    });
   const getBeforeAgentFinalizeRevisionReason =
     overrides.getBeforeAgentFinalizeRevisionReason ?? (() => "revision changed");
   const getBeforeAgentFinalizeRevisionEntryId =
     overrides.getBeforeAgentFinalizeRevisionEntryId ?? (() => undefined);
+  const flushPartialAssistantText = overrides.flushPartialAssistantText ?? vi.fn();
   const unsubscribe = vi.fn();
   const subscription = {
+    flushPartialAssistantText,
     isCompacting: vi.fn(() => false),
     unsubscribe,
     waitForPendingEvents,
+    waitForPendingEventChain,
   };
   const queueHandle = { kind: "embedded", runId: "run-1" };
   const sessionRuntimeState = {
@@ -604,5 +614,367 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
     );
     expect(mocks.settleStream).toHaveBeenCalledOnce();
     expect(mocks.completeAfterTurn).not.toHaveBeenCalled();
+  });
+
+  it("drains queued events after a run-budget abort before re-flushing partial assistant text", async () => {
+    // Regression for #119935 (ClawSweeper P1): abortRun(true) aborts the run
+    // signal synchronously before settlement, so the abort-aware join returns
+    // without draining. The run-budget terminal must still drain the serialized
+    // event chain (bounded) so a message_update queued behind the abort commits
+    // before the re-flush.
+    const abortController = new AbortController();
+    abortController.abort(new Error("run budget exceeded"));
+    const fixture = createFixture({
+      runAbortController: abortController,
+      waitForPendingEventChain: vi.fn(async () => {
+        fixture.order.push("pending-event-chain");
+      }),
+      flushPartialAssistantText: vi.fn(() => {
+        fixture.order.push("flush-partial");
+      }),
+    });
+    fixture.state.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
+    mocks.settleStream.mockResolvedValue({
+      promptError: null,
+      promptErrorSource: null,
+      timedOutDuringCompaction: false,
+      compactionOccurredThisAttempt: false,
+      messagesSnapshot: [],
+      sessionIdUsed: "session-1",
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+      currentAttemptCompletedAssistant: undefined,
+      attemptUsage: undefined,
+      cacheBreak: null,
+      lastCallUsage: undefined,
+      promptCache: undefined,
+    });
+    mocks.completeAfterTurn.mockResolvedValue({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    // The queued-event drain must run (and complete) BEFORE the re-flush reads
+    // the buffer; with the abort-aware join this ordering was unreachable. The
+    // timeout salvage path drains only the serialized event chain (queue-only),
+    // not partial-reply fan-out callbacks.
+    expect(fixture.order).toEqual(["pending-event-chain", "flush-partial"]);
+    expect(mocks.settleStream).toHaveBeenCalledOnce();
+  });
+
+  it("discards buffered partial text when an external abort supersedes the run-budget timeout during the drain", async () => {
+    // P1 regression (ClawSweeper 08-12): partial output must be committed only
+    // after terminal ownership is final. The drain is awaited, then the
+    // terminal is re-read: if an external abort wins while the queued chain
+    // drains, the run-budget timeout no longer owns the terminal and the
+    // buffered text must NOT be published.
+    const abortController = new AbortController();
+    abortController.abort(new Error("run budget exceeded"));
+    const fixture = createFixture({
+      runAbortController: abortController,
+      waitForPendingEventChain: vi.fn(async () => {
+        fixture.order.push("pending-event-chain");
+        // External abort lands while the queued chain drains.
+        fixture.state.terminal = { kind: "aborted", source: "external" };
+      }),
+      flushPartialAssistantText: vi.fn(() => {
+        fixture.order.push("flush-partial");
+      }),
+    });
+    fixture.state.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
+    mocks.settleStream.mockResolvedValue({
+      promptError: null,
+      promptErrorSource: null,
+      timedOutDuringCompaction: false,
+      compactionOccurredThisAttempt: false,
+      messagesSnapshot: [],
+      sessionIdUsed: "session-1",
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+      currentAttemptCompletedAssistant: undefined,
+      attemptUsage: undefined,
+      cacheBreak: null,
+      lastCallUsage: undefined,
+      promptCache: undefined,
+    });
+    mocks.completeAfterTurn.mockResolvedValue({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    // The drain still ran (bounded, abort-independent), but the superseded
+    // terminal discards the buffered text: no flush, no partial output.
+    expect(fixture.order).toEqual(["pending-event-chain"]);
+    const subscription = fixture.input.preparedStreamRuntime.stream.subscription as unknown as {
+      flushPartialAssistantText: ReturnType<typeof vi.fn>;
+    };
+    expect(subscription.flushPartialAssistantText).not.toHaveBeenCalled();
+    expect(mocks.settleStream).toHaveBeenCalledOnce();
+  });
+
+  it("discards buffered partial text when a provider failure is attached before the terminal-owned flush", async () => {
+    // P1 regression (ClawSweeper 08-12, second round): a provider error queued
+    // behind the run-budget abort is merged into the terminal before the
+    // post-drain flush decision. The failure-terminal invariant must suppress
+    // the salvage — a timed-out run that also failed must not publish partial
+    // output.
+    const abortController = new AbortController();
+    abortController.abort(new Error("run budget exceeded"));
+    const fixture = createFixture({
+      runAbortController: abortController,
+      waitForPendingEventChain: vi.fn(async () => {
+        fixture.order.push("pending-event-chain");
+        // Provider failure is recorded while the queued chain drains.
+        fixture.state.terminal = {
+          kind: "timeout",
+          phase: "prompt",
+          source: "run_budget",
+          failure: { source: "prompt", error: new Error("provider stream failed") },
+        };
+      }),
+      flushPartialAssistantText: vi.fn(() => {
+        fixture.order.push("flush-partial");
+      }),
+    });
+    fixture.state.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
+    mocks.settleStream.mockResolvedValue({
+      promptError: null,
+      promptErrorSource: null,
+      timedOutDuringCompaction: false,
+      compactionOccurredThisAttempt: false,
+      messagesSnapshot: [],
+      sessionIdUsed: "session-1",
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+      currentAttemptCompletedAssistant: undefined,
+      attemptUsage: undefined,
+      cacheBreak: null,
+      lastCallUsage: undefined,
+      promptCache: undefined,
+    });
+    mocks.completeAfterTurn.mockResolvedValue({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    // The drain still ran (bounded, abort-independent), but the attached
+    // provider failure discards the buffered text: no flush, no partial output.
+    expect(fixture.order).toEqual(["pending-event-chain"]);
+    const subscription = fixture.input.preparedStreamRuntime.stream.subscription as unknown as {
+      flushPartialAssistantText: ReturnType<typeof vi.fn>;
+    };
+    expect(subscription.flushPartialAssistantText).not.toHaveBeenCalled();
+    expect(mocks.settleStream).toHaveBeenCalledOnce();
+  });
+
+  it("skips the bounded drain when a provider failure is already attached before settlement", async () => {
+    // P1 regression (ClawSweeper 08-14 round): the prior regression covered a
+    // failure attached DURING the drain. This covers the coverage gap — a
+    // failure ALREADY attached to the run-budget terminal when settlement
+    // chooses whether to drain. The bounded drain can only stall settlement
+    // for the full 120s liveness deadline when a serialized handler is wedged,
+    // and partial output would be discarded by the flush gate anyway. A failed
+    // run-budget terminal must skip the drain entirely so a wedged event chain
+    // cannot delay a failed run.
+    const abortController = new AbortController();
+    abortController.abort(new Error("run budget exceeded"));
+    // Wedged serialized handler: never resolves. Pre-fix the bounded drain
+    // would wait the full RUN_LIVENESS_JOIN_TIMEOUT_MS (120s) before settling.
+    const chainGate = new Promise<void>(() => {
+      // Intentionally never resolved; reaching the await means the drain ran,
+      // which would be a regression.
+    });
+    const waitForPendingEventChain = vi.fn(async () => {
+      fixture.order.push("pending-event-chain");
+      await chainGate;
+    });
+    const fixture = createFixture({
+      runAbortController: abortController,
+      waitForPendingEventChain,
+      flushPartialAssistantText: vi.fn(() => {
+        fixture.order.push("flush-partial");
+      }),
+    });
+    // Failure is attached BEFORE settlement chooses whether to drain — this is
+    // the gap the prior regression did not cover.
+    fixture.state.terminal = {
+      kind: "timeout",
+      phase: "prompt",
+      source: "run_budget",
+      failure: { source: "prompt", error: new Error("provider stream failed") },
+    };
+    mocks.settleStream.mockResolvedValue({
+      promptError: new Error("provider stream failed"),
+      promptErrorSource: "prompt",
+      timedOutDuringCompaction: false,
+      compactionOccurredThisAttempt: false,
+      messagesSnapshot: [],
+      sessionIdUsed: "session-1",
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+      currentAttemptCompletedAssistant: undefined,
+      attemptUsage: undefined,
+      cacheBreak: null,
+      lastCallUsage: undefined,
+      promptCache: undefined,
+    });
+    mocks.completeAfterTurn.mockResolvedValue({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    // Settlement must resolve immediately without entering the bounded drain.
+    // A 120s wall-clock guard ensures pre-fix (which would drain the wedged
+    // chain) fails fast rather than hanging the suite.
+    await expect(
+      Promise.race([
+        runEmbeddedAttemptSettledPhase(fixture.input),
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () => reject(new Error("settlement stalled on the bounded drain")),
+            5_000,
+          ).unref?.();
+        }),
+      ]),
+    ).resolves.toEqual({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    // The bounded drain was skipped: the wedged serialized chain was never
+    // awaited, and no partial text was flushed (failed terminal).
+    expect(waitForPendingEventChain).not.toHaveBeenCalled();
+    const subscription = fixture.input.preparedStreamRuntime.stream.subscription as unknown as {
+      flushPartialAssistantText: ReturnType<typeof vi.fn>;
+    };
+    expect(subscription.flushPartialAssistantText).not.toHaveBeenCalled();
+    expect(fixture.order).toEqual([]);
+    expect(mocks.settleStream).toHaveBeenCalledOnce();
+  });
+
+  it("re-drains queued events when the run-budget timeout fires during the abort-aware join", async () => {
+    // P1 regression (ClawSweeper 08-12, third round): settlement starts with a
+    // non-budget terminal and waits on the abort-aware join. If the run-budget
+    // timer fires while that join is pending, the abort resolves the join
+    // immediately WITHOUT draining; the salvage must then run the bounded
+    // drain before flushing so a queued suffix is not lost.
+    const abortController = new AbortController();
+    let releaseJoin!: () => void;
+    const joinGate = new Promise<void>((resolve) => {
+      releaseJoin = resolve;
+    });
+    const fixture = createFixture({
+      runAbortController: abortController,
+      waitForPendingEvents: vi.fn(async () => {
+        fixture.order.push("pending-events");
+        await joinGate;
+      }),
+      waitForPendingEventChain: vi.fn(async () => {
+        fixture.order.push("pending-event-chain");
+      }),
+      flushPartialAssistantText: vi.fn(() => {
+        fixture.order.push("flush-partial");
+      }),
+    });
+    fixture.state.terminal = { kind: "ok" };
+    mocks.settleStream.mockResolvedValue({
+      promptError: null,
+      promptErrorSource: null,
+      timedOutDuringCompaction: false,
+      compactionOccurredThisAttempt: false,
+      messagesSnapshot: [],
+      sessionIdUsed: "session-1",
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+      currentAttemptCompletedAssistant: undefined,
+      attemptUsage: undefined,
+      cacheBreak: null,
+      lastCallUsage: undefined,
+      promptCache: undefined,
+    });
+    mocks.completeAfterTurn.mockResolvedValue({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    const settlePromise = runEmbeddedAttemptSettledPhase(fixture.input);
+    // Let the abort-aware join reach waitForPendingEvents, then fire the
+    // run-budget timeout while the join is pending.
+    await vi.waitFor(() => {
+      expect(fixture.order).toContain("pending-events");
+    });
+    fixture.state.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
+    abortController.abort(new Error("run budget exceeded"));
+    // Release the join gate so the bounded re-drain can complete too.
+    releaseJoin();
+
+    await expect(settlePromise).resolves.toEqual({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    // The abort-aware join resolved on abort without draining; the bounded
+    // re-drain must run BEFORE the salvage flush (pre-fix code flushed
+    // without it, losing the queued suffix). The re-drain is queue-only
+    // (pending-event-chain), separate from the abort-aware join's
+    // pending-events wait.
+    expect(fixture.order.filter((entry) => entry === "pending-events")).toHaveLength(1);
+    expect(fixture.order.filter((entry) => entry === "pending-event-chain")).toHaveLength(1);
+    expect(fixture.order).toEqual(["pending-events", "pending-event-chain", "flush-partial"]);
+    expect(mocks.settleStream).toHaveBeenCalledOnce();
+  });
+
+  it("does not re-flush partial assistant text on non-run-budget terminals", async () => {
+    // P2 gate: cancellation and provider-failure aborts must not publish
+    // partial output through the settlement path.
+    const abortController = new AbortController();
+    abortController.abort(new Error("operator cancel"));
+    const fixture = createFixture({ runAbortController: abortController });
+    fixture.state.terminal = { kind: "aborted", source: "external" };
+    mocks.settleStream.mockResolvedValue({
+      promptError: null,
+      promptErrorSource: null,
+      timedOutDuringCompaction: false,
+      compactionOccurredThisAttempt: false,
+      messagesSnapshot: [],
+      sessionIdUsed: "session-1",
+      lastAssistant: undefined,
+      currentAttemptAssistant: undefined,
+      currentAttemptCompletedAssistant: undefined,
+      attemptUsage: undefined,
+      cacheBreak: null,
+      lastCallUsage: undefined,
+      promptCache: undefined,
+    });
+    mocks.completeAfterTurn.mockResolvedValue({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    await expect(runEmbeddedAttemptSettledPhase(fixture.input)).resolves.toEqual({
+      sessionIdUsed: "session-1",
+      sessionFileUsed: "session.jsonl",
+    });
+
+    const subscription = fixture.input.preparedStreamRuntime.stream.subscription as unknown as {
+      flushPartialAssistantText: ReturnType<typeof vi.fn>;
+    };
+    expect(subscription.flushPartialAssistantText).not.toHaveBeenCalled();
+    expect(mocks.settleStream).toHaveBeenCalledOnce();
   });
 });

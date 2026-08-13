@@ -16,7 +16,11 @@ import type { NormalizedUsage } from "../../usage.js";
 import { log } from "../logger.js";
 import type { PromptCacheBreak, PromptCacheChange } from "../prompt-cache-observability.js";
 import { clearActiveEmbeddedRun } from "../runs.js";
-import { joinWithRunLivenessDeadline, RUN_LIVENESS_JOIN_TIMEOUT_MS } from "./abortable.js";
+import {
+  joinWithBoundedDeadline,
+  joinWithRunLivenessDeadline,
+  RUN_LIVENESS_JOIN_TIMEOUT_MS,
+} from "./abortable.js";
 import type {
   EmbeddedAttemptExecutionPhaseInput,
   EmbeddedAttemptExecutionState,
@@ -171,7 +175,7 @@ export async function runEmbeddedAttemptSettledPhase(
     getBeforeAgentFinalizeRevisionReason,
     getBeforeAgentFinalizeRevisionEntryId,
   } = preparedStream;
-  const { unsubscribe, waitForPendingEvents } = subscription;
+  const { unsubscribe, waitForPendingEvents, waitForPendingEventChain } = subscription;
   const { getRunAbortDeadlineAtMs, clearTimers: clearAttemptTimeoutTimers } = attemptTimeout;
   let promptCacheChangesForTurn: PromptCacheChange[] | null = null;
   let lastAssistant: AssistantMessage | undefined;
@@ -341,16 +345,76 @@ export async function runEmbeddedAttemptSettledPhase(
     // dispatch lane) must not dead-end the turn until the run budget — 48h by
     // default — so the join is bounded and settlement proceeds with a recorded
     // warning instead of producing no visible outcome at all.
-    await joinWithRunLivenessDeadline({
-      joinWork: waitForPendingEvents,
-      runAbortSignal: input.runAbortController.signal,
-      onTimeout: () => {
-        log.warn(
-          `pending subscription events did not settle within ${RUN_LIVENESS_JOIN_TIMEOUT_MS}ms; ` +
-            `proceeding to stream settlement: runId=${attempt.runId}`,
-        );
-      },
-    });
+    // A run-budget timeout terminal may also carry a provider failure
+    // (provider failed first, then the budget timer fired). Salvage is already
+    // rejected for failed terminals by the flush gate below, so draining the
+    // serialized event chain for a failed run-budget terminal can only stall
+    // settlement for the full bounded liveness deadline when a handler is
+    // wedged — partial output would be discarded anyway. Gate the bounded
+    // drain on a failure-free run-budget terminal so failed runs settle
+    // immediately (ClawSweeper P1, 08-14 round).
+    const isFailureFreeRunBudgetTimeout = (): boolean => {
+      const terminal = readTerminal();
+      return terminal.timedOutByRunBudget && !terminal.failed;
+    };
+    const runBudgetTimeoutTerminal = isFailureFreeRunBudgetTimeout();
+    const drainPendingEventsBounded = () =>
+      joinWithBoundedDeadline({
+        // Drain only the serialized event chain: its handlers are the only
+        // pending work that can mutate the assistant text buffer that timeout
+        // salvage reads. Partial-reply delivery callbacks are external fan-out
+        // and cannot change the buffered text, so a stalled transport callback
+        // must not hold an already-aborted run in settlement for the bounded
+        // liveness deadline (ClawSweeper P1, 08-12 fourth round).
+        joinWork: waitForPendingEventChain,
+        onTimeout: () => {
+          log.warn(
+            `pending subscription events did not settle within ${RUN_LIVENESS_JOIN_TIMEOUT_MS}ms; ` +
+              `proceeding to stream settlement: runId=${attempt.runId}`,
+          );
+        },
+      });
+    if (runBudgetTimeoutTerminal) {
+      // The run-budget abort fires the run signal synchronously before
+      // settlement, so the abort-aware join below would return without
+      // draining. Use a bounded, abort-independent drain so a message_update
+      // queued behind the abort still commits before the re-flush.
+      await drainPendingEventsBounded();
+    } else {
+      await joinWithRunLivenessDeadline({
+        joinWork: waitForPendingEvents,
+        runAbortSignal: input.runAbortController.signal,
+        onTimeout: () => {
+          log.warn(
+            `pending subscription events did not settle within ${RUN_LIVENESS_JOIN_TIMEOUT_MS}ms; ` +
+              `proceeding to stream settlement: runId=${attempt.runId}`,
+          );
+        },
+      });
+      // The run-budget timer can fire while the abort-aware join is pending;
+      // the abort then resolves that join immediately without draining. If the
+      // final terminal is now budget-owned, run the bounded drain before the
+      // salvage so a `message_update` queued behind the abort still commits
+      // (ClawSweeper P1, 08-12 third round). Re-check failure here too: a
+      // provider failure attached while the join was pending must not enter the
+      // bounded drain (ClawSweeper P1, 08-14 round).
+      if (isFailureFreeRunBudgetTimeout()) {
+        await drainPendingEventsBounded();
+      }
+    }
+    // After the subscription queue drains, a `message_update` that was still
+    // serialized when the run-budget timer fired has now written its delta into
+    // the buffer. The timeout (attempt-timeout-prepare.ts) no longer commits
+    // before abort: partial output must not be published until terminal
+    // ownership is final. Re-read the terminal AFTER the drain — an external
+    // abort that landed while draining supersedes the run-budget timeout, and a
+    // provider failure attached to the terminal must discard the buffered text
+    // as well (cancellation/failure never publish partial output). No-op on a
+    // clean completion (message_end already emptied the buffer).
+    const salvageTerminal = readTerminal();
+    if (salvageTerminal.timedOutByRunBudget && !salvageTerminal.failed) {
+      subscription.flushPartialAssistantText?.();
+    }
     const beforeAgentFinalizeRevisionReason = getBeforeAgentFinalizeRevisionReason();
     const beforeAgentFinalizeRevisionEntryId = getBeforeAgentFinalizeRevisionEntryId();
     let rewoundBeforeAgentFinalizeRevision = false;

@@ -22,7 +22,9 @@ import {
   markSessionUserTurnsSent,
 } from "../session-prompt-state.js";
 import { truncateOversizedToolResultsInMessages } from "../tool-result-truncation.js";
+import { isOpenClawAbortableWrapper } from "./abortable.js";
 import { snapshotRecentMessages } from "./attempt-context-summary.js";
+import { isRunBudgetTimeoutAbortReason } from "./attempt-finalize.js";
 import {
   installModelPromptTransform,
   installRuntimeContextMessageForPrompt,
@@ -278,6 +280,21 @@ export async function handleEmbeddedAttemptPromptError(input: {
       input.handleMidTurnPrecheckRequest(request);
     });
     return {};
+  }
+
+  // A run-budget timeout aborts the run controller, and abortable() wraps that
+  // rejection as an AbortError whose cause is the tagged timeout reason. This is
+  // not a provider failure — the run-budget terminal is the authoritative owner
+  // and the settle phase salvages the buffered text. Attaching it as a
+  // promptFailure would mark the terminal `failed` and defeat the failure-free
+  // salvage gate (attempt-settle.ts), silently dropping the buffered output the
+  // repair is meant to preserve (ClawSweeper P1, 08-18 round / #119935). Exempt
+  // it here so only real provider failures and external cancellations attach.
+  if (isOpenClawAbortableWrapper(input.error) && input.error instanceof Error) {
+    const cause = input.error.cause;
+    if (isRunBudgetTimeoutAbortReason(cause)) {
+      return {};
+    }
   }
 
   return {

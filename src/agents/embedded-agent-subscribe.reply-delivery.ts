@@ -222,6 +222,27 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
   }) => {
     const { text, addedDuringMessage, chunkerHasBuffered } = args;
 
+    // A run-budget timeout flush may already have committed partial text for
+    // this message. When message_end later finalizes the complete text, replace
+    // the flushed partial instead of appending a duplicate. The partial stays
+    // when message_end never arrives (hard run-budget abort) — that is the
+    // salvage the timeout flush exists for.
+    if (state.flushedVisibleCursor > 0 && text) {
+      if (assistantTexts.length > state.assistantTextBaseline) {
+        assistantTexts.splice(
+          state.assistantTextBaseline,
+          assistantTexts.length - state.assistantTextBaseline,
+          text,
+        );
+        rememberAssistantText(text);
+      } else {
+        pushAssistantText(text);
+      }
+      state.flushedVisibleCursor = 0;
+      state.assistantTextBaseline = assistantTexts.length;
+      return;
+    }
+
     // If we're not streaming block replies, ensure the final payload includes
     // the final text even when interim streaming was enabled.
     if (state.includeReasoning && text && !params.onBlockReply) {
@@ -256,6 +277,18 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     }
   };
 
+  // Drain only the serialized event chain — the queue whose handlers can mutate
+  // the assistant text buffer that timeout salvage reads. Partial-reply delivery
+  // callbacks (pendingPartialReplyTasks) are external fan-out and cannot change
+  // the buffered text, so a stalled transport callback must not keep an already
+  // aborted run in settlement. Used by the timeout salvage path; ordinary
+  // terminal delivery still uses waitForPendingEvents to observe fan-out.
+  const waitForPendingEventChain = async () => {
+    while (state.pendingEventChain) {
+      await Promise.allSettled([state.pendingEventChain]);
+    }
+  };
+
   return {
     assistantTexts,
     clearDeferredAssistantEvents,
@@ -267,7 +300,9 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     flushDeferredBlockReplies,
     pendingBlockReplyTasks,
     pushAssistantText,
+    rememberAssistantText,
     shouldSkipAssistantText,
     waitForPendingEvents,
+    waitForPendingEventChain,
   };
 }

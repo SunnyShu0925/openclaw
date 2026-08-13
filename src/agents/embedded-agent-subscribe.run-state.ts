@@ -90,6 +90,8 @@ export function createEmbeddedAgentSubscribeState(
       typeof params.onReasoningStream === "function",
     deltaBuffer: "",
     thinkingTagStream: createThinkingTagStreamState(),
+    deltaBufferIsCommentary: false,
+    flushedVisibleCursor: 0,
     blockBuffer: "",
     // Track if a streamed chunk opened a <think> block (stateful across chunks).
     blockState: { thinking: false, final: false, inlineCode: createInlineCodeState() },

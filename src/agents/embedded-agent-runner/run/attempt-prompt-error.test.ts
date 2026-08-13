@@ -22,7 +22,21 @@ vi.mock("./midturn-precheck.js", () => ({
   isMidTurnPrecheckSignal: hoisted.isMidTurnPrecheckSignal,
 }));
 
+import { abortable, isOpenClawAbortableWrapper } from "./abortable.js";
+import { isRunBudgetTimeoutAbortReason } from "./attempt-finalize.js";
 import { handleEmbeddedAttemptPromptError } from "./attempt-prompt-submit.js";
+
+// Mirrors the private createTimeoutAbortReason() in attempt-finalize.ts (the
+// production reason is intentionally not exported to keep the public surface
+// minimal — knip's production unused-export scan treats test imports as out of
+// scope). The Symbol.for key is the stable contract the exemption matches on.
+const RUN_BUDGET_TIMEOUT_ABORT = Symbol.for("openclaw.abortable.run_budget_timeout");
+function createTimeoutAbortReason(): Error {
+  const error = new Error("request timed out");
+  error.name = "TimeoutError";
+  (error as Error & { [RUN_BUDGET_TIMEOUT_ABORT]?: true })[RUN_BUDGET_TIMEOUT_ABORT] = true;
+  return error;
+}
 
 type PromptErrorInput = Parameters<typeof handleEmbeddedAttemptPromptError>[0];
 
@@ -57,6 +71,55 @@ describe("handleEmbeddedAttemptPromptError", () => {
     });
 
     expect(hoisted.releaseLeasedSteering).toHaveBeenCalledWith(error);
+  });
+
+  it("exempts a run-budget timeout abort so the terminal stays failure-free for salvage", async () => {
+    // Production path: attempt-timeout-prepare.ts fires abortRun(true) ->
+    // createEmbeddedAttemptRunAbort aborts the controller with
+    // createTimeoutAbortReason(); abortable() wraps the rejected prompt as an
+    // AbortError whose cause is the tagged timeout reason. This is not a
+    // provider failure — attaching it would mark the terminal `failed` and
+    // defeat the failure-free salvage gate in attempt-settle.ts (ClawSweeper P1,
+    // 08-18 round / #119935).
+    const controller = new AbortController();
+    const timeoutReason = createTimeoutAbortReason();
+    controller.abort(timeoutReason);
+    // abortable() rejects with makeAbortError(signal): name=AbortError, cause=reason,
+    // tagged with the OPENCLAW_ABORTABLE_WRAPPER symbol.
+    await expect(abortable(controller.signal, new Promise<void>(() => {}))).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof Error &&
+        err.name === "AbortError" &&
+        isOpenClawAbortableWrapper(err) &&
+        isRunBudgetTimeoutAbortReason((err as { cause?: unknown }).cause),
+    );
+
+    const error = await abortable(controller.signal, new Promise<void>(() => {})).catch(
+      (err: unknown) => err as Error,
+    );
+
+    await expect(handleEmbeddedAttemptPromptError(createInput({ error }))).resolves.toEqual({});
+
+    expect(hoisted.releaseLeasedSteering).toHaveBeenCalledWith(error);
+  });
+
+  it("still returns non-timeout abort wrappers as prompt failures", async () => {
+    // An external cancellation (abortRun(false) with a non-timeout reason) also
+    // produces an abortable wrapper, but its cause is not the tagged run-budget
+    // timeout reason — it must still surface as a promptFailure so external
+    // cancellations are not silently salvaged.
+    const controller = new AbortController();
+    controller.abort(new Error("external cancellation"));
+    const error = await abortable(controller.signal, new Promise<void>(() => {})).catch(
+      (err: unknown) => err as Error,
+    );
+
+    expect(isOpenClawAbortableWrapper(error)).toBe(true);
+    expect(isRunBudgetTimeoutAbortReason((error as { cause?: unknown }).cause)).toBe(false);
+
+    await expect(handleEmbeddedAttemptPromptError(createInput({ error }))).resolves.toEqual({
+      promptFailure: { error, source: "prompt" },
+    });
   });
 
   it("routes mid-turn prechecks under the owned transcript context", async () => {

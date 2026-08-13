@@ -435,9 +435,33 @@ function getAbortReason(signal: AbortSignal): unknown {
   return "reason" in signal ? (signal as { reason?: unknown }).reason : undefined;
 }
 
+/** Marks the abort reason created by a run-budget timeout so the prompt-phase
+ * error handler can exempt it instead of attaching a spurious promptFailure
+ * (which would make the terminal `failed` and defeat the timeout-owned salvage
+ * gate in attempt-settle.ts — see #119935 / ClawSweeper P1, 08-18 round). */
+const RUN_BUDGET_TIMEOUT_ABORT = Symbol.for("openclaw.abortable.run_budget_timeout");
+
+export function isRunBudgetTimeoutAbortReason(reason: unknown): boolean {
+  if (reason === null || typeof reason !== "object") {
+    return false;
+  }
+  return RUN_BUDGET_TIMEOUT_ABORT in reason;
+}
+
+/** Creates the abort reason attached to the run controller when a run-budget
+ * timeout fires. Module-private: the prompt-error exemption matches on the
+ * `RUN_BUDGET_TIMEOUT_ABORT` symbol via `isRunBudgetTimeoutAbortReason`, so the
+ * constructor itself does not need to be part of the module's public surface
+ * (keeping it unexported satisfies the production unused-export scan). */
 function createTimeoutAbortReason(): Error {
   const error = new Error("request timed out");
   error.name = "TimeoutError";
+  Object.defineProperty(error, RUN_BUDGET_TIMEOUT_ABORT, {
+    value: true,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
   return error;
 }
 
