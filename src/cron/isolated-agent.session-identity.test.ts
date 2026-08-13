@@ -168,7 +168,10 @@ describe("runCronIsolatedAgentTurn session identity", () => {
 
       const call = lastEmbeddedAgentCall();
       const lines = (call.prompt ?? "").split("\n");
-      expect(lines[0]).toContain("[cron:job-1");
+      // The envelope is plain text (`cron job <id> <name>:`) so DeepSeek's edge
+      // does not deprioritize the request via the `[cron:` bracket grammar (see
+      // #123041); recognizers match both this form and legacy `[cron:` transcripts.
+      expect(lines[0]).toContain("cron job job-1 job-1:");
       expect(lines[0]).toContain("do it");
       expect(lines[1]).toMatch(/^Current time: .+ \(.+\)$/);
       expect(lines[2]).toMatch(/^Reference UTC: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/);

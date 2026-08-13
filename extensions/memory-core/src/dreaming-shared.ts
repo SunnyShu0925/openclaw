@@ -48,10 +48,16 @@ export function includesSystemEventToken(cleanedBody: string, eventText: string)
     if (trimmed === normalizedEventText) {
       return true;
     }
-    // Isolated cron turns wrap the payload with a `[cron:<id>] ...` prefix; strip
-    // that one known wrapper before matching so the dream sentinel still triggers
+    // Isolated cron turns wrap the payload with a cron envelope prefix; strip
+    // the one known wrapper before matching so the dream sentinel still triggers
     // without falling back to a broad substring match (which would let any user
-    // message embedding the token surface as a dream cron firing).
-    return trimmed.replace(/^\[cron:[^\]]+\]\s*/, "") === normalizedEventText;
+    // message embedding the token surface as a dream cron firing). Two envelope
+    // shapes are accepted: legacy `[cron:<id> <name>]`/`[Cron:<id> <name>]`
+    // (bracket grammar, present in history) and the current plain-text
+    // `cron job <id> <name>:` form (see #123041).
+    const stripped = trimmed
+      .replace(/^\[cron:[^\]]+\]\s*/i, "")
+      .replace(/^cron job [^\n:]+:\s*/i, "");
+    return stripped === normalizedEventText;
   });
 }

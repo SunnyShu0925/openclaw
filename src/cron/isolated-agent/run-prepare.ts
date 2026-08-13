@@ -542,7 +542,12 @@ export async function prepareCronRunContext(params: {
     const message = currentConversationContext
       ? `${currentConversationContext}\n\n${originalMessage}`
       : originalMessage;
-    const base = `[cron:${input.job.id} ${input.job.name}] ${message}`.trim();
+    // Plain-text envelope (no brackets): DeepSeek's edge deprioritizes requests
+    // whose user message carries the `[cron:` bracket grammar (case- and
+    // position-independent — see #123041). Plain text avoids the trigger
+    // structurally; recognizers match both this form and legacy `[cron:`/
+    // `[Cron:` transcripts so history stays parseable. See #123041.
+    const base = `cron job ${input.job.id} ${input.job.name}: ${message}`.trim();
     const isExternalHook =
       hookExternalContentSource !== undefined || isExternalHookSession(baseSessionKey);
     const allowUnsafeExternalContent =

@@ -145,6 +145,11 @@ describe("Skill Workshop history scan", () => {
         { role: "user", content: "[cron:job-1 Incoming webhook] unwrapped payload" },
       ]),
     ).toBeUndefined();
+    expect(
+      prepareSkillHistoryScanReviewMessages([
+        { role: "user", content: "cron job job-1 Incoming webhook: unwrapped payload" },
+      ]),
+    ).toBeUndefined();
   });
 
   it("finds a legacy hook turn outside the provider-facing window", () => {

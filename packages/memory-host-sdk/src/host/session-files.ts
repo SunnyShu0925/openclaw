@@ -53,7 +53,11 @@ export {
 const SESSION_EXPORT_CONTENT_WRAP_CHARS = 800;
 const SESSION_ENTRY_PARSE_YIELD_LINES = 250;
 const MAX_DATE_TIMESTAMP_MS = 8_640_000_000_000_000;
-const DIRECT_CRON_PROMPT_RE = /^\[cron:[^\]]+\]\s*/;
+// Cron-prompt envelope. Two shapes: legacy bracket `[cron:<...>]`/`[Cron:<...>]`
+// (present in history) and the current plain-text `cron job <id> <name>:` form
+// (see #123041). Plain text avoids the DeepSeek bracket-grammar deprioritization
+// trigger; both are matched so legacy transcripts still classify as cron prompts.
+const DIRECT_CRON_PROMPT_RE = /^(?:\[cron:[^\]]+\]\s*|cron job [^\n:]+:\s*)/i;
 
 export type SessionFileEntry = {
   path: string;

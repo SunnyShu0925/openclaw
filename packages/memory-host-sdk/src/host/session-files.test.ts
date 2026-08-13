@@ -1012,6 +1012,38 @@ describe("buildSessionEntry", () => {
     },
   );
 
+  it("does not wipe an archive when a user message starts with the plain-text cron envelope (#123041)", async () => {
+    const archivePath = path.join(tmpDir, "ordinary.jsonl.deleted.2026-02-16T22-27-33.000Z");
+    const messages = [
+      { role: "user", content: "Remember before: project codename is Atlas." },
+      { role: "assistant", content: "Saved project codename Atlas." },
+      {
+        role: "user",
+        content: "cron job daily-digest nightly: why did my digest job fail last night?",
+      },
+      { role: "assistant", content: "The digest job failed because the API token expired." },
+      { role: "user", content: "Please remember: my preferred vendor is Acme Robotics." },
+      { role: "assistant", content: "Noted. Acme Robotics." },
+    ];
+    const jsonlLines = messages.map((message) => JSON.stringify({ type: "message", message }));
+    fsSync.writeFileSync(archivePath, jsonlLines.join("\n"));
+
+    const entry = requireSessionEntry(await buildSessionEntry(archivePath));
+
+    expect(entry.generatedByCronRun).toBeFalsy();
+    // The plain-text cron prompt is filtered out (same as legacy `[cron:`);
+    // the surrounding ordinary messages survive.
+    expect(entry.content).toBe(
+      [
+        "User: Remember before: project codename is Atlas.",
+        "Assistant: Saved project codename Atlas.",
+        "Assistant: The digest job failed because the API token expired.",
+        "User: Please remember: my preferred vendor is Acme Robotics.",
+        "Assistant: Noted. Acme Robotics.",
+      ].join("\n"),
+    );
+  });
+
   it("keeps cron-run reset archives opaque when session metadata preserves the cron key", async () => {
     const archivePath = path.join(tmpDir, "cron-run.jsonl.reset.2026-02-16T22-26-33.000Z");
     const jsonlLines = [

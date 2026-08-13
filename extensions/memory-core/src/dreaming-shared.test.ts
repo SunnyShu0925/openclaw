@@ -13,6 +13,10 @@ describe("includesSystemEventToken", () => {
     expect(includesSystemEventToken(`[cron:abc-123] ${TOKEN}`, TOKEN)).toBe(true);
   });
 
+  it("matches a token wrapped by the plain-text `cron job <id> <name>:` envelope (current form, #123041)", () => {
+    expect(includesSystemEventToken(`cron job abc-123 patrol: ${TOKEN}`, TOKEN)).toBe(true);
+  });
+
   it("matches the token on its own line within multiline content", () => {
     expect(includesSystemEventToken(`leading text\n${TOKEN}\ntrailing`, TOKEN)).toBe(true);
   });
