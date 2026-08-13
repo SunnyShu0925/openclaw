@@ -687,7 +687,9 @@ describe("session companion tool scope", () => {
 
     const targetAccess = await resolveSessionToolAccess({
       action: "history",
+      requesterAgentId: "main",
       requesterSessionKey: "agent:main:target",
+      targetAgentId: "main",
       targetSessionKey: "agent:main:target",
       requesterOwned: false,
       visibility: "self",
@@ -696,7 +698,9 @@ describe("session companion tool scope", () => {
     expect(targetAccess).toMatchObject({ allowed: true });
     const differentAccess = await resolveSessionToolAccess({
       action: "history",
+      requesterAgentId: "main",
       requesterSessionKey: "agent:main:target",
+      targetAgentId: "main",
       targetSessionKey: "agent:main:different",
       requesterOwned: false,
       visibility: "self",
