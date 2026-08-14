@@ -60,6 +60,102 @@ export function loadTranscriptEventsSync(scope: SessionTranscriptReadScope): Tra
   );
 }
 
+/** Latest reset boundary index in storage order, or -1 when absent. */
+function findLatestResetBoundaryIndex(events: readonly TranscriptEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const type =
+      events[index] && typeof events[index] === "object" && !Array.isArray(events[index])
+        ? (events[index] as { type?: unknown }).type
+        : undefined;
+    if (type === "reset") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function readResetBoundaryFirstKeptEntryId(boundary: TranscriptEvent): string | undefined {
+  if (!boundary || typeof boundary !== "object" || Array.isArray(boundary)) {
+    return undefined;
+  }
+  const firstKept = (boundary as { firstKeptEntryId?: unknown }).firstKeptEntryId;
+  return typeof firstKept === "string" && firstKept.trim() ? firstKept : undefined;
+}
+
+function findEventIndexById(
+  events: readonly TranscriptEvent[],
+  fromIndex: number,
+  id: string,
+): number {
+  for (let index = fromIndex; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event && typeof event === "object" && !Array.isArray(event)) {
+      if ((event as { id?: unknown }).id === id) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * Loads the model-context transcript window for a session.
+ *
+ * History readers already project a logical message window after the latest
+ * reset boundary (see session-accessor.sqlite-reset-window.ts). The agent
+ * context loader must apply the same boundary so a reset drops the previous
+ * generation from model input instead of re-attaching an oversized transcript
+ * (#123334). Raw rows are never deleted: the window keeps the session header,
+ * the full kept replay tail referenced by the reset boundary (firstKeptEntryId)
+ * — including intermediate tool events and runtime markers — the boundary event
+ * itself, and every event after it. Sessions without a reset boundary are
+ * returned intact.
+ */
+export function loadModelContextTranscriptEventsSync(
+  scope: SessionTranscriptReadScope,
+): TranscriptEvent[] {
+  const resolved = resolveSqliteTranscriptReadScope(scope);
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+  return runSqliteDeferredTransactionSync(
+    database.db,
+    () => {
+      const fence = resolveSqliteSessionTranscriptReadFence({ database, ...resolved });
+      const events = loadTranscriptEventsFromDatabase(
+        database,
+        resolved.sessionId,
+        fence?.beforeRawSeq,
+      );
+      const resetBoundaryIndex = findLatestResetBoundaryIndex(events);
+      if (resetBoundaryIndex < 0) {
+        return events;
+      }
+      const firstKeptEntryId = readResetBoundaryFirstKeptEntryId(events[resetBoundaryIndex]);
+      const windowStart = firstKeptEntryId
+        ? findEventIndexById(events, resetBoundaryIndex - 1, firstKeptEntryId)
+        : resetBoundaryIndex;
+      const sliceStart = windowStart < 0 ? resetBoundaryIndex : windowStart;
+      const windowed = events.slice(sliceStart);
+      if (sliceStart > 0) {
+        const header = events.find(
+          (event) =>
+            event !== null &&
+            typeof event === "object" &&
+            !Array.isArray(event) &&
+            (event as { type?: unknown }).type === "session",
+        );
+        if (header) {
+          windowed.unshift(header);
+        }
+      }
+      return windowed;
+    },
+    {
+      databaseLabel: database.path,
+      operationLabel: "session transcript model-context read",
+    },
+  );
+}
+
 /** Loads only the first transcript row for header metadata hot paths. */
 export function loadTranscriptHeaderSync(scope: SessionTranscriptReadScope): unknown {
   const resolved = resolveSqliteTranscriptReadScope(scope);

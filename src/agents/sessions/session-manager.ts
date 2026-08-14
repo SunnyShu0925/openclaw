@@ -6,7 +6,7 @@
  */
 import {
   appendTranscriptMessageSync,
-  loadTranscriptEventsSync,
+  loadModelContextTranscriptEventsSync,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
@@ -76,7 +76,7 @@ export class SessionManager extends SessionManagerBranching {
   }
 
   static open(target: SessionTranscriptRuntimeTarget, cwdOverride?: string): SessionManager {
-    const entries = loadTranscriptEventsSync(target) as FileEntry[];
+    const entries = loadModelContextTranscriptEventsSync(target) as FileEntry[];
     const header = entries.find(
       (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
     );

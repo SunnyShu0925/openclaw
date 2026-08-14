@@ -1,5 +1,5 @@
 import {
-  loadTranscriptEventsSync,
+  loadModelContextTranscriptEventsSync,
   replaceTranscriptEventsSync,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
@@ -58,7 +58,7 @@ export class SessionManagerCore {
   }
 
   setSessionTarget(target: SessionManagerPersistenceTarget): void {
-    const entries = loadTranscriptEventsSync(target) as FileEntry[];
+    const entries = loadModelContextTranscriptEventsSync(target) as FileEntry[];
     const header = entries.find(
       (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
     );
