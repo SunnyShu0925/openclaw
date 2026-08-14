@@ -3925,6 +3925,49 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     expect(contextEngineCompactMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["missing_thread_binding", "no copilot app-server thread binding"],
+    ["stale_thread_binding", "copilot app-server binding changed before native compaction"],
+  ])(
+    "keeps model-locked Copilot required preflight terminal on %s without a context-engine fallback",
+    async (failureReason, reason) => {
+      maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+        ok: false,
+        compacted: false,
+        reason,
+        failure: { reason: failureReason },
+      });
+
+      const result = await compactEmbeddedAgentSession(
+        wrappedCompactionArgs({
+          provider: "openai",
+          model: "gpt-5.5",
+          agentHarnessId: "copilot",
+          modelSelectionLocked: true,
+          trigger: "budget",
+          preflightRequired: true,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        compacted: false,
+        failure: { reason: failureReason },
+      });
+      expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
+      expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "openai",
+          model: "gpt-5.5",
+          agentHarnessId: "copilot",
+          preflightRequired: true,
+        }),
+        { nativeCompactionRequest: "required_preflight" },
+      );
+      expect(contextEngineCompactMock).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([undefined, "auto"])(
     "fails a model-locked session with unavailable persisted harness %s",
     async (agentHarnessId) => {

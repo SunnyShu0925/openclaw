@@ -68,6 +68,9 @@ import {
 } from "./runs.js";
 import type { EmbeddedAgentCompactResult } from "./types.js";
 
+/** Agent harness runtime id for the Codex plugin's native compaction. */
+const CODEX_AGENT_HARNESS_RUNTIME_ID = "codex";
+
 function shouldFallbackAfterHarnessCompaction(
   result: EmbeddedAgentCompactResult | undefined,
 ): boolean {
@@ -576,14 +579,17 @@ async function compactResolvedContextEngine(
       : undefined;
   // A model lock normally makes the native harness result terminal: the
   // persisted runtime is authoritative and must not be swapped for
-  // context-engine compaction. Required-preflight is the one scoped exception:
-  // missing or stale Codex thread bindings are recoverable and would otherwise
-  // drop the user's turn, so they fall through to the shared context-engine
-  // fallback below while `preparedHarnessRuntime` keeps the lock intact.
+  // context-engine compaction. Required-preflight has a single Codex-only
+  // exception: missing or stale Codex thread bindings are recoverable and
+  // would otherwise drop the user's turn, so they fall through to the shared
+  // context-engine fallback below while `preparedHarnessRuntime` keeps the
+  // lock intact. Other locked native harnesses (e.g. Copilot) stay terminal:
+  // their binding failures must not escape the persisted model-lock boundary.
   if (
     lockedNativeHarness &&
     !(
       preparedParams.preflightRequired === true &&
+      preparedHarnessRuntime === CODEX_AGENT_HARNESS_RUNTIME_ID &&
       shouldFallbackAfterHarnessCompaction(harnessResult)
     )
   ) {
