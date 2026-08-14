@@ -477,6 +477,90 @@ describe("channel turn finalize", () => {
     ]);
   });
 
+  it("clears pending group history when the explicit record session key is invalid", async () => {
+    // resolveRecordSessionKey throws for blank or padded explicit record.sessionKey
+    // before recording or dispatch; a group turn must still finalize the caller-owned
+    // pending-history map so the next turn does not read stale entries.
+    const historyKey = "group-room-1";
+    const historyMap = new Map<string, HistoryEntry[]>([
+      [historyKey, [{ sender: "alice", body: "earlier group msg", timestamp: 1 }]],
+    ]);
+
+    await expect(
+      runPreparedChannelTurn({
+        channel: "test",
+        routeSessionKey: "agent:main:test:peer",
+        storePath: "/tmp/sessions.json",
+        ctxPayload: createCtx(),
+        recordInboundSession: createRecordInboundSession(),
+        runDispatch: vi.fn(),
+        record: { sessionKey: "  " },
+        history: { isGroup: true, historyKey, historyMap, limit: 50 },
+      }),
+    ).rejects.toThrow("Channel turn record.sessionKey must be non-empty.");
+
+    expect(historyMap.get(historyKey)).toStrictEqual([]);
+  });
+
+  it("clears pending group history when transcript-context merge fails before recording", async () => {
+    // The transcript-context merge runs before the record/dispatch try-catches; if it
+    // throws, the turn must still finalize the caller-owned pending-history map so the
+    // next group turn does not read stale entries. This is the pre-record terminal path
+    // that the per-catch cleanup did not cover.
+    const historyKey = "group-room-1";
+    const historyMap = new Map<string, HistoryEntry[]>([
+      [historyKey, [{ sender: "alice", body: "earlier group msg", timestamp: 1 }]],
+    ]);
+    const transcriptError = new Error("transcript read failed");
+    readRecentUserAssistantTextForSession.mockRejectedValueOnce(transcriptError);
+
+    await expect(
+      runPreparedChannelTurn({
+        channel: "test",
+        routeSessionKey: "agent:main:test:peer",
+        storePath: "/tmp/sessions.json",
+        ctxPayload: createCtx({
+          AgentId: "main",
+          SessionTranscriptContext: { historyLimit: 1 },
+        }),
+        recordInboundSession: createRecordInboundSession(),
+        runDispatch: vi.fn(),
+        history: { isGroup: true, historyKey, historyMap, limit: 50 },
+      }),
+    ).rejects.toThrow(transcriptError);
+
+    // Recording never ran because the merge threw first.
+    expect(historyMap.get(historyKey)).toStrictEqual([]);
+  });
+
+  it("clears pending group history when session recording fails", async () => {
+    // The caller-owned pending-history map is retained across turns; a failed turn
+    // must still finalize it so the next group turn does not read stale entries.
+    const historyKey = "group-room-1";
+    const historyMap = new Map<string, HistoryEntry[]>([
+      [historyKey, [{ sender: "alice", body: "earlier group msg", timestamp: 1 }]],
+    ]);
+    const recordError = new Error("session store failed");
+    const recordInboundSession = vi.fn(async () => {
+      throw recordError;
+    }) as unknown as RecordInboundSession;
+
+    await expect(
+      runPreparedChannelTurn({
+        channel: "test",
+        routeSessionKey: "agent:main:test:peer",
+        storePath: "/tmp/sessions.json",
+        ctxPayload: createCtx(),
+        recordInboundSession,
+        runDispatch: vi.fn(),
+        record: { onRecordError: vi.fn() },
+        history: { isGroup: true, historyKey, historyMap, limit: 50 },
+      }),
+    ).rejects.toThrow(recordError);
+
+    expect(historyMap.get(historyKey)).toStrictEqual([]);
+  });
+
   it("runs afterRecord only after session recording succeeds and before dispatch", async () => {
     const events: string[] = [];
     await runPreparedChannelTurn({
