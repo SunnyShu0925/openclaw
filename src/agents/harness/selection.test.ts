@@ -2903,20 +2903,15 @@ describe("selectAgentHarness", () => {
         },
       }),
     );
-    const harness: AgentHarness & {
-      compactNative(
-        params: TestNativeCompactionParams,
-      ): Promise<AgentHarnessCompactResult | undefined>;
-    } = {
+    const harness: AgentHarness = {
       id: "codex",
       label: "Codex",
       supports: (ctx) =>
         ctx.provider === "openai" ? { supported: true, priority: 100 } : { supported: false },
       runAttempt: vi.fn(async () => createAttemptResult("codex")),
       compact,
-      compactNative,
     };
-    registerAgentHarness(harness, { ownerPluginId: "codex" });
+    registerAgentHarness(harness, { ownerPluginId: "codex", nativeCompaction: compactNative });
 
     await expect(
       maybeCompactAgentHarnessSession(
@@ -2998,20 +2993,15 @@ describe("selectAgentHarness", () => {
         },
       }),
     );
-    const harness: AgentHarness & {
-      compactNative(
-        params: TestNativeCompactionParams,
-      ): Promise<AgentHarnessCompactResult | undefined>;
-    } = {
+    const harness: AgentHarness = {
       id: "codex",
       label: "Codex",
       supports: (ctx) =>
         ctx.provider === "openai" ? { supported: true, priority: 100 } : { supported: false },
       runAttempt: vi.fn(async () => createAttemptResult("codex")),
       compact,
-      compactNative,
     };
-    registerAgentHarness(harness, { ownerPluginId: "codex" });
+    registerAgentHarness(harness, { ownerPluginId: "codex", nativeCompaction: compactNative });
     const onNativeCompactionCapabilityUsed = vi.fn();
 
     await expect(
@@ -3083,6 +3073,55 @@ describe("selectAgentHarness", () => {
       ),
     ).resolves.toEqual({ ok: true, compacted: true });
     expect(onNativeCompactionCapabilityUsed).not.toHaveBeenCalled();
+    expect(compact).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a forged native-compaction property on a non-Codex harness", async () => {
+    const compact = vi.fn<NonNullable<AgentHarness["compact"]>>(async () => ({
+      ok: true,
+      compacted: true,
+    }));
+    const compactNative = vi.fn(
+      async (_params: TestNativeCompactionParams): Promise<AgentHarnessCompactResult> => ({
+        ok: false,
+        compacted: false,
+        reason: "no copilot app-server thread binding",
+        failure: { reason: "missing_thread_binding" },
+      }),
+    );
+    const harness: AgentHarness & {
+      compactNative(
+        params: TestNativeCompactionParams,
+      ): Promise<AgentHarnessCompactResult | undefined>;
+    } = {
+      id: "copilot",
+      label: "Copilot",
+      supports: (ctx) =>
+        ctx.provider === "openai" ? { supported: true, priority: 100 } : { supported: false },
+      runAttempt: vi.fn(async () => createAttemptResult("copilot")),
+      compact,
+      compactNative,
+    };
+    registerAgentHarness(harness, { ownerPluginId: "copilot" });
+    const onNativeCompactionCapabilityUsed = vi.fn();
+
+    await expect(
+      maybeCompactAgentHarnessSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:main",
+          sessionFile: "/tmp/session.jsonl",
+          workspaceDir: "/tmp/workspace",
+          provider: "openai",
+          model: "gpt-5.5",
+          agentHarnessId: "copilot",
+          preflightRequired: true,
+        },
+        { nativeCompactionRequest: "required_preflight", onNativeCompactionCapabilityUsed },
+      ),
+    ).resolves.toEqual({ ok: true, compacted: true });
+    expect(onNativeCompactionCapabilityUsed).not.toHaveBeenCalled();
+    expect(compactNative).not.toHaveBeenCalled();
     expect(compact).toHaveBeenCalledTimes(1);
   });
 

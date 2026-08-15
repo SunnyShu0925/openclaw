@@ -34,6 +34,7 @@ import {
 } from "../runtime-plan/resolve-auth.js";
 import type { AgentRuntimeAuthPlan } from "../runtime-plan/types.js";
 import { resolveAgentHarnessPolicy as resolveConfiguredAgentHarnessPolicy } from "./policy.js";
+import { resolveCodexAgentHarnessNativeCompaction } from "./registry.js";
 import {
   resolveAgentHarnessNativeToolPolicyRestricted,
   selectAgentHarness,
@@ -44,11 +45,7 @@ import {
   resolveAgentHarnessPreparedAuthSupport,
   resolveAgentHarnessPreparedRouteSupport,
 } from "./support.js";
-import type {
-  AgentHarness,
-  AgentHarnessCompactParams,
-  AgentHarnessCompactResult,
-} from "./types.js";
+import type { AgentHarness, AgentHarnessNativeCompactionRequest } from "./types.js";
 
 /**
  * Delegates session compaction to the selected agent harness when that runtime owns compaction.
@@ -56,26 +53,10 @@ import type {
  * CLI runtimes and OpenClaw-native compaction stay on the embedded runner path; plugin harnesses
  * can opt in through their `compact` hook.
  */
-type NativeCompactionRequest = "after_context_engine" | "required_preflight";
-
 type InternalAgentHarnessCompactionOptions = {
-  nativeCompactionRequest?: NativeCompactionRequest;
+  nativeCompactionRequest?: AgentHarnessNativeCompactionRequest;
   onNativeCompactionCapabilityUsed?: () => void;
 };
-
-type InternalAgentHarnessNativeCompactionParams = AgentHarnessCompactParams & {
-  nativeCompactionRequest: NativeCompactionRequest;
-};
-
-type InternalAgentHarnessCompactionCapability = {
-  // Host-requested native compaction is private orchestration, not a plugin SDK
-  // contract. Keep its request intent off the public compact params.
-  compactNative?(
-    params: InternalAgentHarnessNativeCompactionParams,
-  ): Promise<AgentHarnessCompactResult | undefined>;
-};
-
-type InternalAgentHarness = AgentHarness & InternalAgentHarnessCompactionCapability;
 type HarnessCompactionResolvedAuth = { apiKey?: string };
 
 const log = createSubsystemLogger("agents/harness-compaction");
@@ -451,11 +432,8 @@ export async function maybeCompactAgentHarnessSession(
         ],
       })
     : selectAgentHarness(harnessSelectionParams);
-  const initialInternalHarness = harness as InternalAgentHarness;
-  if (
-    options.nativeCompactionRequest === "after_context_engine" &&
-    !initialInternalHarness.compactNative
-  ) {
+  const initialNativeCompaction = resolveCodexAgentHarnessNativeCompaction(harness);
+  if (options.nativeCompactionRequest === "after_context_engine" && !initialNativeCompaction) {
     return undefined;
   }
   if (!options.nativeCompactionRequest && !harness.compact) {
@@ -506,11 +484,8 @@ export async function maybeCompactAgentHarnessSession(
   const nativeToolPolicyRestricted = resolveNativeToolPolicyRestricted(harness);
   compactParams.nativeToolSurface = nativeToolPolicyRestricted ? "host-isolated" : "unrestricted";
   resolvedRuntimeAuthPlan = resolved.runtimeAuthPlan ?? resolvedRuntimeAuthPlan;
-  const internalHarness = harness as InternalAgentHarness;
-  if (
-    options.nativeCompactionRequest === "after_context_engine" &&
-    !internalHarness.compactNative
-  ) {
+  const nativeCompaction = resolveCodexAgentHarnessNativeCompaction(harness);
+  if (options.nativeCompactionRequest === "after_context_engine" && !nativeCompaction) {
     return undefined;
   }
   if (!options.nativeCompactionRequest && !harness.compact) {
@@ -582,11 +557,11 @@ export async function maybeCompactAgentHarnessSession(
         }
       : handoffCompactParams;
   if (options.nativeCompactionRequest) {
-    if (internalHarness.compactNative) {
-      // Record authority where the private host capability is dispatched. A
-      // public harness result must not be able to claim this authorization.
+    if (nativeCompaction) {
+      // Registry ownership, not a public harness property or result, grants
+      // the Codex-only fallback authority recorded at this dispatch boundary.
       options.onNativeCompactionCapabilityUsed?.();
-      return internalHarness.compactNative({
+      return nativeCompaction({
         ...resolvedCompactParams,
         nativeCompactionRequest: options.nativeCompactionRequest,
       });

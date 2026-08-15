@@ -189,7 +189,8 @@ export function createPluginApiFactory(
               registerModelCatalogProvider: (provider) =>
                 registerModelCatalogProvider(record, provider),
               registerEmbeddingProvider: (provider) => registerEmbeddingProvider(record, provider),
-              registerAgentHarness: (harness) => registerAgentHarness(record, harness),
+              registerAgentHarness: (harness, options) =>
+                registerAgentHarness(record, harness, options),
               registerDetachedTaskRuntime: (runtime) =>
                 registerDetachedTaskRuntime(record, runtime),
               registerSpeechProvider: (provider) => registerSpeechProvider(record, provider),
