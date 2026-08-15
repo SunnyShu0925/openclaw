@@ -60,6 +60,7 @@ type NativeCompactionRequest = "after_context_engine" | "required_preflight";
 
 type InternalAgentHarnessCompactionOptions = {
   nativeCompactionRequest?: NativeCompactionRequest;
+  onNativeCompactionCapabilityUsed?: () => void;
 };
 
 type InternalAgentHarnessNativeCompactionParams = AgentHarnessCompactParams & {
@@ -582,6 +583,9 @@ export async function maybeCompactAgentHarnessSession(
       : handoffCompactParams;
   if (options.nativeCompactionRequest) {
     if (internalHarness.compactNative) {
+      // Record authority where the private host capability is dispatched. A
+      // public harness result must not be able to claim this authorization.
+      options.onNativeCompactionCapabilityUsed?.();
       return internalHarness.compactNative({
         ...resolvedCompactParams,
         nativeCompactionRequest: options.nativeCompactionRequest,

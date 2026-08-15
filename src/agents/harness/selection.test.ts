@@ -3012,6 +3012,7 @@ describe("selectAgentHarness", () => {
       compactNative,
     };
     registerAgentHarness(harness, { ownerPluginId: "codex" });
+    const onNativeCompactionCapabilityUsed = vi.fn();
 
     await expect(
       maybeCompactAgentHarnessSession(
@@ -3025,7 +3026,7 @@ describe("selectAgentHarness", () => {
           agentHarnessId: "codex",
           preflightRequired: true,
         },
-        { nativeCompactionRequest: "required_preflight" },
+        { nativeCompactionRequest: "required_preflight", onNativeCompactionCapabilityUsed },
       ),
     ).resolves.toEqual({
       ok: true,
@@ -3038,6 +3039,7 @@ describe("selectAgentHarness", () => {
       },
     });
     expect(compact).not.toHaveBeenCalled();
+    expect(onNativeCompactionCapabilityUsed).toHaveBeenCalledTimes(1);
     expect(compactNative).toHaveBeenCalledTimes(1);
     expect(compactNative).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3063,6 +3065,7 @@ describe("selectAgentHarness", () => {
       },
       { ownerPluginId: "codex" },
     );
+    const onNativeCompactionCapabilityUsed = vi.fn();
 
     await expect(
       maybeCompactAgentHarnessSession(
@@ -3076,9 +3079,10 @@ describe("selectAgentHarness", () => {
           agentHarnessId: "codex",
           preflightRequired: true,
         },
-        { nativeCompactionRequest: "required_preflight" },
+        { nativeCompactionRequest: "required_preflight", onNativeCompactionCapabilityUsed },
       ),
     ).resolves.toEqual({ ok: true, compacted: true });
+    expect(onNativeCompactionCapabilityUsed).not.toHaveBeenCalled();
     expect(compact).toHaveBeenCalledTimes(1);
   });
 

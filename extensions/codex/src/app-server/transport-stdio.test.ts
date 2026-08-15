@@ -43,7 +43,7 @@ describe("createStdioTransport", () => {
       "-c",
       "model_context_window=1000000",
       "-c",
-      "model_auto_compact_token_limit=900000",
+      "model_auto_compact_token_limit=700000",
       "-c",
       "model_auto_compact_token_limit_scope=total",
     ];

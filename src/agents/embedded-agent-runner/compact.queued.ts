@@ -589,6 +589,7 @@ async function compactResolvedContextEngine(
     promptTokenBudget: contextTokenBudget,
   });
   const contextEngineOwnsCompaction = contextEngine.info.ownsCompaction === true;
+  let requiredPreflightNativeCapabilityUsed = false;
   const harnessResult =
     attemptNativeHarnessCompaction && (!contextEngineOwnsCompaction || lockedNativeHarness)
       ? await maybeCompactAgentHarnessSession(
@@ -600,7 +601,12 @@ async function compactResolvedContextEngine(
             contextEngineRuntimeContext,
           },
           preparedParams.preflightRequired === true
-            ? { nativeCompactionRequest: "required_preflight" }
+            ? {
+                nativeCompactionRequest: "required_preflight",
+                onNativeCompactionCapabilityUsed: () => {
+                  requiredPreflightNativeCapabilityUsed = true;
+                },
+              }
             : undefined,
         )
       : undefined;
@@ -610,13 +616,13 @@ async function compactResolvedContextEngine(
   // exception: missing or stale thread bindings can be recoverable and would
   // otherwise drop the user's turn, so they fall through to the shared
   // context-engine fallback below while `preparedHarnessRuntime` keeps the
-  // lock intact. The harness must explicitly delegate that recovery; matching
-  // a binding error alone cannot escape the persisted model-lock boundary.
+  // lock intact. Authorization comes from the private native capability that
+  // core actually dispatched; public result fields cannot escape the lock.
   if (
     lockedNativeHarness &&
     !(
       preparedParams.preflightRequired === true &&
-      harnessResult?.failure?.fallback === "context-engine" &&
+      requiredPreflightNativeCapabilityUsed &&
       shouldFallbackAfterHarnessCompaction(harnessResult)
     )
   ) {

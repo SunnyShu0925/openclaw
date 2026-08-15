@@ -953,7 +953,6 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server binding changed before native compaction");
     expect(result.failure?.reason).toBe("stale_thread_binding");
-    expect(result.failure?.fallback).toBe("context-engine");
   });
 
   it("blocks same-process binding writes until guarded native compaction starts", async () => {
@@ -1833,7 +1832,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.result).toBeUndefined();
   });
 
-  it("delegates required-preflight missing-binding recovery to the context engine", async () => {
+  it("reports required-preflight missing binding as a recoverable native failure", async () => {
     const sessionFile = path.join(tempDir, "required-preflight-missing-binding.jsonl");
 
     const result = requireCompactResult(
@@ -1858,7 +1857,6 @@ describe("maybeCompactCodexAppServerSession", () => {
       compacted: false,
       failure: {
         reason: "missing_thread_binding",
-        fallback: "context-engine",
       },
     });
   });

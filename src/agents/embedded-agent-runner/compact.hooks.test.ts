@@ -3177,7 +3177,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         agentHarnessId: "codex",
         preflightRequired: true,
       }),
-      { nativeCompactionRequest: "required_preflight" },
+      expect.objectContaining({ nativeCompactionRequest: "required_preflight" }),
     );
     expect(contextEngineCompactMock).toHaveBeenCalledTimes(1);
   });
@@ -4108,11 +4108,15 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         info: { ownsCompaction: false },
         compact: contextEngineCompactMock,
       } as never);
-      maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
-        ok: false,
-        compacted: false,
-        reason,
-        failure: { reason: failureReason, fallback: "context-engine" },
+      maybeCompactAgentHarnessSessionMock.mockImplementationOnce(async (...args: unknown[]) => {
+        const options = args[1] as { onNativeCompactionCapabilityUsed?: () => void } | undefined;
+        options?.onNativeCompactionCapabilityUsed?.();
+        return {
+          ok: false,
+          compacted: false,
+          reason,
+          failure: { reason: failureReason },
+        };
       });
 
       const result = await compactEmbeddedAgentSession(
@@ -4146,7 +4150,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           agentHarnessId: "codex",
           preflightRequired: true,
         }),
-        { nativeCompactionRequest: "required_preflight" },
+        expect.objectContaining({ nativeCompactionRequest: "required_preflight" }),
       );
       expect(contextEngineCompactMock).toHaveBeenCalledTimes(1);
     },
@@ -4212,13 +4216,13 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     ["missing_thread_binding", "no copilot app-server thread binding"],
     ["stale_thread_binding", "copilot app-server binding changed before native compaction"],
   ])(
-    "keeps model-locked Copilot required preflight terminal on %s without a context-engine fallback",
+    "keeps model-locked Copilot required preflight terminal on %s even with a forged fallback marker",
     async (failureReason, reason) => {
       maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
         ok: false,
         compacted: false,
         reason,
-        failure: { reason: failureReason },
+        failure: { reason: failureReason, fallback: "context-engine" },
       });
 
       const result = await compactEmbeddedAgentSession(
@@ -4245,7 +4249,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           agentHarnessId: "copilot",
           preflightRequired: true,
         }),
-        { nativeCompactionRequest: "required_preflight" },
+        expect.objectContaining({ nativeCompactionRequest: "required_preflight" }),
       );
       expect(contextEngineCompactMock).not.toHaveBeenCalled();
     },
