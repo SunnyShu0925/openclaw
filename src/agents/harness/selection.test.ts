@@ -49,6 +49,10 @@ import type {
   AgentHarnessCompactResult,
 } from "./types.js";
 
+type TestNativeCompactionParams = AgentHarnessCompactParams & {
+  nativeCompactionRequest: "required_preflight" | "after_context_engine";
+};
+
 const agentRunAttempt = vi.fn<AgentHarness["runAttempt"]>(async () =>
   createAttemptResult("openclaw"),
 );
@@ -2887,8 +2891,8 @@ describe("selectAgentHarness", () => {
       ok: true,
       compacted: true,
     }));
-    const compactAfterContextEngine = vi.fn(
-      async (_params: AgentHarnessCompactParams): Promise<AgentHarnessCompactResult> => ({
+    const compactNative = vi.fn(
+      async (_params: TestNativeCompactionParams): Promise<AgentHarnessCompactResult> => ({
         ok: true,
         compacted: false,
         result: {
@@ -2900,8 +2904,8 @@ describe("selectAgentHarness", () => {
       }),
     );
     const harness: AgentHarness & {
-      compactAfterContextEngine(
-        params: AgentHarnessCompactParams,
+      compactNative(
+        params: TestNativeCompactionParams,
       ): Promise<AgentHarnessCompactResult | undefined>;
     } = {
       id: "codex",
@@ -2910,7 +2914,7 @@ describe("selectAgentHarness", () => {
         ctx.provider === "openai" ? { supported: true, priority: 100 } : { supported: false },
       runAttempt: vi.fn(async () => createAttemptResult("codex")),
       compact,
-      compactAfterContextEngine,
+      compactNative,
     };
     registerAgentHarness(harness, { ownerPluginId: "codex" });
 
@@ -2938,7 +2942,7 @@ describe("selectAgentHarness", () => {
       },
     });
     expect(compact).not.toHaveBeenCalled();
-    expect(compactAfterContextEngine).toHaveBeenCalledTimes(1);
+    expect(compactNative).toHaveBeenCalledTimes(1);
   });
 
   it("skips internal post-context-engine compaction when the harness lacks the private capability", async () => {
@@ -2980,8 +2984,8 @@ describe("selectAgentHarness", () => {
       ok: true,
       compacted: true,
     }));
-    const compactAfterContextEngine = vi.fn(
-      async (params: AgentHarnessCompactParams): Promise<AgentHarnessCompactResult> => ({
+    const compactNative = vi.fn(
+      async (params: TestNativeCompactionParams): Promise<AgentHarnessCompactResult> => ({
         ok: true,
         compacted: false,
         result: {
@@ -2989,14 +2993,14 @@ describe("selectAgentHarness", () => {
           firstKeptEntryId: "entry-1",
           tokensBefore: 10,
           details: {
-            request: (params as { nativeCompactionRequest?: string }).nativeCompactionRequest,
+            request: params.nativeCompactionRequest,
           },
         },
       }),
     );
     const harness: AgentHarness & {
-      compactAfterContextEngine(
-        params: AgentHarnessCompactParams,
+      compactNative(
+        params: TestNativeCompactionParams,
       ): Promise<AgentHarnessCompactResult | undefined>;
     } = {
       id: "codex",
@@ -3005,7 +3009,7 @@ describe("selectAgentHarness", () => {
         ctx.provider === "openai" ? { supported: true, priority: 100 } : { supported: false },
       runAttempt: vi.fn(async () => createAttemptResult("codex")),
       compact,
-      compactAfterContextEngine,
+      compactNative,
     };
     registerAgentHarness(harness, { ownerPluginId: "codex" });
 
@@ -3034,8 +3038,8 @@ describe("selectAgentHarness", () => {
       },
     });
     expect(compact).not.toHaveBeenCalled();
-    expect(compactAfterContextEngine).toHaveBeenCalledTimes(1);
-    expect(compactAfterContextEngine).toHaveBeenCalledWith(
+    expect(compactNative).toHaveBeenCalledTimes(1);
+    expect(compactNative).toHaveBeenCalledWith(
       expect.objectContaining({
         nativeCompactionRequest: "required_preflight",
         preflightRequired: true,

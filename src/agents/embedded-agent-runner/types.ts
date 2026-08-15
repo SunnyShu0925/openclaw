@@ -269,6 +269,8 @@ export type EmbeddedAgentCompactResult = {
     status?: number;
     code?: string;
     rawError?: string;
+    /** Authorizes the shared recovery owner after this harness could not compact. */
+    fallback?: "context-engine";
   };
   result?: {
     /** Identifies summaryless provider compaction in RPC and UI consumers. */

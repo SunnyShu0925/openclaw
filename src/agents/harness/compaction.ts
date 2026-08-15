@@ -62,11 +62,15 @@ type InternalAgentHarnessCompactionOptions = {
   nativeCompactionRequest?: NativeCompactionRequest;
 };
 
+type InternalAgentHarnessNativeCompactionParams = AgentHarnessCompactParams & {
+  nativeCompactionRequest: NativeCompactionRequest;
+};
+
 type InternalAgentHarnessCompactionCapability = {
-  // Context-engine follow-up compaction is core/Codex sequencing, not a plugin SDK
-  // contract. Keep it behind this private capability so public compact params stay generic.
-  compactAfterContextEngine?(
-    params: AgentHarnessCompactParams,
+  // Host-requested native compaction is private orchestration, not a plugin SDK
+  // contract. Keep its request intent off the public compact params.
+  compactNative?(
+    params: InternalAgentHarnessNativeCompactionParams,
   ): Promise<AgentHarnessCompactResult | undefined>;
 };
 
@@ -449,7 +453,7 @@ export async function maybeCompactAgentHarnessSession(
   const initialInternalHarness = harness as InternalAgentHarness;
   if (
     options.nativeCompactionRequest === "after_context_engine" &&
-    !initialInternalHarness.compactAfterContextEngine
+    !initialInternalHarness.compactNative
   ) {
     return undefined;
   }
@@ -502,12 +506,9 @@ export async function maybeCompactAgentHarnessSession(
   compactParams.nativeToolSurface = nativeToolPolicyRestricted ? "host-isolated" : "unrestricted";
   resolvedRuntimeAuthPlan = resolved.runtimeAuthPlan ?? resolvedRuntimeAuthPlan;
   const internalHarness = harness as InternalAgentHarness;
-  const shouldCompactAfterContextEngine =
-    options.nativeCompactionRequest === "after_context_engine" ||
-    options.nativeCompactionRequest === "required_preflight";
   if (
     options.nativeCompactionRequest === "after_context_engine" &&
-    !internalHarness.compactAfterContextEngine
+    !internalHarness.compactNative
   ) {
     return undefined;
   }
@@ -579,13 +580,11 @@ export async function maybeCompactAgentHarnessSession(
             : {}),
         }
       : handoffCompactParams;
-  if (shouldCompactAfterContextEngine) {
-    if (internalHarness.compactAfterContextEngine) {
-      return internalHarness.compactAfterContextEngine({
+  if (options.nativeCompactionRequest) {
+    if (internalHarness.compactNative) {
+      return internalHarness.compactNative({
         ...resolvedCompactParams,
-        ...(options.nativeCompactionRequest
-          ? { nativeCompactionRequest: options.nativeCompactionRequest }
-          : {}),
+        nativeCompactionRequest: options.nativeCompactionRequest,
       });
     }
     if (!harness.compact) {

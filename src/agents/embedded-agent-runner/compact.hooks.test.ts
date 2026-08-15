@@ -4112,7 +4112,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         ok: false,
         compacted: false,
         reason,
-        failure: { reason: failureReason },
+        failure: { reason: failureReason, fallback: "context-engine" },
       });
 
       const result = await compactEmbeddedAgentSession(
@@ -4151,6 +4151,33 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       expect(contextEngineCompactMock).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("keeps model-locked required preflight terminal without harness fallback authorization", async () => {
+    maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "no codex app-server thread binding",
+      failure: { reason: "missing_thread_binding" },
+    });
+
+    const result = await compactEmbeddedAgentSession(
+      wrappedCompactionArgs({
+        provider: "openai",
+        model: "gpt-5.5",
+        agentHarnessId: "codex",
+        modelSelectionLocked: true,
+        trigger: "budget",
+        preflightRequired: true,
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      compacted: false,
+      failure: { reason: "missing_thread_binding" },
+    });
+    expect(contextEngineCompactMock).not.toHaveBeenCalled();
+  });
 
   it("keeps model-locked required preflight terminal when the native failure is not recoverable", async () => {
     maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({

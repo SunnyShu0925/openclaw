@@ -953,6 +953,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server binding changed before native compaction");
     expect(result.failure?.reason).toBe("stale_thread_binding");
+    expect(result.failure?.fallback).toBe("context-engine");
   });
 
   it("blocks same-process binding writes until guarded native compaction starts", async () => {
@@ -1830,6 +1831,36 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("no codex app-server thread binding");
     expect(result.failure?.reason).toBe("missing_thread_binding");
     expect(result.result).toBeUndefined();
+  });
+
+  it("delegates required-preflight missing-binding recovery to the context engine", async () => {
+    const sessionFile = path.join(tempDir, "required-preflight-missing-binding.jsonl");
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          preflightRequired: true,
+        },
+        {
+          allowNonManualNativeRequest: true,
+          nativeCompactionRequest: "required_preflight",
+        },
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      compacted: false,
+      failure: {
+        reason: "missing_thread_binding",
+        fallback: "context-engine",
+      },
+    });
   });
 
   it("preserves stale thread binding metadata for recovery and reports failed native compaction", async () => {

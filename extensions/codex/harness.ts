@@ -49,8 +49,10 @@ const CODEX_APP_SERVER_CONTEXT_ENGINE_HOST_CAPABILITIES = [
 
 type CodexAppServerAgentHarness = AgentHarnessV2 & {
   cloudPlacement?: { mode: "remote-exec" };
-  compactAfterContextEngine?(
-    params: AgentHarnessCompactParams,
+  compactNative?(
+    params: AgentHarnessCompactParams & {
+      nativeCompactionRequest: "required_preflight" | "after_context_engine";
+    },
   ): Promise<AgentHarnessCompactResult | undefined>;
 };
 
@@ -285,18 +287,13 @@ export function createCodexAppServerAgentHarness(options: {
         pluginConfig: options?.resolvePluginConfig?.() ?? options?.pluginConfig,
       });
     },
-    compactAfterContextEngine: async (params) => {
+    compactNative: async (params) => {
       const { maybeCompactCodexAppServerSession } = await import("./src/app-server/compact.js");
-      const nativeCompactionRequest = (
-        params as {
-          nativeCompactionRequest?: "required_preflight" | "after_context_engine";
-        }
-      ).nativeCompactionRequest;
       return maybeCompactCodexAppServerSession(params, {
         bindingStore: options.bindingStore,
         pluginConfig: options?.resolvePluginConfig?.() ?? options?.pluginConfig,
         allowNonManualNativeRequest: true,
-        ...(nativeCompactionRequest ? { nativeCompactionRequest } : {}),
+        nativeCompactionRequest: params.nativeCompactionRequest,
       });
     },
     reset: async (params) => {

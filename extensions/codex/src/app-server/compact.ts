@@ -486,6 +486,9 @@ async function compactCodexNativeThread(
     return failedCodexThreadBindingCompactionResult(params, {
       reason: "no codex app-server thread binding",
       recovery: "missing_thread_binding",
+      ...(options.nativeCompactionRequest === "required_preflight"
+        ? { fallback: "context-engine" as const }
+        : {}),
     });
   }
   if (
@@ -704,6 +707,7 @@ async function compactCodexNativeThread(
                         threadId: currentBinding?.threadId ?? binding.threadId,
                         reason: "codex app-server binding changed before native compaction",
                         recovery: "stale_thread_binding",
+                        ...(isRequiredPreflight ? { fallback: "context-engine" as const } : {}),
                       }),
               };
             }
@@ -782,6 +786,9 @@ async function compactCodexNativeThread(
               threadId: binding.threadId,
               reason: coerceErrorMessage(error),
               recovery: "stale_thread_binding",
+              ...(options.nativeCompactionRequest === "required_preflight"
+                ? { fallback: "context-engine" as const }
+                : {}),
             });
           }
           embeddedAgentLog.warn("codex app-server compaction failed", {
@@ -919,6 +926,7 @@ function failedCodexThreadBindingCompactionResult(
     reason: string;
     recovery: "missing_thread_binding" | "stale_thread_binding";
     threadId?: string;
+    fallback?: "context-engine";
   },
 ): EmbeddedAgentCompactResult {
   embeddedAgentLog.warn("codex app-server compaction could not use thread binding", {
@@ -935,6 +943,7 @@ function failedCodexThreadBindingCompactionResult(
     failure: {
       reason: recovery.recovery,
       rawError: recovery.reason,
+      ...(recovery.fallback ? { fallback: recovery.fallback } : {}),
     },
   };
 }
