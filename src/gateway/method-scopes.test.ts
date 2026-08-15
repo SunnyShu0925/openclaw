@@ -82,8 +82,10 @@ describe("method scope resolution", () => {
     ["projects.add", ["operator.write"]],
     ["projects.searchRemote", ["operator.read"]],
     ["sessions.groups.list", ["operator.read"]],
+    ["sessions.groups.defaults", ["operator.write"]],
     ["sessions.groups.put", ["operator.write"]],
     ["sessions.groups.rename", ["operator.write"]],
+    ["sessions.groups.update", ["operator.write"]],
     ["sessions.groups.delete", ["operator.write"]],
     ["sessions.catalog.list", ["operator.read"]],
     ["sessions.catalog.read", ["operator.read"]],
@@ -132,7 +134,6 @@ describe("method scope resolution", () => {
     ["conversations.send", ["operator.admin"]],
     ["conversations.turn", ["operator.admin"]],
     ["conversations.turn.cancel", ["operator.admin"]],
-    ["delivery.failures.resubmit", ["operator.admin"]],
   ])("resolves least-privilege scopes for %s", (method, expected) => {
     expect(resolveLeastPrivilegeOperatorScopesForMethod(method)).toEqual(expected);
   });

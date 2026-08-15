@@ -252,8 +252,10 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["sessions.delete", "sessions-delete", "dynamic", "<=2026.7"],
   ["sessions.compact", "sessions-compact", "operator.admin", "<=2026.7"],
   ["sessions.groups.list", "sessions-groups", "operator.read", "<=2026.7"],
+  ["sessions.groups.defaults", "sessions-groups", "operator.write", "2026.8"],
   ["sessions.groups.put", "sessions-groups", "operator.write", "<=2026.7"],
   ["sessions.groups.rename", "sessions-groups", "operator.write", "<=2026.7"],
+  ["sessions.groups.update", "sessions-groups", "operator.write", "2026.8"],
   ["sessions.groups.delete", "sessions-groups", "operator.write", "<=2026.7"],
   ["last-heartbeat", "system", "operator.read", "<=2026.7"],
   ["set-heartbeats", "system", "operator.admin", "<=2026.7"],
@@ -274,6 +276,13 @@ const CORE_GATEWAY_METHOD_SPECS = [
     "device-pair-setup",
     "operator.admin",
     "<=2026.7",
+    { advertise: false },
+  ],
+  [
+    "device.pair.setupStatus",
+    "device-pair-setup",
+    "operator.admin",
+    "2026.8",
     { advertise: false },
   ],
   ["node.rename", "nodes", "operator.pairing", "<=2026.7"],
@@ -524,7 +533,6 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["portal.list", "portals", "operator.read", "2026.8"],
   ["portal.open", "portals", "operator.write", "2026.8", { controlPlaneWrite: true }],
   ["portal.close", "portals", "operator.write", "2026.8", { controlPlaneWrite: true }],
-  ["delivery.failures.resubmit", "delivery-failures", "operator.admin", "2026.8"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];
 
 export type CoreGatewayHandlerFamily = Exclude<(typeof CORE_GATEWAY_METHOD_SPECS)[number][1], null>;

@@ -2,6 +2,7 @@
  * Exec tool policy, host dispatch, and process lifecycle pipeline.
  */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveStateDir } from "../config/paths.js";
 import { createAbortError } from "../infra/abort-signal.js";
 import {
   type ExecHost,
@@ -13,7 +14,10 @@ import {
   resolveExecApprovalsFromFile,
   resolveExecModePolicy,
 } from "../infra/exec-approvals.js";
-import { rejectUnsafeExecControlShellCommand } from "../infra/exec-control-command-guard.js";
+import {
+  rejectUnsafeExecControlShellCommand,
+  rejectUnsafeExecLiveStateSqliteShellCommand,
+} from "../infra/exec-control-command-guard.js";
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
 import { logInfo } from "../logger.js";
 import { parseAgentSessionKey, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
@@ -388,6 +392,12 @@ export function createExecTool(
       } else {
         workdir = workdirResolution.remoteCwd;
       }
+      if (host === "gateway" && workdir) {
+        await rejectUnsafeExecLiveStateSqliteShellCommand(params.command, {
+          stateDir: resolveStateDir(),
+          workdir,
+        });
+      }
       let run: ExecProcessHandle;
       let backgroundTask: BackgroundExecTaskHandle | null = null;
       let settledOutcome: ExecProcessOutcome | null = null;
@@ -404,9 +414,11 @@ export function createExecTool(
 
         const resolvedExecEnvState = requestPreparation.getResolvedExecEnvPreparedState(params);
         const storeEnv = await resolveStoreEnv();
-        const canReachGatewayProxy = host === "gateway" || host === "sandbox";
+        // The proxy is loopback-owned by the Gateway. Sandbox and node hosts
+        // cannot use its sentinels, so both sides of the contract stay absent.
+        const useSecretEgress = secretEgressEnabled && host === "gateway";
         let secretEgressEnv: Record<string, string> | undefined;
-        if (secretEgressEnabled && canReachGatewayProxy) {
+        if (useSecretEgress) {
           if (!defaults?.operationalRunInstance) {
             throw new Error("Secret egress proxy requires an admitted agent run instance");
           }
@@ -424,7 +436,7 @@ export function createExecTool(
           defaultPathPrepend,
           pluginEnv: resolvedExecEnvState?.pluginEnv,
           storeEnv: storeEnv.env,
-          storeSecretEnv: secretEgressEnv ? storeEnv.secretSentinels : undefined,
+          storeSecretEnv: useSecretEgress ? storeEnv.secretSentinels : undefined,
           secretEgressEnv,
           warnings,
         });

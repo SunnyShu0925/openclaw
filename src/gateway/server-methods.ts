@@ -56,6 +56,7 @@ import {
   resolveSessionMutationAuthorization,
   SessionMutationAuthorizationChangedError,
 } from "./session-sharing.js";
+import { classifyGatewayStaleInstall } from "./stale-install.js";
 
 type CoreGatewayHandlerModuleLoader = () => Promise<GatewayRequestHandlers>;
 
@@ -91,10 +92,6 @@ const CORE_GATEWAY_HANDLER_MODULES = {
     ),
   diagnostics: () =>
     import("./server-methods/diagnostics.js").then((module) => module.diagnosticsHandlers),
-  "delivery-failures": () =>
-    import("./server-methods/delivery-failures.js").then(
-      (module) => module.deliveryFailureHandlers,
-    ),
   doctor: () => import("./server-methods/doctor.js").then((module) => module.doctorHandlers),
   environments: () =>
     import("./server-methods/environments.js").then((module) => module.environmentsHandlers),
@@ -516,6 +513,10 @@ export async function runWithGatewayRequestEnvelope<T>(
     } catch (error) {
       if (error instanceof SessionMutationAuthorizationChangedError) {
         return await options.reject(error.error);
+      }
+      const staleInstall = classifyGatewayStaleInstall(error);
+      if (staleInstall) {
+        return await options.reject(staleInstall.error);
       }
       throw error;
     }

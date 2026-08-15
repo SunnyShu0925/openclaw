@@ -14,7 +14,7 @@ import {
   buildOpenAIResponsesReasoningReplayMetadata,
   captureOpenAIResponsesCompaction,
 } from "./openai-responses-compaction-replay.js";
-import { tagOpenAIResponsesReasoningReplayItem } from "./openai-responses-replay-internal.js";
+import { OPENAI_RESPONSES_REASONING_REPLAY_META_KEY } from "./openai-responses-contracts.js";
 
 type SdkResponse = { data: AsyncIterable<unknown>; response: Response };
 const SDK_FULL_HISTORY_PREFIX = "full history before compaction";
@@ -135,18 +135,14 @@ function createCompactionContext(
           {
             type: "thinking",
             thinking: "prior reasoning",
-            thinkingSignature: JSON.stringify(
-              tagOpenAIResponsesReasoningReplayItem(
-                {
-                  type: "reasoning",
-                  id: "rs_sdk_retry",
-                  encrypted_content: SDK_REASONING_CIPHERTEXT,
-                  summary: [],
-                },
-                model,
-                identity,
-              ),
-            ),
+            thinkingSignature: JSON.stringify({
+              type: "reasoning",
+              id: "rs_sdk_retry",
+              encrypted_content: SDK_REASONING_CIPHERTEXT,
+              summary: [],
+              [OPENAI_RESPONSES_REASONING_REPLAY_META_KEY]:
+                buildOpenAIResponsesReasoningReplayMetadata(model, identity),
+            }),
           },
         ]
       : [],
@@ -431,6 +427,7 @@ describe("OpenAI Responses provider prompt observer", () => {
         code: "invalid_encrypted_content",
       });
     const onPayload = vi.fn((request: unknown) => request);
+    const onCompactionRejected = vi.fn();
     sdkState.outcomes = [
       invalidEncryptedContent(),
       invalidEncryptedContent(),
@@ -441,6 +438,7 @@ describe("OpenAI Responses provider prompt observer", () => {
       createOpenAIResponsesTransportStreamFn()(openAIModel, context, {
         apiKey: "test-key",
         ...identity,
+        onCompactionRejected,
         onPayload,
       } as never),
     );
@@ -456,6 +454,7 @@ describe("OpenAI Responses provider prompt observer", () => {
     expect(JSON.stringify(sdkState.requests[2]?.input)).toContain(SDK_FULL_HISTORY_PREFIX);
     expect(JSON.stringify(sdkState.requests[2]?.input)).not.toContain(SDK_REASONING_CIPHERTEXT);
     expect(onPayload).toHaveBeenCalledTimes(2);
+    expect(onCompactionRejected).toHaveBeenCalledOnce();
   });
 
   it("does not invoke the provider or retry when prompt observation throws", async () => {

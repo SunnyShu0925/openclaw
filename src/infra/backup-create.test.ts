@@ -2199,6 +2199,35 @@ describe("createBackupArchive", () => {
     );
   });
 
+  it("rejects absolute symlink targets before publishing the archive", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    await withOpenClawTestState(
+      {
+        layout: "state-only",
+        prefix: "openclaw-backup-absolute-symlink-",
+        scenario: "minimal",
+      },
+      async (state) => {
+        const outputPath = state.path("absolute-symlink.tar.gz");
+        const outsideTarget = state.path("outside-target.txt");
+        await fs.writeFile(outsideTarget, "outside\n", "utf8");
+        await fs.symlink(outsideTarget, state.statePath("ordinary-link"));
+
+        await expect(
+          createBackupArchive({
+            output: outputPath,
+            includeWorkspace: false,
+            nowMs: Date.UTC(2026, 4, 9, 8, 33, 0),
+          }),
+        ).rejects.toThrow(/Archive symbolic link target must be relative/iu);
+        await expect(fs.access(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+      },
+    );
+  });
+
   it("preserves noncanonical symlinked SQLite paths without dereferencing them", async () => {
     if (process.platform === "win32") {
       return;
@@ -2212,12 +2241,13 @@ describe("createBackupArchive", () => {
       },
       async (state) => {
         const outputDir = state.path("backups");
-        const externalDbPath = state.path("external-malformed.sqlite");
+        const backingPath = state.statePath("plugins", "backing", "malformed.bin");
         const linkedDbPath = state.statePath("plugins", "dedicated", "linked.sqlite");
+        await fs.mkdir(path.dirname(backingPath), { recursive: true });
         await fs.mkdir(path.dirname(linkedDbPath), { recursive: true });
         await fs.mkdir(outputDir, { recursive: true });
-        await fs.writeFile(externalDbPath, "not a sqlite database", "utf8");
-        await fs.symlink(externalDbPath, linkedDbPath);
+        await fs.writeFile(backingPath, "not a sqlite database", "utf8");
+        await fs.symlink(path.relative(path.dirname(linkedDbPath), backingPath), linkedDbPath);
 
         const result = await createBackupArchive({
           output: outputDir,
@@ -2231,7 +2261,7 @@ describe("createBackupArchive", () => {
         const runtime: RuntimeEnv = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
         await expect(
           backupVerifyCommand(runtime, { archive: result.archivePath }),
-        ).resolves.toMatchObject({ ok: true });
+        ).resolves.toEqual(expect.objectContaining({ ok: true, symlinkCount: 1 }));
       },
     );
   });

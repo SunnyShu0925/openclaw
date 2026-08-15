@@ -145,7 +145,7 @@ const expectedSortedCatalog = (): ModelCatalogRpcEntry[] => [
     id: "gpt-test-a",
     name: "A-Model",
     provider: "openai",
-    agentRuntime: { id: "openclaw", source: "implicit" },
+    agentRuntime: { id: "openclaw", cloudPlacementSupported: true, source: "implicit" },
     available: false,
     contextWindow: 8000,
   },
@@ -153,7 +153,7 @@ const expectedSortedCatalog = (): ModelCatalogRpcEntry[] => [
     id: "gpt-test-z",
     name: "gpt-test-z",
     provider: "openai",
-    agentRuntime: { id: "openclaw", source: "implicit" },
+    agentRuntime: { id: "openclaw", cloudPlacementSupported: true, source: "implicit" },
     available: false,
   },
 ];
@@ -499,7 +499,7 @@ describe("gateway server models + voicewake", () => {
       const models = res1.payload?.models ?? [];
       expect(models).toEqual(expectedSortedCatalog());
 
-      expect(agentDiscoveryMock.discoverCalls).toBe(1);
+      expect(agentDiscoveryMock.discoverCalls).toBe(0);
     });
   });
 
@@ -710,7 +710,11 @@ describe("gateway server models + voicewake", () => {
             id: "gpt-test-z",
             name: "gpt-test-z",
             provider: "openai",
-            agentRuntime: { id: "openclaw", source: "implicit" },
+            agentRuntime: {
+              id: "openclaw",
+              cloudPlacementSupported: true,
+              source: "implicit",
+            },
             available: false,
           },
         ]);
@@ -760,7 +764,11 @@ describe("gateway server models + voicewake", () => {
           id: "gpt-test-z",
           name: "gpt-test-z",
           provider: "openai",
-          agentRuntime: { id: "openclaw", source: "implicit" },
+          agentRuntime: {
+            id: "openclaw",
+            cloudPlacementSupported: true,
+            source: "implicit",
+          },
           available: false,
         },
       ],
@@ -778,7 +786,11 @@ describe("gateway server models + voicewake", () => {
           id: "not-in-catalog",
           name: "not-in-catalog",
           provider: "openai",
-          agentRuntime: { id: "openclaw", source: "implicit" },
+          agentRuntime: {
+            id: "openclaw",
+            cloudPlacementSupported: true,
+            source: "implicit",
+          },
           available: false,
         },
       ],
