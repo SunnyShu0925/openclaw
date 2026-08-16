@@ -29,11 +29,15 @@ function sessionsListResponse() {
   };
 }
 
-async function readWorkingSeconds(page: Page): Promise<number | null> {
-  await page.getByText("OpenClaw is working...").first().waitFor({ state: "visible" });
+async function parseWorkingSeconds(page: Page): Promise<number | null> {
   const text = (await page.locator("body").textContent()) ?? "";
   const match = text.match(/Working…\s*\n?\s*(\d+)\s*s/);
   return match ? Number(match[1]) : null;
+}
+
+async function readWorkingSeconds(page: Page): Promise<number | null> {
+  await page.getByText("OpenClaw is working...").first().waitFor({ state: "visible" });
+  return parseWorkingSeconds(page);
 }
 
 suite.define(() => {
@@ -85,9 +89,13 @@ suite.define(() => {
         expect(beforeSeconds).not.toBeNull();
 
         await page.reload({ waitUntil: "load" });
-        const afterSeconds = await readWorkingSeconds(page);
-        expect(afterSeconds).not.toBeNull();
-        expect(afterSeconds ?? 0).toBeGreaterThan(beforeSeconds ?? 0);
+        await page.getByText("OpenClaw is working...").first().waitFor({ state: "visible" });
+        // The run-owned startedAt is fixed, so the displayed elapsed seconds
+        // must strictly increase across reload. Poll instead of sampling once,
+        // so a same-second reload cannot flake the assertion.
+        await expect
+          .poll(async () => parseWorkingSeconds(page), { timeout: 10_000, interval: 200 })
+          .toBeGreaterThan(beforeSeconds ?? 0);
 
         // The recovered run's bounded activity is replayed in the UI.
         const afterText = (await page.locator("body").textContent()) ?? "";
