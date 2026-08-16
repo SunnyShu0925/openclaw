@@ -3,6 +3,7 @@ import type { AgentHarness, AgentHarnessRegistrationOptions } from "../agents/ha
 import { getCoreEmbeddingProvider } from "./core-embedding-providers.js";
 import type { EmbeddingProviderAdapter } from "./embedding-providers.js";
 import { normalizeRegisteredProvider } from "./provider-validation.js";
+import { canClaimReservedCommandOwnership } from "./registry-registrars-operations.js";
 import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRecord, PluginTextTransformsRegistration } from "./registry-types.js";
 import type {
@@ -109,7 +110,9 @@ export function createProviderRegistrars(state: PluginRegistryState) {
     }
     if (
       options?.nativeCompaction &&
-      (record.id !== "codex" || id !== "codex" || typeof options.nativeCompaction !== "function")
+      (!canClaimReservedCommandOwnership(record) ||
+        id !== "codex" ||
+        typeof options.nativeCompaction !== "function")
     ) {
       pushDiagnostic({
         level: "error",
