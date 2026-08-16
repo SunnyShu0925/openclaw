@@ -89,6 +89,23 @@ describe("handleAbortChat", () => {
     });
   });
 
+  it("routes Stop for a recovered embedded run through sessions.abort, not chat.abort", async () => {
+    const request = vi.fn(async () => ({ status: "aborted" }));
+    const host = makeAbortHost({
+      client: { request } as unknown as GatewayBrowserClient,
+      chatRunId: "run-embedded-recovered",
+      chatRunSessionAbortable: true,
+    });
+
+    await handleAbortChat(host);
+
+    expect(request).toHaveBeenCalledWith("sessions.abort", {
+      key: "agent:main",
+      clearQueued: true,
+    });
+    expect(request).not.toHaveBeenCalledWith("chat.abort", expect.anything());
+  });
+
   it("shows reconnect guidance when an offline session run has no browser run identity", async () => {
     const request = vi.fn();
     const client = { request } as unknown as GatewayBrowserClient;

@@ -1,3 +1,4 @@
+import type { AgentEventPayload } from "../../infra/agent-events.js";
 // Read-side chat handlers own history projection, startup metadata, and message lookup.
 import {
   GATEWAY_CLIENT_CAPS,
@@ -12,6 +13,12 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { CHAT_HISTORY_MAX_ENTRIES } from "../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  getActiveEmbeddedRunSnapshot,
+  resolveActiveEmbeddedAgentRunId,
+  resolveActiveEmbeddedAgentRunStartMs,
+  resolveActiveEmbeddedRunHandleSessionId,
+} from "../../agents/embedded-agent-runner/runs.js";
 import {
   isSessionTranscriptProjectionUnavailableError,
   resolveTranscriptSessionKeyBySessionId,
@@ -66,6 +73,58 @@ import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./typ
 import { assertValidParams } from "./validation.js";
 
 type ChatHistoryMethod = "chat.history" | "chat.startup";
+
+/**
+ * Recovers an in-flight snapshot for an active embedded run that the visible
+ * chat-abort controllers do not expose. Channel-originated runs register in the
+ * embedded registry rather than as chat-send controllers, so the shared
+ * startup/history path must bridge their identity and timing or a client sees an
+ * active session with nothing to resume. Session scoping keeps hidden
+ * subagent/internal runs owned by other sessions out of the projection.
+ */
+function resolveEmbeddedAgentRunRecoverySnapshot(params: {
+  requestedSessionKey: string;
+  canonicalSessionKey: string;
+  sessionId?: string;
+}):
+  | {
+      runId: string;
+      text: string;
+      startedAt?: number;
+      sessionAbortable?: boolean;
+      events?: AgentEventPayload[];
+    }
+  | undefined {
+  const sessionId =
+    params.sessionId ??
+    resolveActiveEmbeddedRunHandleSessionId(params.canonicalSessionKey) ??
+    resolveActiveEmbeddedRunHandleSessionId(params.requestedSessionKey);
+  if (!sessionId) {
+    return undefined;
+  }
+  const runId = resolveActiveEmbeddedAgentRunId(sessionId);
+  if (!runId) {
+    return undefined;
+  }
+  const startedAt = resolveActiveEmbeddedAgentRunStartMs(sessionId);
+  const snapshotEvents = getActiveEmbeddedRunSnapshot(sessionId)?.events;
+  const events = snapshotEvents?.length ? snapshotEvents : undefined;
+  return {
+    runId,
+    // The embedded snapshot's only text field (inFlightPrompt) is the user's
+    // submitted prompt (input.transcriptPrompt), not streamed assistant output.
+    // Control UI renders inFlightRun.text as the assistant stream, so replaying
+    // it would render the user's own request as assistant output after reload.
+    // Embedded runs do not yet own an assistant-stream snapshot, so publish
+    // empty text while preserving the recoverable run identity and timing.
+    text: "",
+    // Embedded runs are cancelled through the session-owned abort path, never
+    // run-specific chat.abort (which has no embedded-registry fallback).
+    sessionAbortable: true,
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(events ? { events } : {}),
+  };
+}
 
 async function handleChatMetadataRequest({
   params,
@@ -474,7 +533,7 @@ async function handleChatHistoryRequest({
     context,
     requestedKey: sessionKey,
     canonicalKey,
-    sessionId: entry?.sessionId,
+    sessionId,
     ...(activeRunAgentId ? { agentId: activeRunAgentId } : {}),
     defaultAgentId: compatibilityOwnerAgentId,
   });
@@ -484,6 +543,19 @@ async function handleChatHistoryRequest({
   // carry the placement facts that projection adds; without them the merge
   // erases a live worker placement and its move intent.
   Object.assign(sessionInfo, readSessionPlacementFields(context, entry?.sessionId));
+  // An active embedded run can be owned by the embedded registry while absent
+  // from the visible chat-abort controllers. Expose its run id only in this
+  // recovery projection so chat clients can resume identity and timing without
+  // widening coordination gates (e.g. suggestion send-now) that require an
+  // exact chat-send dispatch identity.
+  const embeddedRecovery = resolveEmbeddedAgentRunRecoverySnapshot({
+    requestedSessionKey: sessionKey,
+    canonicalSessionKey: canonicalKey,
+    sessionId,
+  });
+  if (embeddedRecovery && !sessionInfo.activeRunIds.includes(embeddedRecovery.runId)) {
+    sessionInfo.activeRunIds = [...activeRunState.runIds, embeddedRecovery.runId].sort();
+  }
   if (Object.hasOwn(historyPage, "activeLeafEntryId")) {
     sessionInfo.activeLeafEntryId = historyPage.activeLeafEntryId ?? null;
   }
@@ -496,17 +568,18 @@ async function handleChatHistoryRequest({
   // Surface any run still streaming for this session+agent so a client that
   // switched away (and stopped receiving the run's per-agent-delivered events)
   // can restore the in-flight assistant text on switch-back.
-  const inFlightRun = resolveInFlightRunSnapshot({
-    chatAbortControllers: context.chatAbortControllers,
-    chatRunState: context.chatRunState,
-    requestedSessionKey: sessionKey,
-    // The agent-scoped canonical key from session load: an unscoped re-resolve
-    // falls back to the default agent for alias keys, misses the abort entry's
-    // stored key, and drops the in-flight snapshot for non-default agents.
-    canonicalSessionKey: canonicalKey,
-    agentId: activeRunAgentId,
-    defaultAgentId: compatibilityOwnerAgentId,
-  });
+  const inFlightRun =
+    resolveInFlightRunSnapshot({
+      chatAbortControllers: context.chatAbortControllers,
+      chatRunState: context.chatRunState,
+      requestedSessionKey: sessionKey,
+      // The agent-scoped canonical key from session load: an unscoped re-resolve
+      // falls back to the default agent for alias keys, misses the abort entry's
+      // stored key, and drops the in-flight snapshot for non-default agents.
+      canonicalSessionKey: canonicalKey,
+      agentId: activeRunAgentId,
+      defaultAgentId: compatibilityOwnerAgentId,
+    }) ?? embeddedRecovery;
   const boundedInFlightRun = boundInFlightRunSnapshotForChatHistory({
     snapshot: inFlightRun,
     messages: capped,

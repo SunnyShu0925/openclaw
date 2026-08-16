@@ -31,6 +31,7 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
+  onAgentEvent,
 } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
@@ -49,6 +50,7 @@ import {
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS,
+  EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID,
   ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID,
   ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
@@ -823,6 +825,78 @@ export function resolveActiveEmbeddedRunHandleSessionId(sessionKey: string): str
   return ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.get(normalizedSessionKey);
 }
 
+/**
+ * Resolves the run id of an active embedded-run handle owned by a session.
+ *
+ * The embedded registry tracks run ids independently of the gateway's visible
+ * chat-abort controllers, so a channel-originated run can be active here while
+ * absent from the chat-send projection inputs. Sessions without a handle (for
+ * example reply operations retained for settlement) intentionally have no run id
+ * to expose and return undefined.
+ *
+ * A handle whose isAborted() returns true is retained by the registry for
+ * cleanup but is no longer in progress (see isEmbeddedAgentRunInProgress). Such
+ * a terminal handle must not surface a recoverable run id, or a refresh would
+ * receive hasActiveRun: false alongside an embedded run id and snapshot,
+ * violating the recovery projection's terminal-state contract.
+ */
+export function resolveActiveEmbeddedAgentRunId(sessionId: string): string | undefined {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  if (!handle) {
+    return undefined;
+  }
+  // Reuse the owner's live-handle predicate so a retained aborted handle is not
+  // exposed as a recoverable run. A failed optional status probe cannot prove
+  // the run has ended, so fall through to expose the id (matching the owner's
+  // conservative in-progress handling).
+  if (handle.isAborted) {
+    try {
+      if (handle.isAborted()) {
+        return undefined;
+      }
+    } catch {
+      // Keep the handle recoverable when the abort probe itself fails.
+    }
+  }
+  if (handle.runId) {
+    return handle.runId;
+  }
+  for (const [runId, candidate] of ACTIVE_EMBEDDED_RUNS_BY_RUN_ID) {
+    if (candidate === handle) {
+      return runId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolves the authoritative start time of the active embedded-run handle owned
+ * by a session, when one is recoverable.
+ *
+ * Recovery must project the current run's own start timestamp (captured by the
+ * embedded-run orchestrator at run start) rather than SessionEntry.startedAt,
+ * which documents the stable first-run time of subagent sessions and is absent
+ * or unrelated for a current channel/main run. Mirrors the aborted-handle guard
+ * of resolveActiveEmbeddedAgentRunId so a retained terminal handle is not
+ * exposed alongside a recoverable run id.
+ */
+export function resolveActiveEmbeddedAgentRunStartMs(sessionId: string): number | undefined {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  if (!handle) {
+    return undefined;
+  }
+  if (handle.isAborted) {
+    try {
+      if (handle.isAborted()) {
+        return undefined;
+      }
+    } catch {
+      // Keep the handle recoverable when the abort probe itself fails.
+    }
+  }
+  return handle.startedAtMs;
+}
+
 export function resolveActiveEmbeddedRunHandleSessionIdBySessionFile(
   sessionFile: string,
 ): string | undefined {
@@ -1197,6 +1271,22 @@ export function setActiveEmbeddedRun(
   if (handle.runId) {
     ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.set(handle.runId, handle);
   }
+  if (handle.runId) {
+    // Record bounded, client-safe agent events for this run while it is
+    // recoverable, so Control UI can replay recent plan/tool/item/thinking/
+    // assistant activity after reload. Events are filtered by the exact run id
+    // and the subscription is released when the handle clears.
+    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(handle.runId)?.();
+    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.set(
+      handle.runId,
+      onAgentEvent((event) => {
+        if (event.runId !== handle.runId) {
+          return;
+        }
+        recordActiveEmbeddedRunEvent(sessionId, event);
+      }),
+    );
+  }
   clearActiveRunSessionKeys(sessionId);
   setActiveRunSessionKey(sessionKey, sessionId);
   clearActiveRunSessionFiles(sessionId);
@@ -1226,7 +1316,32 @@ export function updateActiveEmbeddedRunSnapshot(
   if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
     return;
   }
-  ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, snapshot);
+  const existing = ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
+  ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, {
+    ...(existing ?? { transcriptLeafId: null }),
+    ...snapshot,
+    ...(snapshot.events === undefined && existing?.events ? { events: existing.events } : {}),
+  });
+}
+
+const MAX_EMBEDDED_RUN_REPLAY_EVENTS = 200;
+
+function recordActiveEmbeddedRunEvent(
+  sessionId: string,
+  event: import("../../infra/agent-events.js").AgentEventPayload,
+) {
+  if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
+    return;
+  }
+  const existing = ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
+  const events = [...(existing?.events ?? []), event];
+  if (events.length > MAX_EMBEDDED_RUN_REPLAY_EVENTS) {
+    events.splice(0, events.length - MAX_EMBEDDED_RUN_REPLAY_EVENTS);
+  }
+  ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, {
+    ...(existing ?? { transcriptLeafId: null }),
+    events,
+  });
 }
 
 export function clearActiveEmbeddedRun(
@@ -1236,6 +1351,10 @@ export function clearActiveEmbeddedRun(
   sessionFile?: string,
   reason = "run_completed",
 ) {
+  if (handle.runId) {
+    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(handle.runId)?.();
+    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.delete(handle.runId);
+  }
   const activeHandle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (activeHandle === handle) {
     handle.closeDiagnostics?.();
@@ -1274,6 +1393,10 @@ function forceClearEmbeddedAgentRun(
   let cleared = false;
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (handle && handle === expectedHandle) {
+    if (handle.runId) {
+      EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(handle.runId)?.();
+      EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.delete(handle.runId);
+    }
     handle.closeDiagnostics?.();
     ACTIVE_EMBEDDED_RUNS.delete(sessionId);
     clearEmbeddedRunAbortability(handle);
@@ -1308,6 +1431,10 @@ const testing = {
     EMBEDDED_RUN_WAITERS.clear();
     ACTIVE_EMBEDDED_RUNS.clear();
     ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.clear();
+    for (const unsubscribe of EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.values()) {
+      unsubscribe();
+    }
+    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.clear();
     RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.clear();
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.clear();
     ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.clear();

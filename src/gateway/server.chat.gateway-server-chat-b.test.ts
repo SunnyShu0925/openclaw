@@ -6,6 +6,12 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import type { EmbeddedAgentQueueHandle } from "../agents/embedded-agent-runner/run-state.js";
+import {
+  clearActiveEmbeddedRun,
+  setActiveEmbeddedRun,
+  updateActiveEmbeddedRunSnapshot,
+} from "../agents/embedded-agent-runner/runs.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import { createSessionsHistoryTool } from "../agents/tools/sessions-history-tool.js";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
@@ -63,6 +69,7 @@ import {
   dispatchInboundMessageMock,
   gatewayReplyMock,
   installGatewayTestHooks,
+  embeddedRunMock,
   mockGetReplyFromConfigOnce,
   onceMessage,
   rpcReq,
@@ -265,10 +272,11 @@ function testSessionFilePath(sessionDir: string, sessionId: string): string {
   return path.join(sessionDir, `${sessionId}.jsonl`);
 }
 
-async function writeMainSessionStore(sessionId = "sess-main") {
+async function writeMainSessionStore(sessionId = "sess-main", opts: { startedAt?: number } = {}) {
   await writeStoredMainSession({
     sessionId,
     updatedAt: futureFixtureUpdatedAt(),
+    ...(opts.startedAt !== undefined ? { startedAt: opts.startedAt } : {}),
   });
 }
 
@@ -842,6 +850,219 @@ describe("gateway server chat", () => {
         ).toMatchObject({ runId: "run-writer", text: "writer partial" });
       } finally {
         testState.sessionConfig = undefined;
+        clearConfigCache();
+      }
+    },
+  );
+
+  test.each(["chat.history", "chat.startup"] as const)(
+    "%s recovers an active embedded run without a visible abort controller",
+    async (method) => {
+      openDirectChatSession();
+      try {
+        // The persisted session entry carries an unrelated subagent first-run
+        // time and no current-run start. Recovery must project the active
+        // embedded run's own start timestamp instead of this field, or Control
+        // UI falls back to Date.now() on reload and the elapsed timer resets.
+        await writeMainSessionStore("sess-main", { startedAt: 1_000_000_000_000 });
+        const handle: EmbeddedAgentQueueHandle = {
+          runId: "run-embedded-main",
+          startedAtMs: 1_700_000_000_000,
+          abort: () => undefined,
+          isAborted: () => false,
+          isCompacting: () => false,
+          isStreaming: () => true,
+          queueMessage: async () => undefined,
+        };
+        setActiveEmbeddedRun("sess-main", handle, "agent:main:main");
+        embeddedRunMock.activeIds.add("sess-main");
+        // The embedded snapshot's only text field is the user's submitted prompt
+        // (input.transcriptPrompt). Recovery must not replay it as assistant
+        // output: Control UI renders inFlightRun.text as the assistant stream.
+        updateActiveEmbeddedRunSnapshot("sess-main", {
+          transcriptLeafId: null,
+          inFlightPrompt: "mid-run prompt",
+          events: [
+            {
+              runId: "run-embedded-main",
+              seq: 1,
+              stream: "tool",
+              ts: 1,
+              data: { phase: "start", name: "bash" },
+            },
+          ],
+        });
+        try {
+          const context = createDirectChatContext();
+          const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
+          await callDirectChat(method, {
+            id: method,
+            params: makeMainSessionParams(),
+            respond: captureChatResult(responses),
+            context,
+          });
+
+          expect(responses).toHaveLength(1);
+          expect(responses[0]?.ok).toBe(true);
+          const payload = responses[0]?.payload as {
+            sessionInfo?: { hasActiveRun?: boolean; activeRunIds?: string[] };
+            inFlightRun?: {
+              runId?: string;
+              text?: string;
+              startedAt?: number;
+              sessionAbortable?: boolean;
+              events?: Array<{ runId?: string; seq?: number; stream?: string; data?: unknown }>;
+            };
+          };
+          expect(payload.sessionInfo?.hasActiveRun).toBe(true);
+          expect(payload.sessionInfo?.activeRunIds).toContain("run-embedded-main");
+          expect(payload.inFlightRun?.runId).toBe("run-embedded-main");
+          expect(payload.inFlightRun?.text).toBe("");
+          expect(payload.inFlightRun?.startedAt).toBe(1_700_000_000_000);
+          expect(payload.inFlightRun?.sessionAbortable).toBe(true);
+          expect(payload.inFlightRun?.events).toEqual([
+            {
+              runId: "run-embedded-main",
+              seq: 1,
+              stream: "tool",
+              ts: 1,
+              data: { phase: "start", name: "bash" },
+            },
+          ]);
+        } finally {
+          clearActiveEmbeddedRun("sess-main", handle, "agent:main:main");
+          embeddedRunMock.activeIds.delete("sess-main");
+        }
+      } finally {
+        testState.sessionStorePath = undefined;
+        clearConfigCache();
+      }
+    },
+  );
+
+  test.each(["chat.history"] as const)(
+    "%s scopes embedded recovery to the anchored history session id",
+    async (method) => {
+      openDirectChatSession();
+      try {
+        await writeMainSessionStore("sess-main");
+        const storePath = testState.sessionStorePath;
+        if (!storePath) {
+          throw new Error("session store path was not initialized");
+        }
+        // The CURRENT session entry owns a live embedded run. A message-anchored
+        // history request can target an OLDER session id of the same canonical
+        // session; recovery must look up the anchored session, not the persisted
+        // entry's current session, or another session's payload inherits the
+        // live run id and elapsed timer.
+        const handle: EmbeddedAgentQueueHandle = {
+          runId: "run-embedded-current",
+          startedAtMs: 1_700_000_000_000,
+          abort: () => undefined,
+          isAborted: () => false,
+          isCompacting: () => false,
+          isStreaming: () => true,
+          queueMessage: async () => undefined,
+        };
+        setActiveEmbeddedRun("sess-main", handle, "agent:main:main");
+        embeddedRunMock.activeIds.add("sess-main");
+        updateActiveEmbeddedRunSnapshot("sess-main", {
+          transcriptLeafId: null,
+          inFlightPrompt: "mid-run prompt",
+        });
+        await replaceTranscriptEvents(
+          { agentId: "main", sessionId: "sess-other", sessionKey: "main", storePath },
+          [
+            {
+              type: "message",
+              id: "msg-anchor",
+              parentId: null,
+              message: {
+                role: "user",
+                content: [{ type: "text", text: "older anchored turn" }],
+                timestamp: 1,
+              },
+            },
+          ],
+        );
+        try {
+          const context = createDirectChatContext();
+          const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
+          await callDirectChat(method, {
+            id: method,
+            params: { sessionKey: "main", messageId: "msg-anchor", sessionId: "sess-other" },
+            respond: captureChatResult(responses),
+            context,
+          });
+
+          expect(responses).toHaveLength(1);
+          expect(responses[0]?.ok, JSON.stringify(responses[0]?.error ?? null)).toBe(true);
+          const payload = responses[0]?.payload as {
+            sessionInfo?: { hasActiveRun?: boolean; activeRunIds?: string[] };
+            inFlightRun?: { runId?: string; text?: string; startedAt?: number };
+          };
+          expect(payload.sessionInfo?.hasActiveRun).toBe(false);
+          expect(payload.sessionInfo?.activeRunIds).not.toContain("run-embedded-current");
+          expect(payload.inFlightRun?.runId).not.toBe("run-embedded-current");
+          expect(payload.inFlightRun).toBeUndefined();
+        } finally {
+          clearActiveEmbeddedRun("sess-main", handle, "agent:main:main");
+          embeddedRunMock.activeIds.delete("sess-main");
+        }
+      } finally {
+        testState.sessionStorePath = undefined;
+        clearConfigCache();
+      }
+    },
+  );
+
+  test.each(["chat.history", "chat.startup"] as const)(
+    "%s excludes a retained aborted embedded handle from recovery",
+    async (method) => {
+      openDirectChatSession();
+      try {
+        await writeMainSessionStore("sess-main");
+        // The registry retains an aborted handle for cleanup while reporting it
+        // inactive (see isEmbeddedAgentRunInProgress). Recovery must not surface
+        // its run id or snapshot, or a refresh would receive a terminal session
+        // alongside an embedded run id, violating the terminal-state contract.
+        const handle: EmbeddedAgentQueueHandle = {
+          runId: "run-embedded-aborted",
+          abort: () => undefined,
+          isAborted: () => true,
+          isCompacting: () => false,
+          isStreaming: () => false,
+          queueMessage: async () => undefined,
+        };
+        setActiveEmbeddedRun("sess-main", handle, "agent:main:main");
+        embeddedRunMock.activeIds.add("sess-main");
+        updateActiveEmbeddedRunSnapshot("sess-main", {
+          transcriptLeafId: null,
+          inFlightPrompt: "aborted prompt",
+        });
+        try {
+          const context = createDirectChatContext();
+          const responses: Array<{ ok: boolean; payload?: unknown }> = [];
+          await callDirectChat(method, {
+            id: method,
+            params: makeMainSessionParams(),
+            respond: captureChatResult(responses),
+            context,
+          });
+
+          expect(responses).toHaveLength(1);
+          expect(responses[0]?.ok).toBe(true);
+          const payload = responses[0]?.payload as {
+            sessionInfo?: { hasActiveRun?: boolean; activeRunIds?: string[] };
+            inFlightRun?: { runId?: string; text?: string };
+          };
+          expect(payload.sessionInfo?.activeRunIds).not.toContain("run-embedded-aborted");
+          expect(payload.inFlightRun?.runId).not.toBe("run-embedded-aborted");
+        } finally {
+          clearActiveEmbeddedRun("sess-main", handle, "agent:main:main");
+          embeddedRunMock.activeIds.delete("sess-main");
+        }
+      } finally {
         testState.sessionStorePath = undefined;
         clearConfigCache();
       }

@@ -57,6 +57,7 @@ type RunLifecycleHost = Omit<
   agentsList?: { mainKey?: string | null } | null;
   hello?: { snapshot?: unknown } | null;
   chatRunId?: string | null;
+  chatRunSessionAbortable?: boolean;
   chatStream?: string | null;
   chatStreamStartedAt?: number | null;
   chatRunStartup?: ChatRunStartupState | null;
@@ -95,6 +96,7 @@ type ChatAbortRunState = SessionScopeHost & {
   connected: boolean;
   sessionKey: string;
   chatRunId?: string | null;
+  chatRunSessionAbortable?: boolean;
   lastError?: string | null;
   chatError?: string | null;
 };
@@ -205,7 +207,11 @@ function currentChatAbortIntent(
   state: ChatAbortRunState,
   sourceClient: GatewayBrowserClient,
 ): ChatAbortIntent {
-  const runId = state.chatRunId ?? null;
+  // Recovered embedded runs are session-abortable: run-specific chat.abort has
+  // no embedded-registry fallback and would silently report success. Route
+  // their Stop through the session-owned abort path, which cancels the exact
+  // persisted session's embedded run.
+  const runId = state.chatRunSessionAbortable === true ? null : (state.chatRunId ?? null);
   const base = {
     sourceClient,
     sessionKey: state.sessionKey,
@@ -439,6 +445,7 @@ export function reconcileChatRunLifecycle(host: RunLifecycleHost, options: Recon
   }
   if (options.clearLocalRun) {
     host.chatRunId = null;
+    host.chatRunSessionAbortable = undefined;
   }
   if (options.clearToolStream && canResetToolStream(host)) {
     resetToolStream(host);

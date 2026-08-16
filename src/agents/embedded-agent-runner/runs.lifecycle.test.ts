@@ -5,6 +5,7 @@ import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
+import { emitAgentEvent } from "../../infra/agent-events.js";
 import { setDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
 import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
@@ -17,6 +18,7 @@ import {
   markActiveEmbeddedRunAbandoned,
   resolveActiveEmbeddedRunHandleSessionId,
   resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
+  resolveActiveEmbeddedAgentRunStartMs,
   setActiveEmbeddedRun,
   updateActiveEmbeddedRunSnapshot,
   waitForActiveEmbeddedRuns,
@@ -30,12 +32,14 @@ function createRunHandle(
   overrides: {
     abort?: () => void;
     isAbortable?: boolean;
+    isAborted?: () => boolean;
     isCompacting?: boolean;
     isStreaming?: boolean;
     isStopped?: () => boolean;
     messageInjection?: RunHandle["messageInjection"];
     runId?: string;
     queueMessage?: RunHandle["queueMessage"];
+    startedAtMs?: number;
     supportsQueueMessageImages?: boolean;
     supportsTranscriptCommitWait?: boolean;
   } = {},
@@ -45,10 +49,12 @@ function createRunHandle(
   const abort = overrides.abort ?? (() => {});
   return {
     runId: overrides.runId,
+    ...(overrides.startedAtMs !== undefined ? { startedAtMs: overrides.startedAtMs } : {}),
     queueMessage: overrides.queueMessage ?? (async () => {}),
     ...(overrides.messageInjection ? { messageInjection: overrides.messageInjection } : {}),
     isStreaming: () => overrides.isStreaming ?? true,
     ...(overrides.isStopped ? { isStopped: overrides.isStopped } : {}),
+    ...(overrides.isAborted ? { isAborted: overrides.isAborted } : {}),
     ...(overrides.isAbortable !== undefined
       ? { isAbortable: () => overrides.isAbortable !== false }
       : {}),
@@ -393,5 +399,69 @@ describe("embedded-agent runner run lifecycle", () => {
 
     clearActiveEmbeddedRun("session-snapshot", handle);
     expect(getActiveEmbeddedRunSnapshot("session-snapshot")).toBeUndefined();
+  });
+
+  it("exposes the run-owned start timestamp while the embedded run is active", () => {
+    const handle = createRunHandle({ runId: "run-started", startedAtMs: 1_700_000_000_000 });
+
+    setActiveEmbeddedRun("session-start", handle);
+
+    expect(resolveActiveEmbeddedAgentRunStartMs("session-start")).toBe(1_700_000_000_000);
+  });
+
+  it("hides the start timestamp of a retained aborted handle", () => {
+    const handle = createRunHandle({
+      runId: "run-aborted-start",
+      startedAtMs: 1_700_000_000_000,
+      isAborted: () => true,
+    });
+
+    setActiveEmbeddedRun("session-aborted-start", handle);
+
+    expect(resolveActiveEmbeddedAgentRunStartMs("session-aborted-start")).toBeUndefined();
+  });
+
+  it("returns undefined for sessions without an active embedded handle", () => {
+    expect(resolveActiveEmbeddedAgentRunStartMs("session-no-handle")).toBeUndefined();
+  });
+
+  it("records agent events on the active embedded run snapshot and releases the subscription on clear", () => {
+    const handle = createRunHandle({ runId: "run-events" });
+
+    setActiveEmbeddedRun("session-events", handle, "agent:main:main");
+    emitAgentEvent({
+      runId: "run-events",
+      stream: "tool",
+      data: { phase: "start", name: "read" },
+      sessionId: "session-events",
+      sessionKey: "agent:main:main",
+    });
+    emitAgentEvent({
+      runId: "run-events",
+      stream: "item",
+      data: { kind: "status", title: "ok" },
+    });
+
+    const events = getActiveEmbeddedRunSnapshot("session-events")?.events ?? [];
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.runId)).toEqual(["run-events", "run-events"]);
+
+    clearActiveEmbeddedRun("session-events", handle, "agent:main:main");
+    emitAgentEvent({ runId: "run-events", stream: "tool", data: { phase: "result" } });
+    expect(getActiveEmbeddedRunSnapshot("session-events")).toBeUndefined();
+  });
+
+  it("caps the embedded-run replay event buffer at 200 events", () => {
+    const handle = createRunHandle({ runId: "run-events-cap" });
+
+    setActiveEmbeddedRun("session-events-cap", handle);
+    for (let index = 0; index < 205; index += 1) {
+      emitAgentEvent({ runId: "run-events-cap", stream: "item", data: { index } });
+    }
+
+    const events = getActiveEmbeddedRunSnapshot("session-events-cap")?.events ?? [];
+    expect(events).toHaveLength(200);
+    expect(events[0]?.data.index).toBe(5);
+    expect(events[events.length - 1]?.data.index).toBe(204);
   });
 });

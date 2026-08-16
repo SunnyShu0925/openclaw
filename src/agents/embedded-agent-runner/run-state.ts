@@ -17,6 +17,7 @@ import {
 import {
   isAgentEventLifecycleGenerationCurrent,
   registerAgentEventLifecycleRotationHandler,
+  type AgentEventPayload,
 } from "../../infra/agent-events.js";
 import type { DiagnosticEmbeddedRunOwner } from "../../logging/diagnostic-run-activity.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
@@ -34,6 +35,13 @@ export type EmbeddedAgentQueueHandle = {
   readonly diagnosticOwner?: DiagnosticEmbeddedRunOwner;
   /** Synchronously closes diagnostic authority before this handle is evicted. */
   readonly closeDiagnostics?: () => void;
+  /**
+   * Epoch ms when the embedded run this handle owns started. Captured by the
+   * embedded-run orchestrator before admission and carried onto the handle so
+   * the recovery projection can expose the run's authoritative start time
+   * (SessionEntry.startedAt is a subagent first-run time, not the current run).
+   */
+  startedAtMs?: number;
   /** Exact authority of the concrete provider/model attempt behind this handle. */
   toolAuthorityFingerprint?: string;
   /** Atomically consumes one plain-text answer for this run's pending user-input request. */
@@ -73,6 +81,12 @@ export type ActiveEmbeddedRunSnapshot = {
   transcriptLeafId: string | null;
   messages?: unknown[];
   inFlightPrompt?: string;
+  /**
+   * Bounded, client-safe agent events recorded while the embedded run was
+   * active, projected on recovery so Control UI can replay recent plan, tool,
+   * item, thinking, and assistant activity after reload.
+   */
+  events?: AgentEventPayload[];
 };
 
 export type EmbeddedRunWaiter = {
@@ -97,6 +111,7 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
   activeRunLifecycleGenerations: new WeakMap<EmbeddedAgentQueueHandle, string>(),
   retainedAbortabilityRunIds: new Set<string>(),
   snapshots: new Map<string, ActiveEmbeddedRunSnapshot>(),
+  eventSubscriptionsByRunId: new Map<string, () => void>(),
   sessionIdsByKey: new Map<string, string>(),
   sessionIdsByFile: new Map<string, string>(),
   abandonedRunsBySessionId: new Map<string, AbandonedEmbeddedRun>(),
@@ -123,6 +138,9 @@ export const RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS =
 export const ACTIVE_EMBEDDED_RUN_SNAPSHOTS =
   embeddedRunState.snapshots ??
   (embeddedRunState.snapshots = new Map<string, ActiveEmbeddedRunSnapshot>());
+export const EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID =
+  embeddedRunState.eventSubscriptionsByRunId ??
+  (embeddedRunState.eventSubscriptionsByRunId = new Map<string, () => void>());
 export const ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY =
   embeddedRunState.sessionIdsByKey ??
   (embeddedRunState.sessionIdsByKey = new Map<string, string>());

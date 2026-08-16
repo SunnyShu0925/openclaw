@@ -289,6 +289,7 @@ export type ChatHistoryResult = {
     runId: string;
     text?: string;
     startedAt?: number;
+    sessionAbortable?: boolean;
     events?: Array<{
       runId: string;
       seq: number;
@@ -1642,6 +1643,7 @@ async function loadChatHistoryUncached(
       // Their identity fences ABA races where a run starts and finishes while
       // history is pending; deltas from this same live run must still merge.
       state.chatRunId = inFlightRunId;
+      state.chatRunSessionAbortable = res.inFlightRun?.sessionAbortable === true;
     }
     if (inFlightRunIsActive && res.inFlightRun && state.chatRunId === inFlightRunId) {
       const snapshotStartedAt =
