@@ -476,9 +476,28 @@ describe("embedded-agent runner run lifecycle", () => {
       stream: "item",
       data: { kind: "status", title: "Planning", phase: "update", extra: "SECRET_EXTRA" },
     });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "plan",
+      data: {
+        phase: "update",
+        steps: [
+          { step: "Plan", status: "in_progress", secret: "SECRET_PLAN_FIELD" },
+          { step: "Bad", status: "rejected" },
+        ],
+        explanation: "Approved plan",
+        arbitrary: "SECRET_PLAN_EXTRA",
+      },
+    });
 
     const events = getActiveEmbeddedRunSnapshot("session-boundary")?.events ?? [];
-    expect(events.map((event) => event.stream).toSorted()).toEqual(["item", "tool"]);
+    expect(events.map((event) => event.stream).toSorted()).toEqual(["item", "plan", "tool"]);
+    const planEvent = events.find((event) => event.stream === "plan");
+    expect(planEvent?.data).toEqual({
+      phase: "update",
+      steps: [{ step: "Plan", status: "in_progress" }],
+      explanation: "Approved plan",
+    });
     expect(JSON.stringify(events)).not.toContain("SECRET");
   });
 

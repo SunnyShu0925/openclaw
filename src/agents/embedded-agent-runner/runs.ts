@@ -1407,6 +1407,35 @@ const MAX_EMBEDDED_RUN_REPLAY_EVENTS = 200;
  */
 const EMBEDDED_RUN_REPLAY_ALLOWED_STREAMS = new Set(["item", "plan", "tool"]);
 
+const PLAN_STEP_ALLOWED_STATUSES = new Set(["pending", "in_progress", "completed"]);
+
+function normalizeReplayPlanSteps(value: unknown): unknown[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const steps: unknown[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      const step = entry.trim();
+      if (step) {
+        steps.push({ step, status: "pending" });
+      }
+      continue;
+    }
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const step = typeof record.step === "string" ? record.step.trim() : "";
+    const status = record.status;
+    if (!step || typeof status !== "string" || !PLAN_STEP_ALLOWED_STATUSES.has(status)) {
+      continue;
+    }
+    steps.push({ step, status });
+  }
+  return steps;
+}
+
 function projectEmbeddedRunReplayEvent(
   event: import("../../infra/agent-events.js").AgentEventPayload,
 ): import("../../infra/agent-events.js").AgentEventPayload | undefined {
@@ -1444,7 +1473,30 @@ function projectEmbeddedRunReplayEvent(
     }
     return { runId: event.runId, seq: event.seq, stream: "item", ts: event.ts, data };
   }
-  return { runId: event.runId, seq: event.seq, stream: "plan", ts: event.ts, data: event.data };
+  // Plan replay keeps only the control phase and the normalized steps/
+  // explanation fields the existing gateway plan projection uses; arbitrary
+  // plan-event fields emitted by a hidden run are never forwarded.
+  const planData = event.data as Record<string, unknown>;
+  const phase = typeof planData.phase === "string" ? planData.phase : undefined;
+  const steps = normalizeReplayPlanSteps(planData.steps);
+  const explanation = typeof planData.explanation === "string" ? planData.explanation : undefined;
+  const projectedPlanData: Record<string, unknown> = {};
+  if (phase !== undefined) {
+    projectedPlanData.phase = phase;
+  }
+  if (steps !== undefined) {
+    projectedPlanData.steps = steps;
+  }
+  if (explanation !== undefined) {
+    projectedPlanData.explanation = explanation;
+  }
+  return {
+    runId: event.runId,
+    seq: event.seq,
+    stream: "plan",
+    ts: event.ts,
+    data: projectedPlanData,
+  };
 }
 
 function recordActiveEmbeddedRunEvent(
