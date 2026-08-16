@@ -1940,7 +1940,6 @@ src/agents/failover/signal-details.ts	1
 src/agents/fallback-skip-cache.ts	1
 src/agents/fast-mode.ts	1
 src/agents/harness/builtin-openclaw.ts	2
-src/agents/harness/compaction.ts	2
 src/agents/harness/context-engine-lifecycle.ts	3
 src/agents/harness/context-engine-turn-outbox.ts	3
 src/agents/harness/gateway-question.ts	6
