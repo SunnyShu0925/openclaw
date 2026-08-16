@@ -2295,6 +2295,137 @@ describe("gateway session utils", () => {
     });
   });
 
+  test("resolveGatewaySessionStoreTarget finds a configured agent's row in an alternate root store when the deterministic store exists", async () => {
+    await withStateDirEnv("session-utils-alt-root-", async ({ tempRoot, stateDir }) => {
+      const customRoot = path.join(tempRoot, "custom-state");
+      const deterministicStorePath = path.join(
+        customRoot,
+        "agents",
+        "ops",
+        "sessions",
+        "sessions.json",
+      );
+      const alternateStorePath = path.join(stateDir, "agents", "ops", "sessions", "sessions.json");
+      await seedSessionEntries(deterministicStorePath, {
+        "agent:ops:work": { sessionId: "sess-other", updatedAt: 1 },
+      });
+      await seedSessionEntries(alternateStorePath, {
+        "agent:ops:main": { sessionId: "sess-alternate", updatedAt: 2 },
+      });
+      const cfg = {
+        session: {
+          mainKey: "main",
+          store: path.join(customRoot, "agents", "{agentId}", "sessions", "sessions.json"),
+        },
+        agents: { list: [{ id: "ops", default: true }] },
+      } as OpenClawConfig;
+
+      const target = resolveGatewaySessionStoreTargetWithStore({ cfg, key: "agent:ops:main" });
+
+      expect(target.storePath).toBe(path.resolve(alternateStorePath));
+      expect(target.store["agent:ops:main"]?.sessionId).toBe("sess-alternate");
+    });
+  });
+
+  test("resolveGatewaySessionStoreTarget does not find a configured agent's row under another configured agent's template root when {agentId} precedes agents/<agentId>", async () => {
+    await withStateDirEnv("session-utils-multi-placeholder-", async ({ tempRoot }) => {
+      const storesRoot = path.join(tempRoot, "stores");
+      // Template carries {agentId} twice: once before agents/<agentId>. Each configured agent
+      // expansion resolves a distinct agents root, so an ops row may live under the work expansion.
+      // The bounded configured-agent path does not enumerate other expansions, so that cross-root
+      // row is intentionally not recovered — recovering it would scan one root per configured
+      // agent, the O(configured agents) fan-out issue #123439 reports.
+      const deterministicStorePath = path.join(
+        storesRoot,
+        "ops",
+        "agents",
+        "ops",
+        "sessions",
+        "sessions.json",
+      );
+      const alternateStorePath = path.join(
+        storesRoot,
+        "work",
+        "agents",
+        "ops",
+        "sessions",
+        "sessions.json",
+      );
+      await seedSessionEntries(deterministicStorePath, {
+        "agent:ops:work": { sessionId: "sess-deterministic", updatedAt: 1 },
+      });
+      await seedSessionEntries(alternateStorePath, {
+        "agent:ops:main": { sessionId: "sess-alternate", updatedAt: 2 },
+      });
+      const cfg = {
+        session: {
+          mainKey: "main",
+          store: path.join(
+            storesRoot,
+            "{agentId}",
+            "agents",
+            "{agentId}",
+            "sessions",
+            "sessions.json",
+          ),
+        },
+        agents: { list: [{ id: "ops", default: true }, { id: "work" }] },
+      } as OpenClawConfig;
+
+      const target = resolveGatewaySessionStoreTargetWithStore({ cfg, key: "agent:ops:main" });
+
+      // The configured "ops" agent resolves only its own expansion root. The row seeded under the
+      // work expansion is not visible, so the main key is absent and the deterministic ops store
+      // (which holds only agent:ops:work) is returned.
+      expect(target.storePath).toBe(path.resolve(deterministicStorePath));
+      expect(target.store["agent:ops:main"]).toBeUndefined();
+    });
+  });
+
+  test("resolveGatewaySessionStoreTarget finds a retired agent's row under another configured agent's template root", async () => {
+    await withStateDirEnv("session-utils-retired-cross-root-", async ({ tempRoot }) => {
+      const storesRoot = path.join(tempRoot, "stores");
+      // Template carries {agentId} twice: once before agents/<agentId>. Each configured agent
+      // expansion resolves a distinct agents root. A retired/manual agent has no canonical path;
+      // its persisted rows may live under another configured agent's expansion. Non-configured
+      // discovery enumerates every configured expansion plus the default root — main's discovery
+      // contract — so the cross-root retired row stays visible to Gateway lookup.
+      const retiredStorePath = path.join(
+        storesRoot,
+        "work",
+        "agents",
+        "old",
+        "sessions",
+        "sessions.json",
+      );
+      await seedSessionEntries(retiredStorePath, {
+        "agent:old:main": { sessionId: "sess-retired-cross-root", updatedAt: 1 },
+      });
+      const cfg = {
+        session: {
+          mainKey: "main",
+          store: path.join(
+            storesRoot,
+            "{agentId}",
+            "agents",
+            "{agentId}",
+            "sessions",
+            "sessions.json",
+          ),
+        },
+        agents: { list: [{ id: "ops", default: true }, { id: "work" }] },
+      } as OpenClawConfig;
+
+      const target = resolveGatewaySessionStoreTargetWithStore({
+        cfg,
+        key: "agent:old:main",
+      });
+
+      expect(target.storePath).toBe(path.resolve(retiredStorePath));
+      expect(target.store["agent:old:main"]?.sessionId).toBe("sess-retired-cross-root");
+    });
+  });
+
   test("resolveGatewaySessionStoreTarget ignores a retired legacy store without provisioning SQLite", async () => {
     await withStateDirEnv("session-utils-retired-legacy-", async ({ stateDir }) => {
       const retiredSessionsDir = path.join(stateDir, "agents", "retired", "sessions");
