@@ -1013,7 +1013,7 @@ async function main(argv: string[] = process.argv.slice(2)) {
         label: "plugin-sdk package boundary dts",
         args: [runTsgoScript, "-p", "packages/plugin-sdk/tsconfig.json", "--declaration", "true"],
         env: { OPENCLAW_TSGO_HEAVY_CHECK_LOCK_HELD: "1" },
-        timeoutMs: 300_000,
+        timeoutMs: ROOT_BOUNDARY_TIMEOUT_MS,
         stamp: {
           path: PACKAGE_DTS_STAMP,
           inputPaths: PACKAGE_DTS_INPUTS,
