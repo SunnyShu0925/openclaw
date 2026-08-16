@@ -902,7 +902,7 @@ export function resolveActiveEmbeddedAgentRunStartMs(sessionId: string): number 
  * Used by the session-owned abort path so a recovered run's Stop stays bound to
  * that exact run instead of aborting whichever handle currently owns the key.
  */
-export function resolveActiveEmbeddedRunSessionIdByRunId(runId: string): string | undefined {
+function resolveActiveEmbeddedRunSessionIdByRunId(runId: string): string | undefined {
   const normalizedRunId = runId.trim();
   if (!normalizedRunId) {
     return undefined;
@@ -1398,6 +1398,55 @@ export function updateActiveEmbeddedRunSnapshot(
 
 const MAX_EMBEDDED_RUN_REPLAY_EVENTS = 200;
 
+/**
+ * Hidden channel runs must not leak arbitrary assistant, tool, command-output,
+ * or other sensitive event data into Control UI. Only an allowlisted, sanitized
+ * recovery projection is retained: tool events keep identity/phase (args and
+ * output are dropped), item status events keep their labels, and plan events
+ * keep the plan snapshot. Everything else is discarded.
+ */
+const EMBEDDED_RUN_REPLAY_ALLOWED_STREAMS = new Set(["item", "plan", "tool"]);
+
+function projectEmbeddedRunReplayEvent(
+  event: import("../../infra/agent-events.js").AgentEventPayload,
+): import("../../infra/agent-events.js").AgentEventPayload | undefined {
+  if (!EMBEDDED_RUN_REPLAY_ALLOWED_STREAMS.has(event.stream)) {
+    return undefined;
+  }
+  if (event.stream === "tool") {
+    const { phase, name, toolCallId } = event.data as Record<string, unknown>;
+    const data: Record<string, unknown> = {};
+    if (typeof phase === "string") {
+      data.phase = phase;
+    }
+    if (typeof name === "string") {
+      data.name = name;
+    }
+    if (typeof toolCallId === "string") {
+      data.toolCallId = toolCallId;
+    }
+    return { runId: event.runId, seq: event.seq, stream: "tool", ts: event.ts, data };
+  }
+  if (event.stream === "item") {
+    const { kind, title, phase, status } = event.data as Record<string, unknown>;
+    const data: Record<string, unknown> = {};
+    if (typeof kind === "string") {
+      data.kind = kind;
+    }
+    if (typeof title === "string") {
+      data.title = title;
+    }
+    if (typeof phase === "string") {
+      data.phase = phase;
+    }
+    if (typeof status === "string") {
+      data.status = status;
+    }
+    return { runId: event.runId, seq: event.seq, stream: "item", ts: event.ts, data };
+  }
+  return { runId: event.runId, seq: event.seq, stream: "plan", ts: event.ts, data: event.data };
+}
+
 function recordActiveEmbeddedRunEvent(
   sessionId: string,
   event: import("../../infra/agent-events.js").AgentEventPayload,
@@ -1405,8 +1454,12 @@ function recordActiveEmbeddedRunEvent(
   if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
     return;
   }
+  const projected = projectEmbeddedRunReplayEvent(event);
+  if (!projected) {
+    return;
+  }
   const existing = ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
-  const events = [...(existing?.events ?? []), event];
+  const events = [...(existing?.events ?? []), projected];
   if (events.length > MAX_EMBEDDED_RUN_REPLAY_EVENTS) {
     events.splice(0, events.length - MAX_EMBEDDED_RUN_REPLAY_EVENTS);
   }

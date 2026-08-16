@@ -452,6 +452,36 @@ describe("embedded-agent runner run lifecycle", () => {
     expect(getActiveEmbeddedRunSnapshot("session-events")).toBeUndefined();
   });
 
+  it("retains only an allowlisted, sanitized recovery projection for hidden runs", () => {
+    const handle = createRunHandle({ runId: "run-boundary" });
+
+    setActiveEmbeddedRun("session-boundary", handle);
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "assistant",
+      data: { text: "SECRET_ASSISTANT_TEXT" },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "command_output",
+      data: { text: "SECRET_OUTPUT" },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "tool",
+      data: { phase: "start", name: "bash", args: { command: "echo SECRET" } },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "item",
+      data: { kind: "status", title: "Planning", phase: "update", extra: "SECRET_EXTRA" },
+    });
+
+    const events = getActiveEmbeddedRunSnapshot("session-boundary")?.events ?? [];
+    expect(events.map((event) => event.stream).toSorted()).toEqual(["item", "tool"]);
+    expect(JSON.stringify(events)).not.toContain("SECRET");
+  });
+
   it("caps the embedded-run replay event buffer at 200 events", () => {
     const handle = createRunHandle({ runId: "run-events-cap" });
 
@@ -462,8 +492,8 @@ describe("embedded-agent runner run lifecycle", () => {
 
     const events = getActiveEmbeddedRunSnapshot("session-events-cap")?.events ?? [];
     expect(events).toHaveLength(200);
-    expect(events[0]?.data.index).toBe(5);
-    expect(events[events.length - 1]?.data.index).toBe(204);
+    expect(events[0]?.seq).toBe(6);
+    expect(events[events.length - 1]?.seq).toBe(205);
   });
 
   it("aborts an embedded run by its exact run id", () => {
