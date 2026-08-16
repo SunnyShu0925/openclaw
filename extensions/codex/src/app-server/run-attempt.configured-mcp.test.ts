@@ -208,6 +208,8 @@ function configureFakeMcp(params: ReturnType<typeof createParams>): void {
 function createCronAuthorityCapabilityFixture(
   runId: string,
 ): NonNullable<ReturnType<typeof createParams>["cronCreatorAuthorityCapability"]> {
+  // Mirror the gateway-minted capability instead of casting a partial fixture;
+  // transcript tools consume callerOrigin and future contract drift must type-fail.
   const abortController = new AbortController();
   return {
     active: true,
