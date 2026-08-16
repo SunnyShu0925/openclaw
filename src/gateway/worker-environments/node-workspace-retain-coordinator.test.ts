@@ -98,6 +98,7 @@ function createHarness(
       applied: boolean;
       deleted: number;
       hasMore: boolean;
+      bundleDeleted?: number;
       bundleGeneration?: number;
       bundleStatus?: { bundleHash: string; status: "installed" | "missing" };
     }>;
@@ -105,9 +106,11 @@ function createHarness(
     currentBundleStatus?: NodeWorkerBundleStatusObservation;
     invokeError?: string;
     onInvoke?: (index: number) => void;
+    loop?: { applied: boolean; deleted: number; hasMore: boolean; bundleDeleted?: number };
   } = {},
 ) {
   const results = [...(params.results ?? [{ applied: true, deleted: 0, hasMore: false }])];
+  const loopResult = params.loop;
   let invokeIndex = 0;
   const invoke = vi.fn<NodeWorkerSupervisorTransport["invoke"]>(async () => {
     params.onInvoke?.(invokeIndex++);
@@ -116,7 +119,9 @@ function createHarness(
     }
     return {
       ok: true,
-      payloadJSON: JSON.stringify(results.shift() ?? { applied: true, deleted: 0, hasMore: false }),
+      payloadJSON: JSON.stringify(
+        loopResult ?? results.shift() ?? { applied: true, deleted: 0, hasMore: false },
+      ),
     };
   });
   let currentBundleStatus = params.currentBundleStatus;
@@ -607,5 +612,162 @@ describe("node workspace retain coordinator", () => {
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(invoke.mock.calls[1]?.[0].params).toMatchObject({ sequence: 2 });
     await coordinator.stop();
+  });
+
+  it("aborts a node worker that never converges instead of looping forever (BUG-056)", async () => {
+    // A buggy worker replies {applied:true, hasMore:true} without deleting.
+    // Pre-fix the for(;;) loop never resolves; post-fix it bails after
+    // MAX_CONSECUTIVE_NO_PROGRESS_RESPONSES replies and drain warns instead.
+    const { coordinator, invoke, warn } = createHarness({
+      loop: { applied: true, deleted: 0, hasMore: true },
+    });
+
+    await coordinator.start();
+
+    // The constant is module-private (knip --production rejects unused
+    // exports); keep this literal in sync with the source constant.
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("workspace retain did not converge"));
+    await coordinator.stop();
+  });
+
+  it("preserves legitimate retain pagination beyond 100 pages", async () => {
+    // A fixed 100-page cap would misclassify healthy backlogs above 25,600
+    // stale entries; progressing pagination (deleted > 0 per round) must run
+    // to hasMore:false regardless of page count.
+    const results = Array.from({ length: 150 }, () => ({
+      applied: true,
+      deleted: 256,
+      hasMore: true,
+    }));
+    results.push({ applied: true, deleted: 1, hasMore: false });
+    const { coordinator, invoke, warn } = createHarness({ results });
+
+    await coordinator.start();
+
+    expect(invoke).toHaveBeenCalledTimes(151);
+    expect(warn).not.toHaveBeenCalled();
+    await coordinator.stop();
+  });
+
+  it("treats bundle-only deletion as forward progress (BUG-056 bundle lane)", async () => {
+    // A legal bundle-only response carries { deleted: 0, hasMore: true,
+    // bundleDeleted: >0 }: the workspace lane is already clean while bundle
+    // cleanup still paginates (up to 16 candidates per page). The pre-fix
+    // guard checked only `deleted`, so a healthy bundle backlog tripped the
+    // no-progress detector after three rounds. Both lanes must count.
+    const results = Array.from({ length: 10 }, () => ({
+      applied: true,
+      deleted: 0,
+      hasMore: true,
+      bundleDeleted: 16,
+    }));
+    results.push({ applied: true, deleted: 0, hasMore: false, bundleDeleted: 4 });
+    const { coordinator, invoke, warn } = createHarness({ results });
+
+    await coordinator.start();
+
+    expect(invoke).toHaveBeenCalledTimes(11);
+    expect(warn).not.toHaveBeenCalled();
+    await coordinator.stop();
+  });
+
+  it("still converges when only the bundle lane makes progress across many pages", async () => {
+    // Bundle cleanup deletes at most 16 candidates per page; a large bundle
+    // backlog therefore requires many positive-progress responses. A buggy
+    // 3-strike guard keyed on workspace `deleted` alone would abort this
+    // healthy run after the third page.
+    const results = Array.from({ length: 50 }, () => ({
+      applied: true,
+      deleted: 0,
+      hasMore: true,
+      bundleDeleted: 16,
+    }));
+    results.push({ applied: true, deleted: 0, hasMore: false, bundleDeleted: 3 });
+    const { coordinator, invoke, warn } = createHarness({ results });
+
+    await coordinator.start();
+
+    expect(invoke).toHaveBeenCalledTimes(51);
+    expect(warn).not.toHaveBeenCalled();
+    await coordinator.stop();
+  });
+
+  it("still aborts when neither workspace nor bundle lane deletes (BUG-056)", async () => {
+    // A genuinely stuck worker replies { deleted: 0, bundleDeleted: 0,
+    // hasMore: true }; the converged guard must still trip after the limit.
+    const { coordinator, invoke, warn } = createHarness({
+      loop: { applied: true, deleted: 0, hasMore: true, bundleDeleted: 0 },
+    });
+
+    await coordinator.start();
+
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("workspace retain did not converge"));
+    await coordinator.stop();
+  });
+
+  it("bounds a slow-but-progressing node worker with the convergence deadline", async () => {
+    // A slow worker that always makes a little progress (deleted > 0) never
+    // trips the no-progress detector, so the wall-clock deadline bounds it.
+    // Fake timers advance the clock past the deadline between rounds.
+    vi.useFakeTimers();
+    const { coordinator, invoke, warn } = createHarness({
+      loop: { applied: true, deleted: 1, hasMore: true },
+    });
+    try {
+      invoke.mockImplementation(async () => {
+        // Advance 20 minutes per round: round 1 stays inside the 30-minute
+        // deadline, round 2 crosses it.
+        vi.setSystemTime(Date.now() + 20 * 60_000);
+        return {
+          ok: true,
+          payloadJSON: JSON.stringify({ applied: true, deleted: 1, hasMore: true }),
+        };
+      });
+
+      await coordinator.start();
+
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("workspace retain did not converge"),
+      );
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps the in-flight RPC at the remaining convergence deadline", async () => {
+    // An RPC begun just before expiry used to get a fresh 10-minute timeout.
+    // The remaining budget must cap the final dispatch: after a 29-minute
+    // first round, the second RPC gets 60s, not 600s.
+    vi.useFakeTimers();
+    const { coordinator, invoke, warn } = createHarness({
+      loop: { applied: true, deleted: 1, hasMore: true },
+    });
+    try {
+      let call = 0;
+      invoke.mockImplementation(async () => {
+        call += 1;
+        vi.setSystemTime(Date.now() + (call === 1 ? 29 * 60_000 : 2 * 60_000));
+        return {
+          ok: true,
+          payloadJSON: JSON.stringify({ applied: true, deleted: 1, hasMore: true }),
+        };
+      });
+
+      await coordinator.start();
+
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(invoke.mock.calls[0]?.[0].timeoutMs).toBe(10 * 60_000);
+      expect(invoke.mock.calls[1]?.[0].timeoutMs).toBe(60_000);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("workspace retain did not converge within"),
+      );
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

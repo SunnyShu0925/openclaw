@@ -20,6 +20,12 @@ import type { WorkerEnvironmentService } from "./service.js";
 import { listRetainedWorkerBundleHashes } from "./worker-bundle-retention.js";
 
 const RETAIN_COMMAND_TIMEOUT_MS = 10 * 60_000;
+// BUG-056: a buggy worker may keep replying {applied:true, hasMore:true}.
+// Healthy workers set hasMore only after deleting a full batch, so zero
+// deletions mean no progress (bail after 3); a deadline bounds slow progress.
+// Constants stay private so knip --production does not flag unused exports.
+const MAX_CONSECUTIVE_NO_PROGRESS_RESPONSES = 3;
+const RETAIN_CONVERGENCE_DEADLINE_MS = 3 * RETAIN_COMMAND_TIMEOUT_MS;
 const TERMINAL_ENVIRONMENT_STATES = new Set(["destroyed", "failed", "orphaned"]);
 
 type NodeWorkspaceRetainCoordinatorOptions = {
@@ -185,12 +191,22 @@ export function createNodeWorkspaceRetainCoordinator(
         `Node bundle retention skipped (${node.nodeId}): ${retainedBundleHashes.length} retained hashes exceed the bounded maintenance request`,
       );
     }
+    const convergenceDeadline = Date.now() + RETAIN_CONVERGENCE_DEADLINE_MS;
+    let consecutiveNoProgressResponses = 0;
     for (;;) {
+      // Cap each RPC timeout at the remaining convergence budget so an
+      // in-flight call cannot hold the serialized coordinator past the deadline.
+      const remainingBudget = convergenceDeadline - Date.now();
+      if (remainingBudget <= 0) {
+        throw new Error(
+          `workspace retain did not converge within ${RETAIN_CONVERGENCE_DEADLINE_MS}ms (node worker is progressing too slowly)`,
+        );
+      }
       const result = await currentTransport.invoke({
         node,
         command: NODE_WORKER_WORKSPACE_RETAIN_COMMAND,
         params: input,
-        timeoutMs: RETAIN_COMMAND_TIMEOUT_MS,
+        timeoutMs: Math.min(RETAIN_COMMAND_TIMEOUT_MS, remainingBudget),
         signal: abortController.signal,
         isDispatchAuthorized: () => !stopped && transport === currentTransport,
       });
@@ -242,6 +258,27 @@ export function createNodeWorkspaceRetainCoordinator(
           currentTransport.acceptBundleStatus?.(node, undefined);
         }
         return;
+      }
+      // hasMore:true is the healthy worker's normal pagination signal
+      // (deleted >= 256 per batch); keep going while progress is made. Only
+      // repeated zero-deletion hasMore replies violate the protocol; drain's
+      // per-node catch warns and the next sweep retries.
+      //
+      // Progress is reported across two independent cleanup lanes — workspace
+      // deletion (`deleted`) and bundle cleanup (`bundleDeleted`). A legal
+      // bundle-only response carries { deleted: 0, hasMore: true, bundleDeleted: >0 },
+      // so both counts must be considered: a response that deletes only bundles
+      // is genuine forward progress and must not trip the no-progress guard.
+      const totalDeleted = retained.deleted + (retained.bundleDeleted ?? 0);
+      if (totalDeleted === 0) {
+        consecutiveNoProgressResponses += 1;
+        if (consecutiveNoProgressResponses >= MAX_CONSECUTIVE_NO_PROGRESS_RESPONSES) {
+          throw new Error(
+            `workspace retain did not converge: node worker returned hasMore:true without deleting stale entries ${MAX_CONSECUTIVE_NO_PROGRESS_RESPONSES} consecutive times`,
+          );
+        }
+      } else {
+        consecutiveNoProgressResponses = 0;
       }
     }
   };
