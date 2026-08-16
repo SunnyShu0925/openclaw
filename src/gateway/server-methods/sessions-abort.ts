@@ -8,7 +8,10 @@ import {
   errorShape,
   validateSessionsAbortParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
+import {
+  abortEmbeddedAgentRun,
+  resolveActiveEmbeddedRunSessionKeyByRunId,
+} from "../../agents/embedded-agent-runner/runs.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import {
   isConfiguredSessionStoreAgentId,
@@ -141,6 +144,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const workerRunTarget = workerRunSessionId
       ? resolveWorkerSessionTarget(cfg, workerRunSessionId)
       : undefined;
+    const embeddedRunSessionKey = requestedRunId
+      ? resolveActiveEmbeddedRunSessionKeyByRunId(requestedRunId)
+      : undefined;
     const scopedRequestedKey = resolveScopedAbortKey({
       cfg,
       key: requestedKey,
@@ -198,7 +204,8 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             requestedRunAgentId ? { agentId: requestedRunAgentId } : undefined,
           )
         : undefined) ??
-      workerRunTarget?.sessionKey;
+      workerRunTarget?.sessionKey ??
+      embeddedRunSessionKey;
     if (!keyCandidate && requestedRunId) {
       respond(true, { ok: true, abortedRunId: null, status: "no-active-run" });
       return;
@@ -226,12 +233,13 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       : resolveExistingAgentSessionStoreTargetsSync(cfg, targetAgentId);
     const stableTargetOwner = tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
     const hasExactActiveRun = requestedRunId
-      ? scopedActiveRunSessionKey === key &&
-        resolveChatRunOwnerAgentId({
-          agentId: activeRunAgentId,
-          sessionKey: activeRunSessionKey,
-          defaultAgentId: stableTargetOwner,
-        }) === normalizeAgentId(targetAgentId)
+      ? (scopedActiveRunSessionKey === key &&
+          resolveChatRunOwnerAgentId({
+            agentId: activeRunAgentId,
+            sessionKey: activeRunSessionKey,
+            defaultAgentId: stableTargetOwner,
+          }) === normalizeAgentId(targetAgentId)) ||
+        embeddedRunSessionKey === key
       : [...context.chatAbortControllers.values()].some(
           (entry) =>
             entry.controlUiVisible !== false &&

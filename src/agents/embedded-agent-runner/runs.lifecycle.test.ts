@@ -10,6 +10,7 @@ import { setDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.j
 import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
 import {
+  abortEmbeddedAgentRunByRunId,
   abortAndDrainEmbeddedAgentRun,
   clearActiveEmbeddedRun,
   getActiveEmbeddedRunSnapshot,
@@ -463,5 +464,48 @@ describe("embedded-agent runner run lifecycle", () => {
     expect(events).toHaveLength(200);
     expect(events[0]?.data.index).toBe(5);
     expect(events[events.length - 1]?.data.index).toBe(204);
+  });
+
+  it("aborts an embedded run by its exact run id", () => {
+    let cancelled = false;
+    const handle = createRunHandle({
+      runId: "run-exact",
+      abort: () => {
+        cancelled = true;
+      },
+    });
+
+    setActiveEmbeddedRun("session-exact", handle);
+
+    expect(abortEmbeddedAgentRunByRunId("run-exact")).toBe(true);
+    expect(cancelled).toBe(true);
+    expect(abortEmbeddedAgentRunByRunId("run-missing")).toBe(false);
+  });
+
+  it("retires a displaced run's event subscription and fences its replay snapshot", () => {
+    const firstHandle = createRunHandle({ runId: "run-first" });
+    const secondHandle = createRunHandle({ runId: "run-second" });
+
+    setActiveEmbeddedRun("session-replaced-events", firstHandle);
+    emitAgentEvent({
+      runId: "run-first",
+      stream: "tool",
+      data: { phase: "start", name: "first" },
+    });
+    expect(getActiveEmbeddedRunSnapshot("session-replaced-events")?.events).toHaveLength(1);
+
+    setActiveEmbeddedRun("session-replaced-events", secondHandle);
+    expect(getActiveEmbeddedRunSnapshot("session-replaced-events")).toBeUndefined();
+
+    // The displaced subscription is retired: stale events from run-first must
+    // not re-enter the session snapshot or evict the new run's buffer.
+    emitAgentEvent({ runId: "run-first", stream: "tool", data: { phase: "result" } });
+    emitAgentEvent({
+      runId: "run-second",
+      stream: "item",
+      data: { kind: "status", title: "new" },
+    });
+    const events = getActiveEmbeddedRunSnapshot("session-replaced-events")?.events ?? [];
+    expect(events.map((event) => event.runId)).toEqual(["run-second"]);
   });
 });

@@ -1,4 +1,3 @@
-import type { AgentEventPayload } from "../../infra/agent-events.js";
 // Read-side chat handlers own history projection, startup metadata, and message lookup.
 import {
   GATEWAY_CLIENT_CAPS,
@@ -23,6 +22,7 @@ import {
   isSessionTranscriptProjectionUnavailableError,
   resolveTranscriptSessionKeyBySessionId,
 } from "../../config/sessions/session-accessor.js";
+import type { AgentEventPayload } from "../../infra/agent-events.js";
 import {
   measureDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,

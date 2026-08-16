@@ -897,6 +897,70 @@ export function resolveActiveEmbeddedAgentRunStartMs(sessionId: string): number 
   return handle.startedAtMs;
 }
 
+/**
+ * Resolves the session id that owns an active embedded run, by exact run id.
+ * Used by the session-owned abort path so a recovered run's Stop stays bound to
+ * that exact run instead of aborting whichever handle currently owns the key.
+ */
+export function resolveActiveEmbeddedRunSessionIdByRunId(runId: string): string | undefined {
+  const normalizedRunId = runId.trim();
+  if (!normalizedRunId) {
+    return undefined;
+  }
+  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId);
+  if (!handle) {
+    return undefined;
+  }
+  for (const [sessionId, candidate] of ACTIVE_EMBEDDED_RUNS) {
+    if (candidate === handle) {
+      return sessionId;
+    }
+  }
+  return undefined;
+}
+
+/** Resolves the session key that owns an active embedded run, by exact run id. */
+export function resolveActiveEmbeddedRunSessionKeyByRunId(runId: string): string | undefined {
+  const sessionId = resolveActiveEmbeddedRunSessionIdByRunId(runId);
+  if (!sessionId) {
+    return undefined;
+  }
+  for (const [sessionKey, activeSessionId] of ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY) {
+    if (activeSessionId === sessionId) {
+      return sessionKey;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Aborts the exact active embedded run by run id (user-stop semantics). Returns
+ * false when the run id has no active embedded handle or is not abortable.
+ */
+export function abortEmbeddedAgentRunByRunId(runId: string): boolean {
+  const normalizedRunId = runId.trim();
+  if (!normalizedRunId) {
+    return false;
+  }
+  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId);
+  if (!handle) {
+    return false;
+  }
+  if (!isEmbeddedRunHandleAbortable(normalizedRunId, handle)) {
+    return false;
+  }
+  try {
+    if (handle.cancel) {
+      handle.cancel("user_abort");
+    } else {
+      handle.abort();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveActiveEmbeddedRunHandleSessionIdBySessionFile(
   sessionFile: string,
 ): string | undefined {
@@ -1270,6 +1334,14 @@ export function setActiveEmbeddedRun(
   ACTIVE_EMBEDDED_RUNS.set(sessionId, handle);
   if (handle.runId) {
     ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.set(handle.runId, handle);
+  }
+  // A displaced handle must not keep recording events into the new run's
+  // replay snapshot: retire its subscription and fence the session snapshot so
+  // stale events cannot evict the current run's bounded 200-event buffer.
+  if (previousHandle?.runId && previousHandle.runId !== handle.runId) {
+    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(previousHandle.runId)?.();
+    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.delete(previousHandle.runId);
+    ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
   }
   if (handle.runId) {
     // Record bounded, client-safe agent events for this run while it is

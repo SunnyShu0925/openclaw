@@ -89,7 +89,7 @@ describe("handleAbortChat", () => {
     });
   });
 
-  it("routes Stop for a recovered embedded run through sessions.abort, not chat.abort", async () => {
+  it("routes Stop for a recovered embedded run through sessions.abort with its exact run id, not chat.abort", async () => {
     const request = vi.fn(async () => ({ status: "aborted" }));
     const host = makeAbortHost({
       client: { request } as unknown as GatewayBrowserClient,
@@ -99,10 +99,13 @@ describe("handleAbortChat", () => {
 
     await handleAbortChat(host);
 
-    expect(request).toHaveBeenCalledWith("sessions.abort", {
-      key: "agent:main",
-      clearQueued: true,
-    });
+    expect(request).toHaveBeenCalledWith(
+      "sessions.abort",
+      expect.objectContaining({
+        key: "agent:main",
+        runId: "run-embedded-recovered",
+      }),
+    );
     expect(request).not.toHaveBeenCalledWith("chat.abort", expect.anything());
   });
 
