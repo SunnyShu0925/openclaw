@@ -474,7 +474,7 @@ describe("embedded-agent runner run lifecycle", () => {
     emitAgentEvent({
       runId: "run-boundary",
       stream: "item",
-      data: { kind: "status", title: "Planning", phase: "update", extra: "SECRET_EXTRA" },
+      data: { kind: "status", title: "SECRET_TITLE", phase: "update", extra: "SECRET_EXTRA" },
     });
     emitAgentEvent({
       runId: "run-boundary",
@@ -498,6 +498,8 @@ describe("embedded-agent runner run lifecycle", () => {
       steps: [{ step: "Plan", status: "in_progress" }],
       explanation: "Approved plan",
     });
+    const itemEvent = events.find((event) => event.stream === "item");
+    expect(itemEvent?.data).toEqual({ kind: "status", phase: "update" });
     expect(JSON.stringify(events)).not.toContain("SECRET");
   });
 

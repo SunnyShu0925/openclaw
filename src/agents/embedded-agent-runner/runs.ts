@@ -1457,13 +1457,10 @@ function projectEmbeddedRunReplayEvent(
     return { runId: event.runId, seq: event.seq, stream: "tool", ts: event.ts, data };
   }
   if (event.stream === "item") {
-    const { kind, title, phase, status } = event.data as Record<string, unknown>;
+    const { kind, phase, status } = event.data as Record<string, unknown>;
     const data: Record<string, unknown> = {};
     if (typeof kind === "string") {
       data.kind = kind;
-    }
-    if (typeof title === "string") {
-      data.title = title;
     }
     if (typeof phase === "string") {
       data.phase = phase;
