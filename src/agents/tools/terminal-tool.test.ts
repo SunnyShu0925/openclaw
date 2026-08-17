@@ -81,6 +81,25 @@ function makeContext(manager: TerminalSessionManager) {
   };
 }
 
+const allowExecPolicy = () => ({
+  mode: "full" as const,
+  security: "full" as const,
+  ask: "off" as const,
+});
+
+type TerminalApprovalRequesterParams = {
+  agentId: string;
+  agentSessionKey: string;
+  runId?: string;
+  toolCallId?: string;
+  shell: string;
+  args: string[];
+  cwd: string;
+  initialCommand?: string;
+  security: string;
+  ask: string;
+};
+
 describe("terminal tool", () => {
   beforeEach(() => {
     resetAgentRunRegistryForTest();
@@ -112,6 +131,7 @@ describe("terminal tool", () => {
       agentId: "main",
       agentSessionKey: "agent:main:main",
       sessionId: "main-session-id",
+      resolveExecPolicy: allowExecPolicy,
       getGatewayContext: () => makeContext(manager),
     });
     expect(tool.outputSchema).toBeDefined();
@@ -184,6 +204,7 @@ describe("terminal tool", () => {
         agentId: "main",
         agentSessionKey,
         sessionId: "shared-session-id",
+        resolveExecPolicy: allowExecPolicy,
         runId,
         lookupTaskByRunIdForChildSession,
         getGatewayContext: () => makeContext(manager),
@@ -237,6 +258,7 @@ describe("terminal tool", () => {
       agentSessionKey,
       sessionId: "shared-run-session-id",
       runId: "shared-run",
+      resolveExecPolicy: allowExecPolicy,
       lookupTaskByRunIdForChildSession,
       getGatewayContext: () => makeContext(manager),
     });
@@ -273,6 +295,7 @@ describe("terminal tool", () => {
       agentSessionKey,
       sessionId: "cron-session-id",
       runId: "cron-agent-run",
+      resolveExecPolicy: allowExecPolicy,
       lookupTaskByRunIdForChildSession,
       getGatewayContext: () => makeContext(manager),
     });
@@ -302,6 +325,7 @@ describe("terminal tool", () => {
       agentSessionKey: "agent:main:completed-task",
       sessionId: "completed-session-id",
       runId: "completed-run",
+      resolveExecPolicy: allowExecPolicy,
       lookupTaskByRunIdForChildSession: vi.fn(async () => ({
         taskId: "task-completed",
         status: "succeeded" as const,
@@ -407,6 +431,7 @@ describe("terminal tool", () => {
         agentId: "main",
         agentSessionKey: "agent:main:main",
         sessionId: "main-session-id",
+        resolveExecPolicy: allowExecPolicy,
         getGatewayContext: () => makeContext(manager),
       });
       const opening = tool.execute("open", { action: "open" });
@@ -549,4 +574,134 @@ describe("terminal tool", () => {
       expect(manager.size).toBe(0);
     },
   );
+  it("refuses to open a terminal when exec policy denies host execution", async () => {
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      resolveExecPolicy: () => ({ mode: "deny", security: "deny", ask: "off" }),
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    await expect(tool.execute("open", { action: "open" })).rejects.toThrow(
+      "exec policy denies host command execution",
+    );
+    expect(spawn).not.toHaveBeenCalled();
+    expect(manager.size).toBe(0);
+  });
+
+  it("refuses to open a terminal under allowlist-only exec policy", async () => {
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      resolveExecPolicy: () => ({ mode: "allowlist", security: "allowlist", ask: "off" }),
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    await expect(tool.execute("open", { action: "open" })).rejects.toThrow("allowlist-only");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("opens a terminal after an allow-once exec approval", async () => {
+    const backend = makeBackend();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => true);
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      requestTerminalApproval,
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    const opened = await tool.execute("open", { action: "open" });
+    expect(requestTerminalApproval).toHaveBeenCalledTimes(1);
+    expect(requestTerminalApproval.mock.calls[0]![0]).toMatchObject({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      shell: "/bin/sh",
+      cwd: "/tmp",
+    });
+    expect(opened.details).toMatchObject({ ok: true });
+    expect(manager.size).toBe(1);
+  });
+
+  it("refuses to open a terminal when exec approval is not granted", async () => {
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => false);
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      requestTerminalApproval,
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    await expect(tool.execute("open", { action: "open" })).rejects.toThrow(
+      "exec approval not granted",
+    );
+    expect(requestTerminalApproval).toHaveBeenCalledTimes(1);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(manager.size).toBe(0);
+  });
+
+  it("refuses to open a terminal when the non-interactive approval policy is active", async () => {
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => true);
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      requestTerminalApproval,
+      nonInteractiveApproval: true,
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    await expect(tool.execute("open", { action: "open" })).rejects.toThrow(
+      "non-interactive approval policy denies",
+    );
+    expect(requestTerminalApproval).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the requesting run aborts while approval is pending", async () => {
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const controller = new AbortController();
+    // Simulate the run aborting (closure/rotation) while the operator approval
+    // is still pending: the approval resolves true, but the run signal has
+    // already aborted by the time the await returns.
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => {
+      controller.abort(new Error("run closed during approval"));
+      return true;
+    });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      requestTerminalApproval,
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    await expect(tool.execute("open", { action: "open" }, controller.signal)).rejects.toThrow(
+      "requesting run is no longer active",
+    );
+    expect(requestTerminalApproval).toHaveBeenCalledTimes(1);
+    // A stale run must fail closed before any gateway-host PTY is spawned.
+    expect(spawn).not.toHaveBeenCalled();
+    expect(manager.size).toBe(0);
+  });
 });
