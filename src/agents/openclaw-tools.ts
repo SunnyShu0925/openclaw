@@ -141,6 +141,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     onYield: options?.onYield,
   });
   const taskKey = normalizeOptionalString(options?.runSessionKey ?? options?.agentSessionKey);
+  const requesterSessionKey = trimmedRunSessionKey || options?.agentSessionKey;
   const imageTool =
     options?.agentDir &&
     resolveImageToolFactoryAvailable({
@@ -374,6 +375,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
                   agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
                   sessionId: options?.sessionId,
                   runId: options?.runId,
+                  nonInteractiveApproval: options?.swarmCollector,
                 }),
                 createPortalTool(),
               ]),

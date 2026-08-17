@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { renderTerminalBufferText } from "../../gateway/terminal/buffer-text.js";
 import { buildTerminalEnv, resolveTerminalSpawnPlan } from "../../gateway/terminal/launch.js";
@@ -9,9 +10,18 @@ import {
 } from "../../gateway/terminal/open-deadline.js";
 import type { TerminalAgentActionOutcome } from "../../gateway/terminal/session-manager.types.js";
 import { getAgentRunTaskRunId } from "../../infra/agent-run-registry.js";
+import {
+  DEFAULT_EXEC_APPROVAL_TIMEOUT_MS,
+  loadExecApprovals,
+  type ExecApprovalsFile,
+  type ExecAsk,
+  type ExecMode,
+  type ExecSecurity,
+} from "../../infra/exec-approvals.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { isTerminalTaskStatus } from "../../tasks/task-executor-policy.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
+import { resolveExecDefaults } from "../exec-defaults.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
@@ -19,6 +29,7 @@ import {
   readToolStringParam,
   ToolInputError,
 } from "./common.js";
+import { callGatewayTool } from "./gateway.js";
 import { getInProcessGatewayToolContext } from "./in-process-gateway.js";
 
 const ACTIONS = ["open", "read", "input", "resize", "close", "list"] as const;
@@ -89,19 +100,117 @@ function terminalActionResult(
 type TerminalToolGatewayContext = Pick<
   GatewayRequestContext,
   "isTerminalEnabled" | "resolveTerminalLaunchPolicy" | "terminalSessions"
->;
+> & { getRuntimeConfig?: () => OpenClawConfig };
 
 type TerminalToolOptions = {
   agentId?: string;
   agentSessionKey?: string;
   sessionId?: string;
   runId?: string;
+  /** Runtime config used to resolve the effective exec policy for this agent. */
+  cfg?: OpenClawConfig;
+  /** Preloaded host exec approvals; defaults to the local approvals file. */
+  execApprovals?: ExecApprovalsFile;
+  /** Resolves the effective exec policy that gates agent terminal opens. */
+  resolveExecPolicy?: TerminalExecPolicyResolver;
+  /** Requests one exec approval for an interactive terminal session. */
+  requestTerminalApproval?: TerminalApprovalRequester;
+  /** Deny approval-requiring terminal opens without creating approval events. */
+  nonInteractiveApproval?: boolean;
   lookupTaskByRunIdForChildSession?: (
     runId: string,
     childSessionKey: string,
   ) => Promise<Pick<TaskRecord, "taskId" | "status" | "childSessionKey"> | undefined>;
   getGatewayContext?: () => TerminalToolGatewayContext | undefined;
 };
+
+/** Effective exec policy surface consulted before opening an agent terminal. */
+type TerminalExecPolicy = {
+  mode: ExecMode;
+  security: ExecSecurity;
+  ask: ExecAsk;
+};
+
+type TerminalExecPolicyResolver = (params: {
+  cfg?: OpenClawConfig;
+  execApprovals?: ExecApprovalsFile;
+  agentId: string;
+  sessionKey: string;
+}) => TerminalExecPolicy;
+
+type TerminalApprovalRequester = (params: {
+  agentId: string;
+  agentSessionKey: string;
+  runId?: string;
+  toolCallId?: string;
+  shell: string;
+  args: string[];
+  cwd: string;
+  initialCommand?: string;
+  security: ExecSecurity;
+  ask: ExecAsk;
+}) => Promise<boolean>;
+
+const DEFAULT_TERMINAL_APPROVAL_TIMEOUT_MS = DEFAULT_EXEC_APPROVAL_TIMEOUT_MS;
+const DEFAULT_TERMINAL_APPROVAL_REQUEST_TIMEOUT_MS = DEFAULT_EXEC_APPROVAL_TIMEOUT_MS + 10_000;
+
+/** Resolves the same effective exec policy the exec tool enforces. */
+function resolveTerminalExecPolicyDefault(
+  params: Parameters<TerminalExecPolicyResolver>[0],
+): TerminalExecPolicy {
+  const defaults = resolveExecDefaults({
+    cfg: params.cfg,
+    execApprovals: params.execApprovals ?? loadExecApprovals(),
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+  });
+  return { mode: defaults.mode, security: defaults.security, ask: defaults.ask };
+}
+
+/**
+ * Requests one bounded "allow-once" exec approval for an interactive terminal
+ * session. The approval gates only the PTY open; the running session remains
+ * visible to the operator in the web UI and is closed with its owning task.
+ */
+async function requestTerminalApprovalDefault(
+  params: Parameters<TerminalApprovalRequester>[0],
+): Promise<boolean> {
+  const shellPreview = [params.shell, ...params.args].filter(Boolean).join(" ") || "default shell";
+  const commandText = params.initialCommand?.trim()
+    ? `terminal: ${params.initialCommand}`
+    : `terminal: open interactive shell (${shellPreview}, cwd: ${params.cwd})`;
+  const registration = await callGatewayTool<{ id?: string | null }>(
+    "exec.approval.request",
+    { timeoutMs: DEFAULT_TERMINAL_APPROVAL_REQUEST_TIMEOUT_MS },
+    {
+      command: commandText,
+      commandArgv: [params.shell, ...params.args],
+      host: "gateway",
+      cwd: params.cwd,
+      security: params.security,
+      ask: params.ask,
+      // An interactive shell cannot inherit an indefinite "allow-always" grant.
+      unavailableDecisions: ["allow-always"],
+      agentId: params.agentId,
+      sessionKey: params.agentSessionKey,
+      runId: params.runId ?? null,
+      toolCallId: params.toolCallId ?? null,
+      timeoutMs: DEFAULT_TERMINAL_APPROVAL_TIMEOUT_MS,
+      twoPhase: true,
+    },
+    { expectFinal: false },
+  );
+  const approvalId = typeof registration?.id === "string" ? registration.id : null;
+  if (!approvalId) {
+    return false;
+  }
+  const decision = await callGatewayTool<{ decision?: string | null }>(
+    "exec.approval.waitDecision",
+    { timeoutMs: DEFAULT_TERMINAL_APPROVAL_REQUEST_TIMEOUT_MS },
+    { id: approvalId },
+  );
+  return decision?.decision === "allow-once";
+}
 
 async function lookupTaskByRunIdForChildSession(
   runId: string,
@@ -215,6 +324,53 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
           ...launch.plan,
           ...(cwd ? { cwdOverride: cwd } : {}),
         });
+        const execPolicy = (opts.resolveExecPolicy ?? resolveTerminalExecPolicyDefault)({
+          cfg: opts.cfg ?? context?.getRuntimeConfig?.(),
+          execApprovals: opts.execApprovals,
+          agentId,
+          sessionKey: agentSessionKey,
+        });
+        if (execPolicy.mode === "deny" || execPolicy.security === "deny") {
+          throw new ToolInputError(
+            "terminal unavailable: exec policy denies host command execution",
+          );
+        }
+        if (execPolicy.security === "allowlist" && execPolicy.ask === "off") {
+          throw new ToolInputError(
+            "terminal unavailable: exec policy is allowlist-only; an interactive shell cannot be allowlisted",
+          );
+        }
+        if (execPolicy.ask !== "off") {
+          if (opts.nonInteractiveApproval) {
+            throw new ToolInputError(
+              "terminal open denied: exec approval is required but the non-interactive approval policy denies it",
+            );
+          }
+          const approved = await (opts.requestTerminalApproval ?? requestTerminalApprovalDefault)({
+            agentId,
+            agentSessionKey,
+            runId: opts.runId,
+            toolCallId: _toolCallId,
+            shell: spawnPlan.shell,
+            args: spawnPlan.args,
+            cwd: spawnPlan.cwd,
+            initialCommand: command,
+            security: execPolicy.security,
+            ask: execPolicy.ask,
+          });
+          if (!approved) {
+            throw new ToolInputError("terminal open denied: exec approval not granted");
+          }
+        }
+        // Revalidate run authority after the awaited approval. The
+        // host-capability wrapper asserts authority at execute entry/exit,
+        // but an interactive approval await can straddle run closure or
+        // rotation — recheck the canonical run abort signal (the same source
+        // assertActive's capabilityAbortController feeds) so a stale run
+        // fails closed before any gateway-host PTY is spawned.
+        if (signal?.aborted) {
+          throw new ToolInputError("terminal open denied: requesting run is no longer active");
+        }
         const runId = opts.runId?.trim();
         const taskLookupId = runId ? (getAgentRunTaskRunId(runId) ?? runId) : undefined;
         const task = taskLookupId ? await findOwnerTask(taskLookupId, agentSessionKey) : undefined;
