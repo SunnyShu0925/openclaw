@@ -11,6 +11,7 @@ import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime
 import type { SessionCatalogProvider as RegisteredSessionCatalogProvider } from "openclaw/plugin-sdk/session-catalog";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { adoptedSourceKey } from "./session-catalog-adoption.js";
+import { unwrapNodePayload } from "./session-catalog-parsing.js";
 import {
   createClaudeSessionNodeInvokePolicies,
   registerClaudeSessionDiscovery,
@@ -2980,6 +2981,52 @@ describe("Claude session catalog", () => {
     expect(hosts).toEqual([
       expect.objectContaining({ hostId: "node:malformed", error: expect.any(Object) }),
     ]);
+  });
+
+  it("rewraps malformed payloadJSON into a stable catalog error", () => {
+    // The Anthropic owner-local unwrapNodePayload must not leak a bare
+    // SyntaxError; it rewraps the parse failure into a semantic error whose
+    // message is the stable "node returned malformed session catalog JSON"
+    // string, with the original SyntaxError preserved as cause.
+    expect(() => unwrapNodePayload({ payloadJSON: "{bad json" })).toThrow(
+      "node returned malformed session catalog JSON",
+    );
+    let caught: unknown;
+    try {
+      unwrapNodePayload({ payloadJSON: "{bad json" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as { cause?: unknown }).cause).toBeInstanceOf(SyntaxError);
+  });
+
+  it("falls back to payload when a paired node returns empty payloadJSON", async () => {
+    const runtime = {
+      nodes: {
+        list: vi.fn().mockResolvedValue({
+          nodes: [
+            {
+              nodeId: "empty-json",
+              displayName: "Empty JSON",
+              connected: true,
+              commands: [CLAUDE_SESSIONS_LIST_COMMAND],
+            },
+          ],
+        }),
+        // An empty payloadJSON must fall back to the structured payload field
+        // instead of throwing "Unexpected end of JSON input".
+        invoke: vi.fn().mockResolvedValue({
+          payloadJSON: "   ",
+          payload: { sessions: [] },
+        }),
+      },
+    } as unknown as PluginRuntime;
+
+    const provider = captureCatalogProvider(runtime);
+    const hosts = await provider.list({ hostIds: ["node:empty-json"] });
+    expect(hosts).toEqual([expect.objectContaining({ hostId: "node:empty-json", sessions: [] })]);
+    expect((hosts[0] as { error?: unknown }).error).toBeUndefined();
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -215,10 +215,17 @@ export function parseCatalogPage(value: unknown): ClaudeSessionCatalogPage {
 }
 
 export function unwrapNodePayload(value: unknown): unknown {
-  if (isRecord(value) && typeof value.payloadJSON === "string") {
-    return JSON.parse(value.payloadJSON) as unknown;
+  if (!isRecord(value)) {
+    return value;
   }
-  return value;
+  if (typeof value.payloadJSON === "string" && value.payloadJSON.trim()) {
+    try {
+      return JSON.parse(value.payloadJSON) as unknown;
+    } catch (error) {
+      throw new Error("node returned malformed session catalog JSON", { cause: error });
+    }
+  }
+  return "payload" in value ? value.payload : value;
 }
 
 export function parseGatewayQuery(value: unknown): {

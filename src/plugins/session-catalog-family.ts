@@ -119,9 +119,17 @@ function nodeLabel(node: { displayName?: string; remoteIp?: string; nodeId: stri
 }
 
 function unwrapNodePayload(value: unknown): unknown {
-  return isRecord(value) && typeof value.payloadJSON === "string"
-    ? (JSON.parse(value.payloadJSON) as unknown)
-    : value;
+  if (!isRecord(value)) {
+    return value;
+  }
+  if (typeof value.payloadJSON === "string" && value.payloadJSON.trim()) {
+    try {
+      return JSON.parse(value.payloadJSON) as unknown;
+    } catch (error) {
+      throw new Error("node returned malformed session catalog JSON", { cause: error });
+    }
+  }
+  return "payload" in value ? value.payload : value;
 }
 
 function isOptionalString(value: unknown): boolean {
