@@ -12,12 +12,20 @@ import {
   type TranscriptEvent,
 } from "../config/sessions/session-accessor.js";
 import {
+  withCurrentProjectionSnapshot,
+  type CurrentTranscriptProjection,
+} from "../config/sessions/session-accessor.sqlite-active-projection.js";
+import {
   readRecentSessionTranscriptHistoryEvents,
   readSessionTranscriptHistoryEventById,
   readSessionTranscriptHistoryEventCount,
   readSessionTranscriptHistoryEventPage,
   readSessionTranscriptHistoryEvents,
 } from "../config/sessions/session-accessor.sqlite-history-events.js";
+import {
+  readVisibleMessageRange,
+  resolveVisibleMessagePositions,
+} from "../config/sessions/session-accessor.sqlite-reset-window.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { aggregateSqliteUsageSnapshots } from "./session-transcript-derived-readers.js";
 import {
@@ -260,7 +268,63 @@ function buildSqlitePreviewItems(
   maxItems: number,
   maxChars: number,
 ): SessionPreviewItem[] {
-  return buildSessionPreviewItems(readSqliteMessagesSync(target), maxItems, maxChars);
+  // Read only the visible-message tail instead of the whole transcript. The
+  // previous implementation read every message event on the active path and
+  // then discarded all but the last `maxItems` projected items, which scaled
+  // memory and synchronous parse cost with total transcript length for a
+  // preview that only ever inspects the tail.
+  //
+  // `buildSessionPreviewItems` slices the *projected* items, not the messages,
+  // so a toolcall/control-heavy tail can yield fewer items than messages. Grow
+  // the window backwards until enough items survive projection (or the whole
+  // transcript is covered, which is exactly the legacy behavior).
+  //
+  // Each expansion reads only the newly uncovered prefix interval and projects
+  // only those new messages, prepending the surviving items to the accumulated
+  // tail. Every message is read and projected at most once, so an all-filtered
+  // tail never does more read or projection work than the legacy single full
+  // scan (prior revisions reread/reprojected the entire suffix on every
+  // iteration, peaking at ~2x total).
+  return withCurrentProjectionSnapshot(toTranscriptReadScope(target), (projection) => {
+    const visible = resolveVisibleMessagePositions(projection);
+    const total = visible.total;
+    if (total === 0) {
+      return [];
+    }
+    let windowSize = Math.min(maxItems, total);
+    let items = buildSessionPreviewItems(
+      readVisibleMessageTailAsMessages(projection, total - windowSize, total),
+      maxItems,
+      maxChars,
+    );
+    while (items.length < maxItems && windowSize < total) {
+      const previousSize = windowSize;
+      windowSize = Math.min(windowSize * 2, total);
+      // Read and project only the newly uncovered earlier interval; the suffix
+      // items already projected stay in position. `buildSessionPreviewItems`
+      // slices its own output to `maxItems`, so an over-long prefix is trimmed
+      // to the tail exactly as the outer accumulation would.
+      const uncoveredPrefixItems = buildSessionPreviewItems(
+        readVisibleMessageTailAsMessages(projection, total - windowSize, total - previousSize),
+        maxItems,
+        maxChars,
+      );
+      items = uncoveredPrefixItems.concat(items);
+      if (items.length > maxItems) {
+        items = items.slice(-maxItems);
+      }
+    }
+    return items;
+  });
+}
+
+function readVisibleMessageTailAsMessages(
+  projection: CurrentTranscriptProjection,
+  start: number,
+  endExclusive: number,
+): unknown[] {
+  const events = readVisibleMessageRange(projection, start, endExclusive);
+  return extractMessageRecordsFromEventEntries(events).map(sqliteRecordMessageWithSeq);
 }
 
 /** Reads display messages asynchronously through the reader seam. */
