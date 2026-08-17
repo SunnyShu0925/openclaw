@@ -646,6 +646,83 @@ describe("session-entry compaction budgeting", () => {
   });
 });
 
+describe("prepareCompaction when the last entry is a compaction record", () => {
+  // Regression for #120290: a compaction record as the last entry is not a no-op
+  // signal. The retained context (prior summary + kept recent turns + system prompt
+  // + injected files) can still exceed the window, so a second compaction that feeds
+  // the prior summary through UPDATE_SUMMARIZATION_PROMPT must remain possible when
+  // there is compactable content after the retained start.
+  const settings = {
+    enabled: true,
+    reserveTokens: 0,
+    keepRecentTokens: 1,
+  };
+
+  it("compacts when the last entry is a compaction record and new turns follow the retained start", () => {
+    const largeContent = "x".repeat(200_000);
+    const entries: SessionTreeEntry[] = [
+      createMessageEntry({ role: "user", content: "original request", timestamp: 1 }, 0),
+      {
+        type: "compaction",
+        id: "compaction-1",
+        parentId: "entry-0",
+        timestamp: new Date(2).toISOString(),
+        summary: "earlier summary",
+        firstKeptEntryId: "entry-0",
+        tokensBefore: 200_000,
+      },
+      createMessageEntry({ role: "user", content: largeContent, timestamp: 3 }, 2),
+      createMessageEntry(createAssistant(largeContent, createUsage(10), 4), 3),
+      createMessageEntry({ role: "user", content: largeContent, timestamp: 5 }, 4),
+      createMessageEntry(createAssistant("recent reply tail", createUsage(10), 6), 5),
+      {
+        type: "compaction",
+        id: "compaction-2",
+        parentId: "entry-5",
+        timestamp: new Date(7).toISOString(),
+        summary: "later summary",
+        firstKeptEntryId: "entry-2",
+        tokensBefore: 200_000,
+      },
+    ];
+
+    const result = prepareCompaction(entries, settings);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || !result.value) {
+      throw new Error("expected a trailing compaction record with new turns to remain compactable");
+    }
+    expect(result.value.messagesToSummarize.length).toBeGreaterThan(0);
+    // The most recent compaction record's summary must feed the next summary as
+    // previousSummary so UPDATE_SUMMARIZATION_PROMPT folds it in rather than dropping it.
+    expect(result.value.previousSummary).toBe("later summary");
+  });
+
+  it("still returns undefined when the last entry is a compaction record with nothing new to summarize", () => {
+    // A compaction record as the last entry, where its retained start points at
+    // itself and nothing follows: there is genuinely no compactable content, so
+    // the no-op path must still apply (avoids meaningless re-compaction).
+    const entries: SessionTreeEntry[] = [
+      createMessageEntry({ role: "user", content: "original request", timestamp: 1 }, 0),
+      createMessageEntry(createAssistant("earlier work", createUsage(10), 2), 1),
+      {
+        type: "compaction",
+        id: "compaction-1",
+        parentId: "entry-1",
+        timestamp: new Date(3).toISOString(),
+        summary: "only a summary remains",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 10,
+      },
+    ];
+
+    const result = prepareCompaction(entries, settings);
+
+    expect(result.ok).toBe(true);
+    expect(result.ok ? result.value : undefined).toBeUndefined();
+  });
+});
+
 describe("generateSummary thinking options", () => {
   it("consumes the decorated stream before reading its result", async () => {
     const model: Model = {

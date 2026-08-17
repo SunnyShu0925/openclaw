@@ -703,11 +703,12 @@ export function prepareCompaction(
   pathEntries: SessionTreeEntry[],
   settings: CompactionSettings,
 ): Result<CompactionPreparation | undefined, CompactionError> {
-  if (
-    pathEntries.at(-1)?.type === "compaction" ||
-    pathEntries.at(-1)?.type === "reset" ||
-    pathEntries.length === 0
-  ) {
+  if (pathEntries.length === 0 || pathEntries.at(-1)?.type === "reset") {
+    // An empty branch or one ending in a reset has no compactable history on this
+    // branch. A compaction record as the last entry is NOT a no-op signal: the
+    // retained context (prior summary + kept recent turns + system prompt + injected
+    // files) can still exceed the window, so a second compaction that feeds the
+    // prior summary through UPDATE_SUMMARIZATION_PROMPT must remain possible.
     return ok(undefined);
   }
 
