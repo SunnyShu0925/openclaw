@@ -6,6 +6,7 @@ import {
   resolveVoiceCallEffectiveConfig,
   resolveVoiceCallNumberRouteKeyForCall,
   resolveVoiceCallSessionKey,
+  resolveVoiceCallStreamExposurePaths,
   validateProviderConfig,
   normalizeVoiceCallConfig,
   resolveVoiceCallConfig,
@@ -469,11 +470,54 @@ describe("resolveVoiceCallConfig session routing", () => {
     ).toBe("agent:main:voice:call:call-123");
   });
 
-  it("scopes explicit voice session keys by configured agent", () => {
+  it.each([
+    {
+      name: "the default core session",
+      agentId: undefined,
+      coreSession: undefined,
+      expected: "agent:main:main",
+    },
+    {
+      name: "a custom core main key",
+      agentId: undefined,
+      coreSession: { mainKey: "work" },
+      expected: "agent:main:work",
+    },
+    {
+      name: "global core scope",
+      agentId: undefined,
+      coreSession: { scope: "global" as const },
+      expected: "global",
+    },
+    {
+      name: "a configured agent",
+      agentId: "ops",
+      coreSession: undefined,
+      expected: "agent:ops:main",
+    },
+  ])("routes main-scoped calls to $name", ({ agentId, coreSession, expected }) => {
     const config = resolveVoiceCallConfig({
       enabled: true,
       provider: "mock",
-      sessionScope: "per-call",
+      sessionScope: "main",
+      agentId,
+    });
+
+    expect(
+      resolveVoiceCallSessionKey({
+        config,
+        callId: "call-123",
+        phone: "+1 (555) 000-1111",
+        coreSession,
+      }),
+    ).toBe(expected);
+  });
+
+  it("lets an explicit session key override main scope", () => {
+    const config = resolveVoiceCallConfig({
+      enabled: true,
+      provider: "mock",
+      sessionScope: "main",
     });
 
     expect(
@@ -782,6 +826,68 @@ describe("normalizeVoiceCallConfig", () => {
       id: "ELEVENLABS_API_KEY",
     });
     expect(elevenlabs.voiceSettings).toEqual({ speed: 1.1 });
+  });
+});
+
+describe("resolveVoiceCallStreamExposurePaths", () => {
+  it("returns no paths when both audio modes are disabled", () => {
+    const config = normalizeVoiceCallConfig({});
+
+    expect(resolveVoiceCallStreamExposurePaths(config)).toEqual([]);
+  });
+
+  it("derives the default realtime path from the webhook path", () => {
+    const config = normalizeVoiceCallConfig({
+      serve: { path: "/custom/webhook" },
+      realtime: { enabled: true },
+    });
+
+    expect(resolveVoiceCallStreamExposurePaths(config)).toEqual([
+      {
+        localPath: "/custom/stream/realtime",
+        publicPath: "/custom/stream/realtime",
+      },
+    ]);
+  });
+
+  it("normalizes explicit realtime and streaming paths", () => {
+    const config = normalizeVoiceCallConfig({
+      realtime: { enabled: true, streamPath: "custom/realtime" },
+      streaming: { enabled: true, streamPath: "custom/stream" },
+    });
+
+    expect(resolveVoiceCallStreamExposurePaths(config)).toEqual([
+      { localPath: "/custom/realtime", publicPath: "/custom/realtime" },
+      { localPath: "/custom/stream", publicPath: "/custom/stream" },
+    ]);
+  });
+
+  it("deduplicates equal realtime and streaming paths", () => {
+    const config = normalizeVoiceCallConfig({
+      realtime: { enabled: true, streamPath: "/voice/stream" },
+      streaming: { enabled: true, streamPath: "/voice/stream" },
+    });
+
+    expect(resolveVoiceCallStreamExposurePaths(config)).toEqual([
+      { localPath: "/voice/stream", publicPath: "/voice/stream" },
+    ]);
+  });
+
+  it("maps stream paths through a distinct public Tailscale prefix", () => {
+    const config = normalizeVoiceCallConfig({
+      serve: { path: "/voice/webhook" },
+      tailscale: { path: "/edge/voice/webhook" },
+      realtime: { enabled: true },
+      streaming: { enabled: true, streamPath: "/voice/stream" },
+    });
+
+    expect(resolveVoiceCallStreamExposurePaths(config)).toEqual([
+      {
+        localPath: "/voice/stream/realtime",
+        publicPath: "/edge/voice/stream/realtime",
+      },
+      { localPath: "/voice/stream", publicPath: "/voice/stream" },
+    ]);
   });
 });
 

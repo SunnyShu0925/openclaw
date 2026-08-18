@@ -1,3 +1,4 @@
+import { resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
 import {
   isProviderAuthProfileConfigured,
   type OpenClawConfig,
@@ -8,8 +9,9 @@ import type {
 } from "openclaw/plugin-sdk/realtime-voice";
 import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/secret-input";
 import {
-  asFiniteNumber,
-  asRecord,
+  asFiniteNumberInRange,
+  asOptionalObjectRecord as readXaiObjectRecord,
+  asSafeIntegerInRange,
   normalizeOptionalString,
   parseBooleanValue,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -17,10 +19,6 @@ import { XAI_BASE_URL } from "./model-definitions.js";
 
 type XaiRealtimeVoice = "eve" | "ara" | "rex" | "sal" | "leo";
 type XaiRealtimeReasoningEffort = "high" | "none";
-
-function readXaiObjectRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" ? asRecord(value) : undefined;
-}
 
 type XaiRealtimeVoiceProviderConfig = {
   apiKey?: string;
@@ -171,15 +169,11 @@ function normalizeXaiRealtimeVoice(value: unknown): string | undefined {
 }
 
 function asXaiVadThreshold(value: unknown): number | undefined {
-  const number = asFiniteNumber(value);
-  return number !== undefined && number >= 0.1 && number <= 0.9 ? number : undefined;
+  return asFiniteNumberInRange(value, { min: 0.1, max: 0.9 });
 }
 
 function asXaiDurationMs(value: unknown): number | undefined {
-  const number = asFiniteNumber(value);
-  return number !== undefined && Number.isSafeInteger(number) && number >= 0 && number <= 10_000
-    ? number
-    : undefined;
+  return asSafeIntegerInRange(value, { min: 0, max: 10_000 });
 }
 
 function asXaiReasoningEffort(value: unknown): XaiRealtimeReasoningEffort | undefined {
@@ -244,9 +238,14 @@ export function toXaiRealtimeWsUrl(
 export function hasXaiRealtimeApiKeyInput(
   configApiKey: string | undefined,
   cfg: OpenClawConfig | undefined,
+  agentId?: string,
 ): boolean {
   if (normalizeOptionalString(configApiKey) || normalizeOptionalString(process.env.XAI_API_KEY)) {
     return true;
   }
-  return isProviderAuthProfileConfigured({ provider: "xai", cfg });
+  return isProviderAuthProfileConfigured({
+    provider: "xai",
+    cfg,
+    ...(cfg && agentId ? { agentDir: resolveAgentDir(cfg, agentId) } : {}),
+  });
 }

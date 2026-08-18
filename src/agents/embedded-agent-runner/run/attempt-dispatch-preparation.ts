@@ -206,6 +206,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       ? { kind: "caller-owned", sessionManager: params.sessionManager }
       : { kind: "runtime-target", sessionTarget: resolvedSessionTarget },
     runtime: {
+      contextEngineAgentId: runInput.contextEngineAgentId,
       sessionId: sessionPromptState.sessionId,
       sessionFile: sessionPromptState.sessionFile,
       sessionKey: resolvedSessionKey,
@@ -216,6 +217,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       preparedModelRuntime: runInput.preparedModelRuntime,
       contextEngine: nativeModelOwned ? undefined : contextEngine,
       contextTokenBudget: runtime.contextTokenBudget,
+      authoredContextTokenCap: runtime.authoredContextTokenCap,
       contextWindowInfo: runtime.contextWindowInfo,
       prompt,
       provider,
@@ -229,7 +231,8 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       model: effectiveModel,
       resolvedApiKey: resolvedAttemptApiKey,
       authProfileId: runtime.lastProfileId,
-      authProfileIdSource: lockedProfileId ? "user" : "auto",
+      authProfileIdSource:
+        runtime.lastProfileId && runtime.lastProfileId === lockedProfileId ? "user" : "auto",
       initialReplayState: input.replayState,
       authStorage,
       authProfileStore: resolveRunAttemptAuthProfileStore(),

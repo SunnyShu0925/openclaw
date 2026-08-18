@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { isRecord as isJsonRecord } from "../packages/normalization-core/src/record-coerce.ts";
 import { execGhRead } from "./lib/plain-gh.mjs";
 
 const WORKFLOW = "full-release-validation.yml";
@@ -51,10 +52,6 @@ type TemporaryRefParams = {
   parentConclusion: string;
   evidenceVerified: boolean;
 };
-
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function stringValue(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -427,11 +424,25 @@ function waitForWorkflowRun(parentRunId: string, workflowSha: string) {
   );
 }
 
-export function releaseEvidenceVerificationArgs(parentRunId: unknown) {
+export function releaseEvidenceVerificationArgs(
+  parentRunId: unknown,
+  verifierSourceSha: string,
+  verifierSourceFile: string,
+) {
   if (!/^[1-9][0-9]*$/u.test(String(parentRunId))) {
     throw new Error("parent run ID must be a positive decimal");
   }
-  return ["--validate-run", String(parentRunId), "--trusted-workflow-ref", "main", "--json"];
+  return [
+    "--validate-run",
+    String(parentRunId),
+    "--trusted-workflow-ref",
+    "main",
+    "--json",
+    "--verifier-source-sha",
+    verifierSourceSha,
+    "--verifier-source-file",
+    verifierSourceFile,
+  ];
 }
 
 export function shouldDeleteTemporaryWorkflowRef(params: TemporaryRefParams) {
@@ -505,7 +516,10 @@ function verifyReleaseEvidence(parentRunId: string, workflowSha: string) {
     });
     const verifier = releaseEvidenceVerifierPath(verifierWorktree);
     const evidence: unknown = JSON.parse(
-      run(process.execPath, [verifier, ...releaseEvidenceVerificationArgs(parentRunId)]),
+      run(process.execPath, [
+        verifier,
+        ...releaseEvidenceVerificationArgs(parentRunId, workflowSha, verifier),
+      ]),
     );
     if (
       !isJsonRecord(evidence) ||

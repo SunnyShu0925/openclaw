@@ -12,6 +12,7 @@ const sharedClientMocks = vi.hoisted(() => ({
 
 vi.mock("./src/app-server/shared-client.js", () => ({
   createIsolatedCodexAppServerClient: sharedClientMocks.createIsolatedCodexAppServerClient,
+  retireSharedCodexAppServerClientIfCurrent: () => undefined,
 }));
 
 function codexModel(inputModalities: string[] = ["text", "image"]) {
@@ -325,6 +326,7 @@ describe("codex media understanding provider", () => {
         "features.multi_agent_v2": false,
         "features.plugins": false,
         "features.standalone_web_search": false,
+        "tools.update_plan.enabled": false,
         web_search: "disabled",
       },
       environments: [],
@@ -662,6 +664,7 @@ describe("codex media understanding provider", () => {
         "features.multi_agent_v2": false,
         "features.plugins": false,
         "features.standalone_web_search": false,
+        "tools.update_plan.enabled": false,
         web_search: "disabled",
       },
       environments: [],

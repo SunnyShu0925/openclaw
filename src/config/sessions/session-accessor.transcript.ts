@@ -1,8 +1,10 @@
+import { safeParseJsonRecord } from "@openclaw/normalization-core";
 import { readTranscriptRawDelta } from "./session-accessor.sqlite-delta.js";
 import { resolveSessionKeyBySessionId as resolveTranscriptSessionKeyBySessionId } from "./session-accessor.sqlite-entry.js";
 import { publishTranscriptUpdate } from "./session-accessor.sqlite-events.js";
 import {
   findTranscriptEvent,
+  inspectTranscriptEventsSync,
   loadLatestAssistantText as readLatestTranscriptAssistantText,
   loadTranscriptEventRowsAfterSeqSync,
   loadTranscriptEvents,
@@ -12,6 +14,7 @@ import {
   readTranscriptStatsSync,
   readTranscriptEventAtSeqSync,
 } from "./session-accessor.sqlite-read.js";
+import { rewriteTranscriptMessageAtAnchor } from "./session-accessor.sqlite-transcript-message-rewrite.js";
 import {
   appendTranscriptEvent,
   appendTranscriptEventSync,
@@ -41,6 +44,7 @@ export {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
   findTranscriptEvent,
+  inspectTranscriptEventsSync,
   loadTranscriptEventRowsAfterSeqSync,
   loadTranscriptEvents,
   loadTranscriptEventsSync,
@@ -54,6 +58,7 @@ export {
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
   rewriteTranscriptEventRowsExact,
+  rewriteTranscriptMessageAtAnchor,
   resolveTranscriptSessionKeyBySessionId,
   withTranscriptWriteLock,
   withTranscriptWriteTransaction,
@@ -113,18 +118,11 @@ export async function trimSessionTranscriptForManualCompact(
     return declined;
   }
 
-  return { archived: trimmed.archivedPath, compacted: true, kept: trimmed.kept };
+  return { compacted: true, kept: trimmed.kept };
 }
 
 function parseManualCompactTranscriptRecord(line: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(line) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
+  return safeParseJsonRecord(line) ?? null;
 }
 
 function normalizeManualCompactTranscriptLines(

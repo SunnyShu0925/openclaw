@@ -43,6 +43,11 @@ import {
 import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
 import { isBlockedShellWrapperCommand } from "../infra/exec-wrapper-resolution.js";
 import {
+  prepareSystemRunMutableFileBinding,
+  revalidateSystemRunMutableFileBinding,
+  type SystemRunMutableFileBinding,
+} from "../infra/system-run-approval-binding.js";
+import {
   GatewayDrainingError,
   runWithGatewayIndependentRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
@@ -56,14 +61,12 @@ import {
   registerExecApprovalRequestForHostOrThrow,
 } from "./bash-tools.exec-approval-request.js";
 import {
-  buildDefaultExecApprovalRequestArgs,
   buildHeadlessExecApprovalDeniedMessage,
   buildExecApprovalFollowupTarget,
   buildExecApprovalPendingToolResult,
-  createExecApprovalDecisionState,
   createAndRegisterDefaultExecApprovalRequest,
-  enforceStrictInlineEvalApprovalBoundary,
   resolveApprovalDecisionOrUndefined,
+  resolveExecApprovalDecisionState,
   resolveExecHostApprovalContext,
   sendExecApprovalFollowupResult,
   shouldResolveExecApprovalUnavailableInline,
@@ -134,6 +137,7 @@ type ProcessGatewayAllowlistParams = {
 type ProcessGatewayAllowlistResult = {
   execCommandOverride?: string;
   allowWithoutEnforcedCommand?: boolean;
+  revalidateBeforeExecution?: () => Promise<AgentToolResult<ExecToolDetails> | undefined>;
   pendingResult?: AgentToolResult<ExecToolDetails>;
   deniedResult?: AgentToolResult<ExecToolDetails>;
 };
@@ -453,6 +457,25 @@ function buildGatewayExecApprovalDeniedToolResult(params: {
   };
 }
 
+/** Rechecks a gateway approval binding at the caller's final spawn boundary. */
+async function revalidateGatewayExecApprovalBinding(params: {
+  binding: SystemRunMutableFileBinding;
+  command: string;
+  cwd: string;
+}): Promise<AgentToolResult<ExecToolDetails> | undefined> {
+  const current = await revalidateSystemRunMutableFileBinding({
+    binding: params.binding,
+    cwd: params.cwd,
+  });
+  return current.ok
+    ? undefined
+    : buildGatewayExecApprovalDeniedToolResult({
+        deniedReason: current.message,
+        command: params.command,
+        cwd: params.cwd,
+      });
+}
+
 async function resolveGatewayExecApprovalFollowupText(params: {
   approvalFollowup?: ExecApprovalFollowupFactory;
   approvalId: string;
@@ -673,7 +696,7 @@ export async function processGatewayAllowlist(
       env: params.env,
       segments: allowlistEval.segments,
     }) && !(hostSecurity === "full" && hostAsk === "off");
-  const requiresAsk =
+  const policyRequiresAsk =
     requiresExecApproval({
       ask: hostAsk,
       security: hostSecurity,
@@ -685,6 +708,25 @@ export async function processGatewayAllowlist(
     requiresHeredocApproval ||
     requiresInlineEvalApproval ||
     requiresSecurityAuditSuppressionApproval;
+  const denyHeadlessApproval = (): ProcessGatewayAllowlistResult => {
+    const text = params.approvalFollowupText
+      ? `${params.approvalFollowupText}\nCommand: ${params.command}`
+      : `Exec denied (approval_required): ${params.command}`;
+    return {
+      deniedResult: {
+        content: [{ type: "text", text }],
+        details: {
+          status: "failed",
+          exitCode: null,
+          failureKind: "approval_required",
+          durationMs: 0,
+          aggregated: text,
+          timedOut: false,
+          cwd: params.workdir,
+        },
+      },
+    };
+  };
   if (requiresHeredocApproval) {
     params.warnings.push(
       "Warning: heredoc execution requires reviewer or explicit approval in allowlist mode.",
@@ -694,6 +736,9 @@ export async function processGatewayAllowlist(
     params.warnings.push(
       `Warning: allowlist auto-execution is unavailable on ${process.platform}; reviewer or explicit approval is required.`,
     );
+  }
+  if (policyRequiresAsk && params.nonInteractiveApproval) {
+    return denyHeadlessApproval();
   }
   const shouldDenyUnpromptedShellExpansion =
     requiresAllowlistPlanApproval &&
@@ -724,18 +769,52 @@ export async function processGatewayAllowlist(
       }),
     };
   }
+  let mutableFileBinding: SystemRunMutableFileBinding | undefined;
+  const durableApprovalRequiresBinding =
+    hostSecurity === "allowlist" &&
+    durableApprovalSatisfied &&
+    (!analysisOk ||
+      !allowlistSatisfied ||
+      (exactCommandDurableApprovalSatisfied && allowlistPlanUnavailableReason !== null));
+  if (policyRequiresAsk || durableApprovalRequiresBinding) {
+    // Durable text grants cannot authorize future bytes. Prepare before they
+    // suppress prompting so mutable operands always return to one-shot review.
+    const prepared = await prepareSystemRunMutableFileBinding({
+      command: analysisOk
+        ? { kind: "segments", segments: allowlistEval.segments }
+        : { kind: "shell", text: params.command },
+      cwd: params.workdir,
+      env: params.env,
+    });
+    if (!prepared.ok) {
+      return {
+        deniedResult: buildGatewayExecApprovalDeniedToolResult({
+          deniedReason: prepared.message,
+          command: params.command,
+          cwd: params.workdir,
+        }),
+      };
+    }
+    mutableFileBinding = prepared.binding;
+  }
+  const mutableFileApprovalRequiresOneShot = (mutableFileBinding?.operands.length ?? 0) > 0;
+  const requiresAsk =
+    policyRequiresAsk || (durableApprovalRequiresBinding && mutableFileApprovalRequiresOneShot);
   const effectiveAllowAlwaysPersistence = resolveGatewayEffectiveAllowAlwaysPersistence({
     command: params.command,
     allowAlwaysPersistence,
     requiresAllowlistPlanApproval,
   });
+  const approvalAllowAlwaysPersistence = mutableFileApprovalRequiresOneShot
+    ? createOneShotAllowAlwaysDecision()
+    : effectiveAllowAlwaysPersistence;
   const approvalAllowedDecisions = resolveExecApprovalAllowedDecisions({
     ask: hostAsk,
-    allowAlwaysPersistence: effectiveAllowAlwaysPersistence,
+    allowAlwaysPersistence: approvalAllowAlwaysPersistence,
   });
   const approvalUnavailableDecisions = resolveExecApprovalUnavailableDecisions({
     ask: hostAsk,
-    allowAlwaysPersistence: effectiveAllowAlwaysPersistence,
+    allowAlwaysPersistence: approvalAllowAlwaysPersistence,
   });
   const unavailableDecisionRequestParams =
     approvalUnavailableDecisions.length > 0
@@ -748,22 +827,27 @@ export async function processGatewayAllowlist(
   }
   if (requiresAsk) {
     if (params.nonInteractiveApproval) {
-      const text = `Exec denied (approval_required): ${params.command}`;
+      return denyHeadlessApproval();
+    }
+    if (!mutableFileBinding) {
       return {
-        deniedResult: {
-          content: [{ type: "text", text }],
-          details: {
-            status: "failed",
-            exitCode: null,
-            failureKind: "approval_required",
-            durationMs: 0,
-            aggregated: text,
-            timedOut: false,
-            cwd: params.workdir,
-          },
-        },
+        deniedResult: buildGatewayExecApprovalDeniedToolResult({
+          deniedReason: "SYSTEM_RUN_DENIED: mutable file approval binding is unavailable",
+          command: params.command,
+          cwd: params.workdir,
+        }),
       };
     }
+    const approvalMutableFileBinding = mutableFileBinding;
+    const revalidateBeforeExecution =
+      approvalMutableFileBinding.operands.length > 0
+        ? () =>
+            revalidateGatewayExecApprovalBinding({
+              binding: approvalMutableFileBinding,
+              command: params.command,
+              cwd: params.workdir,
+            })
+        : undefined;
     const [autoReviewSegment] = allowlistEval.segments;
     const autoReviewArgv =
       allowlistEval.segments.length === 1 &&
@@ -837,6 +921,19 @@ export async function processGatewayAllowlist(
         decision.risk === "low" &&
         autoReviewEnforcedCommand
       ) {
+        const currentBinding = await revalidateSystemRunMutableFileBinding({
+          binding: approvalMutableFileBinding,
+          cwd: params.workdir,
+        });
+        if (!currentBinding.ok) {
+          return {
+            deniedResult: buildGatewayExecApprovalDeniedToolResult({
+              deniedReason: currentBinding.message,
+              command: params.command,
+              cwd: params.workdir,
+            }),
+          };
+        }
         params.warnings.push(
           `Exec auto-review allowed once (risk=${decision.risk}): ${decision.rationale}`,
         );
@@ -861,6 +958,7 @@ export async function processGatewayAllowlist(
         });
         return {
           execCommandOverride: autoReviewEnforcedCommand,
+          ...(revalidateBeforeExecution ? { revalidateBeforeExecution } : {}),
         };
       }
       params.warnings.push(
@@ -869,13 +967,6 @@ export async function processGatewayAllowlist(
       autoReviewRequiresHumanApproval = true;
     }
 
-    const requestArgs = buildDefaultExecApprovalRequestArgs({
-      warnings: params.warnings,
-      approvalRunningNoticeMs: params.approvalRunningNoticeMs,
-      createApprovalSlug,
-      turnSourceChannel: params.turnSourceChannel,
-      turnSourceAccountId: params.turnSourceAccountId,
-    });
     const registerGatewayApproval = async (approvalId: string) =>
       await registerExecApprovalRequestForHostOrThrow({
         approvalId,
@@ -914,7 +1005,11 @@ export async function processGatewayAllowlist(
       sentApproverDms,
       unavailableReason,
     } = await createAndRegisterDefaultExecApprovalRequest({
-      ...requestArgs,
+      warnings: params.warnings,
+      approvalRunningNoticeMs: params.approvalRunningNoticeMs,
+      createApprovalSlug,
+      turnSourceChannel: params.turnSourceChannel,
+      turnSourceAccountId: params.turnSourceAccountId,
       register: registerGatewayApproval,
     });
     emitGatewayExecApprovalSecurityEvent({
@@ -934,17 +1029,17 @@ export async function processGatewayAllowlist(
         preResolvedDecision,
       })
     ) {
-      const { baseDecision, approvedByAsk, deniedReason } = applyTimedOutAllowlistFallback(
-        createExecApprovalDecisionState({
-          decision: preResolvedDecision,
-          askFallback,
-        }),
-      );
-      const strictInlineEvalDecision = enforceStrictInlineEvalApprovalBoundary({
-        baseDecision,
-        approvedByAsk,
-        deniedReason,
-        requiresInlineEvalApproval,
+      const strictInlineEvalDecision = await resolveExecApprovalDecisionState({
+        decision: preResolvedDecision ?? null,
+        askFallback,
+        resolveTimedOut: (state) => {
+          const adjusted = applyTimedOutAllowlistFallback(state);
+          return {
+            approvedByAsk: adjusted.approvedByAsk,
+            deniedReason: adjusted.deniedReason,
+          };
+        },
+        requiresExplicitApproval: requiresInlineEvalApproval,
         requiresAutoReviewHumanApproval:
           autoReviewRequiresHumanApproval ||
           requiresHeredocApproval ||
@@ -977,6 +1072,21 @@ export async function processGatewayAllowlist(
         );
       }
 
+      const currentBinding = await revalidateSystemRunMutableFileBinding({
+        binding: approvalMutableFileBinding,
+        cwd: params.workdir,
+      });
+      if (!currentBinding.ok) {
+        return {
+          deniedResult: buildGatewayExecApprovalDeniedToolResult({
+            approvalId,
+            deniedReason: currentBinding.message,
+            command: params.command,
+            cwd: params.workdir,
+          }),
+        };
+      }
+
       emitGatewayExecApprovalSecurityEvent({
         action: "exec.approval.approved",
         outcome: "success",
@@ -996,7 +1106,7 @@ export async function processGatewayAllowlist(
           params.workdir,
         ),
         ...(preResolvedDecision === "allow-always"
-          ? { allowAlwaysDecision: effectiveAllowAlwaysPersistence }
+          ? { allowAlwaysDecision: approvalAllowAlwaysPersistence }
           : {}),
       });
       const execCommandOverride =
@@ -1006,6 +1116,7 @@ export async function processGatewayAllowlist(
       return {
         execCommandOverride,
         allowWithoutEnforcedCommand: execCommandOverride === undefined,
+        ...(revalidateBeforeExecution ? { revalidateBeforeExecution } : {}),
       };
     }
     const resolvedPath = resolveApprovalAuditTrustPath(
@@ -1053,36 +1164,24 @@ export async function processGatewayAllowlist(
         };
       }
 
-      const initialDecisionState = createExecApprovalDecisionState({
+      const resolvedDecision = await resolveExecApprovalDecisionState({
         decision,
         askFallback,
-      });
-      const {
-        baseDecision,
-        approvedByAsk: baseApprovedByAsk,
-        deniedReason: baseDeniedReason,
-      } = applyTimedOutAllowlistFallback(initialDecisionState);
-      let approvedByAsk = baseApprovedByAsk;
-      let deniedReason = baseDeniedReason;
-
-      if (decision === "allow-once") {
-        approvedByAsk = true;
-      } else if (decision === "allow-always") {
-        approvedByAsk = true;
-      }
-
-      const strictBoundaryDecision = enforceStrictInlineEvalApprovalBoundary({
-        baseDecision,
-        approvedByAsk,
-        deniedReason,
-        requiresInlineEvalApproval,
+        resolveTimedOut: (state) => {
+          const adjusted = applyTimedOutAllowlistFallback(state);
+          return {
+            approvedByAsk: adjusted.approvedByAsk,
+            deniedReason: adjusted.deniedReason,
+          };
+        },
+        requiresExplicitApproval: requiresInlineEvalApproval,
         requiresAutoReviewHumanApproval:
           autoReviewRequiresHumanApproval ||
           requiresHeredocApproval ||
           timedOutFallbackRequiresHeredocApproval,
       });
-      approvedByAsk = strictBoundaryDecision.approvedByAsk;
-      deniedReason = strictBoundaryDecision.deniedReason;
+      const { approvedByAsk } = resolvedDecision;
+      let { deniedReason } = resolvedDecision;
 
       if (
         !approvedByAsk &&
@@ -1094,6 +1193,16 @@ export async function processGatewayAllowlist(
         })
       ) {
         deniedReason = deniedReason ?? "allowlist-miss";
+      }
+
+      if (!deniedReason && approvedByAsk) {
+        const currentBinding = await revalidateSystemRunMutableFileBinding({
+          binding: approvalMutableFileBinding,
+          cwd: params.workdir,
+        });
+        if (!currentBinding.ok) {
+          deniedReason = currentBinding.message;
+        }
       }
 
       emitGatewayExecApprovalSecurityEvent({
@@ -1115,7 +1224,7 @@ export async function processGatewayAllowlist(
         authorizationSource:
           decision === null ? ("ask-fallback" as const) : ("explicit-approval" as const),
         allowAlwaysDecision:
-          decision === "allow-always" ? effectiveAllowAlwaysPersistence : undefined,
+          decision === "allow-always" ? approvalAllowAlwaysPersistence : undefined,
         execCommandOverride:
           decision === null && fallbackSecurity === "allowlist"
             ? fallbackEnforcedCommand
@@ -1179,6 +1288,7 @@ export async function processGatewayAllowlist(
       return {
         execCommandOverride: approvalDecision.execCommandOverride,
         allowWithoutEnforcedCommand: approvalDecision.execCommandOverride === undefined,
+        ...(revalidateBeforeExecution ? { revalidateBeforeExecution } : {}),
       };
     }
 
@@ -1186,6 +1296,7 @@ export async function processGatewayAllowlist(
       typeof params.timeoutSec === "number" ? params.timeoutSec : params.defaultTimeoutSec;
     const followupTarget = buildExecApprovalFollowupTarget({
       approvalId,
+      agentId: params.agentId,
       sessionKey: params.notifySessionKey ?? params.sessionKey,
       expectedSessionId: params.sessionId,
       sessionStore: params.sessionStore,
@@ -1250,6 +1361,7 @@ export async function processGatewayAllowlist(
       let admitted:
         | { status: "started"; run: Awaited<ReturnType<typeof runExecProcess>> }
         | { status: "approval-state-write-failed" }
+        | { status: "operand-drift"; message: string }
         | { status: "run-aborted" }
         | { status: "spawn-failed" };
       try {
@@ -1269,6 +1381,20 @@ export async function processGatewayAllowlist(
             });
           } catch {
             return { status: "approval-state-write-failed" as const };
+          }
+          if (params.signal?.aborted) {
+            return { status: "run-aborted" as const };
+          }
+
+          const currentBinding = await revalidateSystemRunMutableFileBinding({
+            binding: approvalMutableFileBinding,
+            cwd: params.workdir,
+          });
+          if (!currentBinding.ok) {
+            return {
+              status: "operand-drift" as const,
+              message: currentBinding.message,
+            };
           }
           if (params.signal?.aborted) {
             return { status: "run-aborted" as const };
@@ -1325,6 +1451,10 @@ export async function processGatewayAllowlist(
         return;
       }
       if (admitted.status === "run-aborted") {
+        return;
+      }
+      if (admitted.status === "operand-drift") {
+        await sendExecApprovalFollowupResult(followupTarget, admitted.message);
         return;
       }
       if (admitted.status === "spawn-failed") {

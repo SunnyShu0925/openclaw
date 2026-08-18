@@ -180,6 +180,10 @@
     "target": "会话"
   },
   {
+    "source": "Session permission modes",
+    "target": "会话权限模式"
+  },
+  {
     "source": "Pi",
     "target": "Pi"
   },
@@ -1704,6 +1708,10 @@
     "target": "会话管理"
   },
   {
+    "source": "Session tools",
+    "target": "会话工具"
+  },
+  {
     "source": "Presence",
     "target": "在线状态"
   },
@@ -1742,5 +1750,13 @@
   {
     "source": "Updating OpenClaw",
     "target": "更新 OpenClaw"
+  },
+  {
+    "source": "Connect a machine",
+    "target": "连接机器"
+  },
+  {
+    "source": "Portals",
+    "target": "门户"
   }
 ]

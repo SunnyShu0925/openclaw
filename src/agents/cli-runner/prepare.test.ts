@@ -22,6 +22,8 @@ import {
 import { createPluginRegistry } from "../../plugins/registry.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import { setActiveDegradedSecretOwners } from "../../secrets/runtime-degraded-state.js";
+import { buildSkillSnapshot } from "../../skills/loading/workspace-skill-prompt.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
@@ -62,7 +64,10 @@ import {
 import type { SandboxWorkspaceInfo } from "../sandbox/types.js";
 import type { SystemAgentToolOptions } from "../tools/system-agent-tool.js";
 import { prepareCliRunContext } from "./prepare.js";
-import { setCliRunnerPrepareTestDeps } from "./prepare.test-support.js";
+import {
+  resetCliRunnerPrepareTestDeps,
+  setCliRunnerPrepareTestDeps,
+} from "./prepare.test-support.js";
 import type { RunCliAgentParams } from "./types.js";
 
 function registerTestContextEngine(
@@ -235,7 +240,6 @@ function setRawCliBackendForPrepareTest(backend: CliBackendPlugin & { pluginId: 
 type CliContextBudgetTestCase = {
   name: string;
   provider: string;
-  agentContextTokens?: number;
   expectedContextTokens: number;
   model: string;
   modelAliases?: Record<string, string>;
@@ -246,16 +250,8 @@ describe("prepareCliRunContext", () => {
 
   it.each<CliContextBudgetTestCase>([
     {
-      name: "Claude CLI with a selected-agent cap",
-      provider: "claude-cli",
-      agentContextTokens: 80_000,
-      expectedContextTokens: 80_000,
-      model: "claude-opus-4-7",
-    },
-    {
       name: "a Claude CLI user alias",
       provider: "claude-cli",
-      agentContextTokens: undefined,
       expectedContextTokens: 100_000,
       model: "large",
       modelAliases: { large: "claude-opus-4-7" },
@@ -263,7 +259,6 @@ describe("prepareCliRunContext", () => {
     {
       name: "a Claude CLI-native alias",
       provider: "claude-cli",
-      agentContextTokens: undefined,
       expectedContextTokens: 100_000,
       model: "claude-opus-4-7",
       modelAliases: { "claude-opus-4-7": "deployment-large" },
@@ -271,7 +266,6 @@ describe("prepareCliRunContext", () => {
     {
       name: "a generic CLI backend alias",
       provider: "fixture-cli",
-      agentContextTokens: undefined,
       expectedContextTokens: 100_000,
       model: "claude-opus-4-7",
     },
@@ -291,17 +285,11 @@ describe("prepareCliRunContext", () => {
       model: testCase.model,
       config: {
         ...baseConfig,
-        agents: {
-          ...baseConfig.agents,
-          ...(testCase.agentContextTokens
-            ? { list: [{ id: "main", contextTokens: testCase.agentContextTokens }] }
-            : {}),
-        },
+        agents: baseConfig.agents,
         models: {
           providers: {
             "fixture-anthropic": {
               baseUrl: "https://api.anthropic.com",
-              contextTokens: 200_000,
               models: [
                 {
                   id: "claude-opus-4-7",
@@ -401,6 +389,7 @@ describe("prepareCliRunContext", () => {
 
   afterEach(() => {
     cliBackendsTesting.resetDepsForTest();
+    resetCliRunnerPrepareTestDeps();
     resetCliAuthEpochTestDeps();
     getRuntimeConfigMock.mockReset();
     mockGetGlobalHookRunner.mockReset();
@@ -411,8 +400,37 @@ describe("prepareCliRunContext", () => {
     resetContextWindowCacheForTest();
     clearMemoryPluginState();
     setActivePluginRegistry(createTestRegistry());
+    setActiveDegradedSecretOwners([]);
     vi.unstubAllEnvs();
     fixture.cleanup();
+  });
+
+  it("carries the session-key-derived workspace owner into prepared params", async () => {
+    const { dir } = fixture.session;
+    const arthurWorkspace = path.join(dir, "workspace-arthur");
+    const normalizeConfig = vi.fn((config: CliBackendPlugin["config"]) => config);
+    setRawCliBackendForPrepareTest({ ...defaultTestCliBackend, normalizeConfig });
+    const config = {
+      agents: {
+        list: [
+          { id: "main", default: true, workspace: path.join(dir, "workspace-main") },
+          { id: "arthur", workspace: arthurWorkspace },
+        ],
+      },
+    } satisfies OpenClawConfig;
+    const context = await fixture.prepare({
+      sessionKey: "agent:arthur:main",
+      workspaceDir: arthurWorkspace,
+      config,
+    });
+
+    expect(normalizeConfig).toHaveBeenCalledWith(expect.any(Object), {
+      backendId: "test-cli",
+      agentId: "arthur",
+      config,
+    });
+    expect(context.params.agentId).toBe("arthur");
+    expect(context.workspaceDir).toBe(arthurWorkspace);
   });
 
   it("honors an explicit auth agent directory independently of session identity", async () => {
@@ -2757,9 +2775,11 @@ describe("prepareCliRunContext", () => {
     );
     expect(mockBuildActiveImageGenerationTaskPromptContextForSession).toHaveBeenCalledWith(
       "agent:main:test",
+      "main",
     );
     expect(mockBuildActiveVideoGenerationTaskPromptContextForSession).toHaveBeenCalledWith(
       "agent:main:test",
+      "main",
     );
   });
 
@@ -3112,7 +3132,8 @@ describe("prepareCliRunContext", () => {
       context: {
         sessionKey: "agent:main:telegram:group:chat123",
         runtimePolicySessionKey: "agent:worker:discord:default:direct:canonical-sender",
-        agentId: "worker",
+        runtimePolicyAgentId: "worker",
+        agentId: "main",
         sessionId: "session-test",
         runId: "run-test-room-event-tools",
         workspaceDir: context.workspaceDir,
@@ -3191,7 +3212,8 @@ describe("prepareCliRunContext", () => {
         requireExplicitMessageTarget: true,
         senderIsOwner: false,
         runtimePolicySessionKey: "agent:worker:discord:default:direct:canonical-sender",
-        agentId: "worker",
+        runtimePolicyAgentId: "worker",
+        agentId: "main",
         modelProvider: "anthropic",
         modelId: "test-model",
         execOverrides: {
@@ -4103,11 +4125,39 @@ describe("prepareCliRunContext", () => {
     expect(context.reusableCliSession).toEqual(testCase.expected);
   });
 
+  it("preserves a Claude native-control resume when the local transcript is absent", async () => {
+    setCliBackendForPrepareTest();
+    const transcriptCheck = vi.fn(async () => false);
+    const orphanCheck = vi.fn(async () => true);
+    setCliRunnerPrepareTestDeps({
+      claudeCliSessionTranscriptHasContent: transcriptCheck,
+      claudeCliSessionTranscriptHasOrphanedToolUse: orphanCheck,
+    });
+
+    const context = await fixture.prepare({
+      sessionKey: "agent:main:telegram:direct:peer",
+      prompt: "/compact",
+      provider: "claude-cli",
+      model: "opus",
+      cliSessionBinding: { sessionId: "native-claude-session" },
+      cliSessionId: "native-claude-session",
+      controlOperation: "compact",
+    });
+
+    expect(transcriptCheck).not.toHaveBeenCalled();
+    expect(orphanCheck).not.toHaveBeenCalled();
+    expect(context.reusableCliSession).toEqual({
+      mode: "reuse",
+      sessionId: "native-claude-session",
+    });
+  });
+
   it("arms raw-transcript reseed for a missing claude-cli transcript so prior conversation is redelivered", async () => {
+    const recoveredAt = "2020-01-02T03:04:05.000Z";
     fixture.appendTranscript({
       id: "msg-1",
       parentId: null,
-      timestamp: new Date(1).toISOString(),
+      timestamp: recoveredAt,
       message: {
         role: "user",
         content: "prior claude-cli ask",
@@ -4138,8 +4188,16 @@ describe("prepareCliRunContext", () => {
       mode: "invalidate",
       invalidatedReason: "missing-transcript",
     });
-    expect(context.openClawHistoryPrompt).toContain("prior claude-cli ask");
-    expect(context.openClawHistoryPrompt).toContain("latest ask");
+    expect(context.openClawHistoryPrompt).toContain(`[${recoveredAt}] User: prior claude-cli ask`);
+    expect(context.openClawHistoryPrompt).not.toContain(
+      "[1970-01-01T00:00:00.001Z] User: prior claude-cli ask",
+    );
+    expect(context.openClawHistoryPrompt).toContain(
+      "Recovered history may be stale; verify current and time-sensitive facts before acting.",
+    );
+    expect(context.openClawHistoryPrompt).toContain(
+      "<next_user_message>\nlatest ask\n</next_user_message>",
+    );
   });
 
   it("prepares node-placed Claude resumes without Gateway MCP, skills, or transcript checks", async () => {
@@ -4272,7 +4330,7 @@ describe("prepareCliRunContext", () => {
     expect(getLiveSessionGeneration).toHaveBeenCalledWith({
       backendId: "claude-cli",
       agentAccountId: undefined,
-      agentId: undefined,
+      agentId: "main",
       authProfileId: undefined,
       sessionId: "session-test",
       sessionKey: "agent:main:telegram:direct:peer",
@@ -4286,6 +4344,7 @@ describe("prepareCliRunContext", () => {
       mode: "reuse",
       sessionId: "warm-claude-sid",
     });
+    expect(context.params.agentId).toBe("main");
     expect(context.requiredClaudeLiveSessionGeneration).toBe("warm-live-generation");
     expect(context.openClawHistoryPrompt).toContain("earlier warm context");
     expect(context.openClawHistoryPrompt).toContain("warm follow-up");
@@ -4459,6 +4518,43 @@ describe("prepareCliRunContext", () => {
     expect(context.systemPromptReport.skills.entries).toEqual([
       { name: "gog", blockChars: expect.any(Number) },
     ]);
+  });
+
+  it("lazily rebuilds an unsafe modern skills snapshot for a non-sandbox CLI run", async () => {
+    const { dir } = fixture.session;
+    for (const name of ["cold-skill", "healthy-skill"]) {
+      const skillDir = path.join(dir, "skills", name);
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(skillDir, "SKILL.md"),
+        `---\nname: ${name}\ndescription: ${name}\n---\n`,
+        "utf-8",
+      );
+    }
+    const snapshot = buildSkillSnapshot(dir, {
+      bundledSkillsDir: path.join(dir, "missing-bundled-skills"),
+      managedSkillsDir: path.join(dir, "missing-managed-skills"),
+    });
+    setActiveDegradedSecretOwners([
+      {
+        ownerKind: "capability",
+        ownerId: "skill:cold-skill",
+        state: "unavailable",
+        paths: ["skills.entries.cold-skill.apiKey"],
+        refKeys: ["env:default:MISSING_SKILL_KEY"],
+        reason: "secret provider failed",
+      },
+    ]);
+
+    const context = await fixture.prepare({
+      skillsSnapshot: {
+        ...snapshot,
+        prompt: `${snapshot.prompt}\n<available_skills></available_skills>`,
+      },
+    });
+
+    expect(context.systemPrompt).not.toContain("cold-skill/SKILL.md");
+    expect(context.systemPrompt).toContain("healthy-skill/SKILL.md");
   });
 
   it.each([

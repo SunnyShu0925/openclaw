@@ -62,6 +62,61 @@ function cliAgentCatalog(startTerminal: boolean) {
 }
 
 suite.define(() => {
+  it("waits for the current roster before loading the CLI catalog", async () => {
+    const context = await suite.browser.newContext({
+      locale: "en-US",
+      serviceWorkers: "block",
+    });
+    const page = await context.newPage();
+    const gateway = await installMockGateway(page, {
+      assistantAgentId: "roboclaw",
+      assistantName: "Roboclaw",
+      cliAgentsEnabled: true,
+      defaultAgentId: "roboclaw",
+      deferredMethods: ["agents.list"],
+      featureMethods: [...TERMINAL_START_FEATURE_METHODS],
+      methodResponses: {
+        "sessions.catalog.list": { catalogs: [cliAgentCatalog(false)] },
+      },
+    });
+
+    try {
+      await page.goto(`${suite.server.baseUrl}new`);
+      await gateway.waitForRequest("agents.list");
+      await page.locator(".new-session-page__message").waitFor({ state: "visible" });
+      expect(
+        (await gateway.getRequests("sessions.catalog.list"))
+          .filter((request) => requestHasParam(request, "limitPerHost", 1))
+          .map((request) => request.params),
+      ).toEqual([]);
+
+      await gateway.resolveDeferred("agents.list");
+
+      await page.getByRole("heading", { name: "Roboclaw" }).waitFor();
+      await expect
+        .poll(async () =>
+          (await gateway.getRequests("sessions.catalog.list")).filter((request) =>
+            requestHasParam(request, "limitPerHost", 1),
+          ),
+        )
+        .toHaveLength(1);
+      const catalogRequest = (await gateway.getRequests("sessions.catalog.list")).find((request) =>
+        requestHasParam(request, "limitPerHost", 1),
+      );
+      expect(catalogRequest?.params).toEqual({
+        agentId: "roboclaw",
+        limitPerHost: 1,
+      });
+
+      await page.locator('[data-chat-model-select="true"]').click();
+      const cliGroup = page.locator('[data-chat-model-target-group="cliAgents"]');
+      await expect.poll(() => cliGroup.isVisible()).toBe(true);
+      await pollLocatorText(cliGroup).toContain("Claude Code");
+    } finally {
+      await context.close();
+    }
+  });
+
   it("routes a Labs-enabled CLI agent picker row through catalog-target mode", async () => {
     if (captureCliAgentsProof) {
       await mkdir(cliAgentsProofDir, { recursive: true });
@@ -297,15 +352,15 @@ suite.define(() => {
       await pollLocatorText(page.locator(".new-session-page__runtime")).toContain("Claude Code");
       await expect.poll(() => page.locator(".new-session-page__start-split").count()).toBe(1);
 
-      await page.locator("#new-session-place-trigger").click();
-      const placePopover = page.locator("wa-popover.new-session-page__place-popover");
+      await page.locator("#new-session-detail-trigger").click();
+      const placePopover = page.locator("wa-popover.new-session-page__detail-popover");
       const worktreeButton = placePopover.getByRole("button", { name: "Worktree" });
       await worktreeButton.waitFor({ state: "visible" });
       const initialBranchRequestCount = (await gateway.getRequests("worktrees.branches")).length;
       await worktreeButton.click();
       await expect.poll(() => placePopover.getByLabel("Base branch").inputValue()).toBe("main");
       await placePopover.getByLabel("Worktree name").fill("terminal-task");
-      await page.locator("#new-session-place-trigger").click();
+      await page.locator("#new-session-detail-trigger").click();
       await page.locator(".new-session-page__message").fill("  inspect the checkout  ");
 
       if (captureCliAgentsProof) {
@@ -947,7 +1002,7 @@ suite.define(() => {
       await expect.poll(() => message.inputValue()).toBe("keep my selected agent");
       await pollLocatorText(page.getByRole("heading").first()).toContain("Research");
       await pollLocatorText(
-        page.locator("#new-session-place-trigger .new-session-page__trigger-label"),
+        page.locator("#new-session-project-trigger .new-session-page__trigger-label"),
       ).toBe("research-next");
       await expect
         .poll(async () => (await gateway.getRequests("worktrees.branches")).length)
@@ -957,8 +1012,8 @@ suite.define(() => {
         includeRepositoryStatus: true,
       });
 
-      const placeSelect = page.locator("wa-popover.new-session-page__place-popover");
-      const placeTrigger = page.locator("#new-session-place-trigger");
+      const placeSelect = page.locator("wa-popover.new-session-page__detail-popover");
+      const placeTrigger = page.locator("#new-session-detail-trigger");
       await placeTrigger.click();
       const worktreeItem = placeSelect.getByRole("button", { name: "Worktree" });
       await worktreeItem.click();

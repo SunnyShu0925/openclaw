@@ -144,6 +144,15 @@ struct MacGatewayChatTransport: OpenClawChatTransport {
             agentID: target.agentID)
     }
 
+    func fetchProgressCard(sessionKey: String) async throws -> ProgressCard? {
+        let target = self.sessionTarget(for: sessionKey)
+        let request = OpenClawChatGatewayRequests.progressCardGet(sessionKey: target.sessionKey)
+        let data = try await self.connection.request(request)
+        let result = try JSONDecoder().decode(ProgressCardGetResult.self, from: data)
+        guard !(result.card.value is NSNull) else { return nil }
+        return try GatewayPayloadDecoding.decode(result.card, as: ProgressCard.self)
+    }
+
     func requestFullMessage(sessionKey: String, messageID: String) async throws -> OpenClawChatMessage? {
         let target = self.sessionTarget(for: sessionKey)
         let request = try Self.fullMessageRequest(
@@ -637,6 +646,7 @@ struct MacGatewayChatTransport: OpenClawChatTransport {
 
     func patchSession(
         key: String,
+        expectedSessionID: String? = nil,
         label: String??,
         category: String??,
         pinned: Bool?,
@@ -647,6 +657,7 @@ struct MacGatewayChatTransport: OpenClawChatTransport {
         let request = OpenClawChatGatewayRequests.patchSession(
             sessionKey: target.sessionKey,
             agentID: target.agentID,
+            expectedSessionID: expectedSessionID,
             label: label,
             category: category,
             pinned: pinned,

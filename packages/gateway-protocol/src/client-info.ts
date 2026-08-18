@@ -63,6 +63,8 @@ export type GatewayClientInfo = {
   displayName?: string;
   /** Client app or package version reported by the connecting process. */
   version: string;
+  /** Exact immutable artifact identity when the client can report one. */
+  buildId?: string;
   /** Runtime platform string, such as `darwin`, `ios`, `android`, or `web`. */
   platform: string;
   /** Optional device family used by native clients for display and routing hints. */
@@ -82,7 +84,6 @@ export const GATEWAY_CLIENT_CAPS = {
   EXEC_APPROVALS: "exec-approvals",
   INLINE_WIDGETS: "inline-widgets",
   RUN_TOOL_BINDINGS: "run-tool-bindings",
-  SESSION_COMPANION_PROGRESS: "session-companion-progress",
   SESSION_SCOPED_EVENTS: "session-scoped-events",
   PLUGIN_APPROVALS: "plugin-approvals",
   TASK_SUGGESTIONS: "task-suggestions",

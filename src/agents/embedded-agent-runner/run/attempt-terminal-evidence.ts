@@ -16,6 +16,14 @@ type ReplayMetadataAttempt = Pick<
 > &
   Partial<Pick<EmbeddedRunAttemptResult, "messagingToolSentTargets" | "acceptedSessionSpawns">>;
 
+/** Uses current-attempt evidence when available and otherwise preserves fail-closed legacy state. */
+export function isCurrentAttemptReplaySafe(
+  attempt: Pick<EmbeddedRunAttemptResult, "replayMetadata" | "currentAttemptReplayMetadata">,
+): boolean {
+  const replayMetadata = attempt.currentAttemptReplayMetadata ?? attempt.replayMetadata;
+  return replayMetadata.replaySafe && !replayMetadata.hadPotentialSideEffects;
+}
+
 /**
  * Marks whether retrying the attempt can safely replay the prompt. Concrete
  * tool-instance policy, async work, committed delivery, spawned sessions, and
@@ -45,6 +53,7 @@ type TerminalAttemptState = Pick<
   | "didSendDeterministicApprovalPrompt"
   | "heartbeatToolResponse"
   | "lastToolError"
+  | "lastToolRecovery"
   | "toolMediaUrls"
   | "toolAudioAsVoice"
   | "toolTrustedLocalMedia"
@@ -72,6 +81,7 @@ export function hasAttemptTerminalState(attempt: TerminalAttemptState): boolean 
     attempt.didSendDeterministicApprovalPrompt ||
     attempt.heartbeatToolResponse ||
     attempt.lastToolError ||
+    attempt.lastToolRecovery ||
     attempt.toolMediaUrls?.some((url) => url.trim().length > 0) ||
     attempt.toolAudioAsVoice ||
     attempt.toolTrustedLocalMedia ||

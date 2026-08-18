@@ -202,7 +202,7 @@ export type WebhookSecurityConfig = z.infer<typeof VoiceCallWebhookSecurityConfi
 const CallModeSchema = z.enum(["notify", "conversation"]);
 export type CallMode = z.infer<typeof CallModeSchema>;
 
-const VoiceCallSessionScopeSchema = z.enum(["per-phone", "per-call"]);
+const VoiceCallSessionScopeSchema = z.enum(["per-phone", "per-call", "main"]);
 
 const OutboundConfigSchema = z
   .object({
@@ -539,6 +539,48 @@ function defaultRealtimeStreamPathForServePath(servePath: string): string {
   return `${normalized}/stream/realtime`;
 }
 
+export type VoiceCallStreamExposurePath = {
+  publicPath: string;
+  localPath: string;
+};
+
+export function resolveVoiceCallPublicPathPrefix(
+  publicWebhookPath: string,
+  localWebhookPath: string,
+): string {
+  const publicPath = normalizeWebhookPath(publicWebhookPath);
+  const localPathIndex = publicPath.indexOf(normalizeWebhookPath(localWebhookPath));
+  return localPathIndex > 0 ? publicPath.slice(0, localPathIndex) : "";
+}
+
+export function resolveVoiceCallStreamExposurePaths(
+  config: VoiceCallConfig,
+  webhookPaths: { publicWebhookPath?: string; localWebhookPath?: string } = {},
+): VoiceCallStreamExposurePath[] {
+  const exposurePaths: VoiceCallStreamExposurePath[] = [];
+  const localWebhookPath = webhookPaths.localWebhookPath ?? config.serve.path;
+  const publicWebhookPath = webhookPaths.publicWebhookPath ?? config.tailscale.path;
+  const publicPathPrefix = resolveVoiceCallPublicPathPrefix(publicWebhookPath, localWebhookPath);
+  if (config.realtime.enabled) {
+    const localPath = normalizeWebhookPath(
+      config.realtime.streamPath ?? defaultRealtimeStreamPathForServePath(config.serve.path),
+    );
+    exposurePaths.push({
+      localPath,
+      publicPath: `${publicPathPrefix}${localPath}`,
+    });
+  }
+  if (config.streaming.enabled) {
+    const localPath = normalizeWebhookPath(config.streaming.streamPath);
+    if (
+      !exposurePaths.some((path) => path.localPath === localPath && path.publicPath === localPath)
+    ) {
+      exposurePaths.push({ localPath, publicPath: localPath });
+    }
+  }
+  return exposurePaths;
+}
+
 function normalizeVoiceCallTtsConfig(
   defaults: VoiceCallTtsConfig,
   overrides: DeepPartial<NonNullable<VoiceCallTtsConfig>> | undefined,
@@ -731,6 +773,13 @@ export function resolveVoiceCallSessionKey(params: {
     return resolveVoiceCallAgentSessionKey({
       config: params.config,
       sessionKey: explicit,
+      coreSession: params.coreSession,
+    });
+  }
+  if (params.config.sessionScope === "main") {
+    return resolveVoiceCallAgentSessionKey({
+      config: params.config,
+      sessionKey: "main",
       coreSession: params.coreSession,
     });
   }

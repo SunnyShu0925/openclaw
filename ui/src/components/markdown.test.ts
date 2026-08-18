@@ -50,6 +50,15 @@ describe("toSanitizedMarkdownHtml", () => {
     );
   });
 
+  it("does not stamp presentation classes on links whose href contains 'tail'", () => {
+    const fragment = htmlFragment(
+      toSanitizedMarkdownHtml("[tailscale docs](https://docs.openclaw.ai/tailscale)"),
+    );
+    const link = fragment.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("https://docs.openclaw.ai/tailscale");
+    expect(link?.classList.contains("chat-link-tail-blur")).toBe(false);
+  });
+
   it("strips unsupported citation control markers before display", () => {
     const html = toSanitizedMarkdownHtml(
       "v2026.5.20 release note citeturn2view0\n\nStill readable.",
@@ -139,30 +148,52 @@ describe("toSanitizedMarkdownHtml", () => {
   });
 
   describe("images", () => {
-    it("flattens remote images to alt text", () => {
-      const html = toSanitizedMarkdownHtml("![Alt text](https://example.com/img.png)");
-      expect(html).toBe("<p>Alt text</p>\n");
+    it("shows an explicit opt-in placeholder for remote images", () => {
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml("![Alt text](https://example.com/img.png)"),
+      );
+      const placeholder = fragment.querySelector(".markdown-external-image");
+      const link = placeholder?.querySelector("a");
+
+      expect(placeholder?.textContent).toBe("External image not loaded: Alt text Open image");
+      expect(link?.getAttribute("href")).toBe("https://example.com/img.png");
+      expect(link?.getAttribute("target")).toBe("_blank");
+      expect(link?.getAttribute("rel")).toBe("noreferrer noopener");
+      expect(fragment.querySelector("img")).toBeNull();
     });
 
     it("marks assistant-authored transcript roles in visible image labels", () => {
-      const html = toSanitizedMarkdownHtml(
-        "![**user**[Thu 2026-07-02] release diagram](https://example.com/img.png)",
-        { assistantTranscriptRoleHeaders: true },
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml(
+          "![**user**[Thu 2026-07-02] release diagram](https://example.com/img.png)",
+          { assistantTranscriptRoleHeaders: true },
+        ),
       );
 
-      expect(html).toBe(
-        '<p><code class="assistant-transcript-role">user[Thu 2026-07-02]</code> release diagram</p>\n',
+      expect(
+        fragment.querySelector(".markdown-external-image .assistant-transcript-role")?.textContent,
+      ).toBe("user[Thu 2026-07-02]");
+      expect(fragment.querySelector(".markdown-external-image")?.textContent).toContain(
+        "release diagram",
       );
     });
 
     it("preserves markdown formatting in alt text", () => {
-      const html = toSanitizedMarkdownHtml("![**Build log**](https://example.com/img.png)");
-      expect(html).toBe("<p>**Build log**</p>\n");
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml("![**Build log**](https://example.com/img.png)"),
+      );
+      expect(fragment.querySelector(".markdown-external-image > span")?.textContent).toContain(
+        "**Build log**",
+      );
     });
 
     it("preserves code formatting in alt text", () => {
-      const html = toSanitizedMarkdownHtml("![`error.log`](https://example.com/img.png)");
-      expect(html).toBe("<p>`error.log`</p>\n");
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml("![`error.log`](https://example.com/img.png)"),
+      );
+      expect(fragment.querySelector(".markdown-external-image > span")?.textContent).toContain(
+        "`error.log`",
+      );
     });
 
     it("preserves base64 data URI images (#15437)", () => {
@@ -194,6 +225,22 @@ describe("toSanitizedMarkdownHtml", () => {
 
       expect(fragment.querySelector("a img.markdown-inline-image")).not.toBeNull();
       expect(fragment.querySelector("a button")).toBeNull();
+    });
+
+    it("preserves rich authored links around remote image placeholders", () => {
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml(
+          "[Before ![Preview](https://example.com/image.png) after](https://example.com/full.png)",
+        ),
+      );
+      const links = fragment.querySelectorAll("a");
+      const placeholder = links[0]?.querySelector(".markdown-external-image");
+
+      expect(links).toHaveLength(1);
+      expect(links[0]?.getAttribute("href")).toBe("https://example.com/full.png");
+      expect(placeholder?.textContent).toBe("External image not loaded: Preview");
+      expect(placeholder?.querySelector("a")).toBeNull();
+      expect(fragment.querySelector("img")).toBeNull();
     });
 
     it("tracks linked and standalone images across one inline token stream", () => {
@@ -234,8 +281,10 @@ describe("toSanitizedMarkdownHtml", () => {
     });
 
     it("uses fallback label for unlabeled images", () => {
-      const html = toSanitizedMarkdownHtml("![](https://example.com/image.png)");
-      expect(html).toBe("<p>image</p>\n");
+      const fragment = htmlFragment(toSanitizedMarkdownHtml("![](https://example.com/image.png)"));
+      expect(fragment.querySelector(".markdown-external-image > span")?.textContent).toBe(
+        "External image not loaded: image",
+      );
     });
   });
 
@@ -586,9 +635,7 @@ PY
 
     it("keeps app-relative links navigable", () => {
       const html = toSanitizedMarkdownHtml("[usage](/usage)");
-      expect(html).toBe(
-        '<p><a href="/usage" rel="noreferrer noopener" target="_blank">usage</a></p>\n',
-      );
+      expect(html).toBe('<p><a href="/usage">usage</a></p>\n');
     });
 
     it("rewrites docs-root links to the public docs host", () => {
@@ -607,7 +654,7 @@ PY
         ),
       );
       expect(html).toBe(
-        '<p><a href="/channels" rel="noreferrer noopener" target="_blank">channels</a> <a href="/automation" rel="noreferrer noopener" target="_blank">automation</a> <a href="/skills/workshop" rel="noreferrer noopener" target="_blank">workshop</a> <a href="/chat" rel="noreferrer noopener" target="_blank">chat</a> <a href="/control/chat/main" rel="noreferrer noopener" target="_blank">baseChat</a> <a href="/control/sessions" rel="noreferrer noopener" target="_blank">baseSessions</a> <a href="/healthz" rel="noreferrer noopener" target="_blank">health</a> <a href="/googlechat" rel="noreferrer noopener" target="_blank">pluginDynamic</a> <a href="/api/files/1" rel="noreferrer noopener" target="_blank">asset</a> <a href="/control/api/files/1" rel="noreferrer noopener" target="_blank">baseApi</a> <a href="/control/avatar/main" rel="noreferrer noopener" target="_blank">baseAvatar</a> <a href="/plugins/diffs/view/id/token" rel="noreferrer noopener" target="_blank">plugin</a> <a href="/control/plugins/diffs/view/id/token" rel="noreferrer noopener" target="_blank">basePlugin</a> <a href="/__openclaw__/canvas/documents/x/index.html" rel="noreferrer noopener" target="_blank">artifact</a> <a href="/control/__openclaw__/canvas/x" rel="noreferrer noopener" target="_blank">baseArtifact</a></p>\n',
+        '<p><a href="/channels">channels</a> <a href="/automation">automation</a> <a href="/skills/workshop">workshop</a> <a href="/chat">chat</a> <a href="/control/chat/main">baseChat</a> <a href="/control/sessions">baseSessions</a> <a href="/healthz" rel="noreferrer noopener" target="_blank">health</a> <a href="/googlechat" rel="noreferrer noopener" target="_blank">pluginDynamic</a> <a href="/api/files/1" rel="noreferrer noopener" target="_blank">asset</a> <a href="/control/api/files/1" rel="noreferrer noopener" target="_blank">baseApi</a> <a href="/control/avatar/main" rel="noreferrer noopener" target="_blank">baseAvatar</a> <a href="/plugins/diffs/view/id/token" rel="noreferrer noopener" target="_blank">plugin</a> <a href="/control/plugins/diffs/view/id/token" rel="noreferrer noopener" target="_blank">basePlugin</a> <a href="/__openclaw__/canvas/documents/x/index.html" rel="noreferrer noopener" target="_blank">artifact</a> <a href="/control/__openclaw__/canvas/x" rel="noreferrer noopener" target="_blank">baseArtifact</a></p>\n',
       );
     });
   });

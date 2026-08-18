@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpInitializeSessionInput } from "../../../acp/control-plane/manager.types.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -16,7 +16,6 @@ import {
 } from "../../../infra/outbound/session-binding-service.js";
 import { normalizeSessionDeliveryState } from "../../../utils/delivery-context.shared.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
-import { resolveThinkingDefault } from "../../model-selection.js";
 
 type SessionBindingAdapterCapabilities = NonNullable<SessionBindingAdapter["capabilities"]>;
 
@@ -235,8 +234,7 @@ vi.mock("../registry/subagent-registry.js", () => ({
   registerSubagentRun: hoisted.registerSubagentRunMock,
 }));
 
-vi.mock("../registry/subagent-registry-read.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../registry/subagent-registry-read.js")>()),
+vi.mock("../registry/subagent-registry-read.js", () => ({
   getSubagentRunByChildSessionKey: hoisted.getSubagentRunByChildSessionKeyMock,
 }));
 
@@ -691,16 +689,6 @@ function enableTelegramCurrentConversationBindings(): void {
 }
 
 describe("spawnAcpDirect", () => {
-  beforeAll(() => {
-    resolveThinkingDefault({
-      cfg: {
-        agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-6" } } },
-      },
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-    });
-  });
-
   beforeEach(() => {
     replaceSpawnConfig(createDefaultSpawnConfig());
     hoisted.areHeartbeatsEnabledMock.mockReset().mockReturnValue(true);
@@ -882,7 +870,7 @@ describe("spawnAcpDirect", () => {
       inheritedToolPolicyVersion: 1,
       parentSessionKey: "agent:main:main",
       createdVia: "spawn",
-      createdActor: { type: "agent", id: "agent:main:main" },
+      createdActor: { type: "agent", id: "main" },
       createdAt: expect.any(Number),
     });
     expectBindingCallFields({
@@ -918,6 +906,16 @@ describe("spawnAcpDirect", () => {
     expect(agentCall?.params?.deliver).toBe(true);
     expect(agentCall?.params?.lane).toBe("subagent");
     expect(agentCall?.params?.acpTurnSource).toBe("manual_spawn");
+    // ACP registration must leave taskRowOwnership absent so the registry
+    // falls back to best-effort task-row creation (subagent-registry-run-launch.ts).
+    // Native/in-process spawn forwards "required" instead (subagent-spawn.ts);
+    // if ACP ever claimed "required" here, a failed task-row write would abort
+    // an ACP run the registry never actually owns.
+    const registeredAcpRun = expectRecordFields(
+      firstMockCall(hoisted.registerSubagentRunMock, "ACP subagent registration")[0],
+      {},
+    );
+    expect(registeredAcpRun.taskRowOwnership).toBeUndefined();
     const initInput = expectInitializeSessionFields({
       agent: "codex",
       mode: "persistent",
@@ -1150,6 +1148,7 @@ describe("spawnAcpDirect", () => {
           },
         ],
         defaults: {
+          thinkingDefault: "off",
           subagents: {
             allowAgents: ["codex"],
             maxSpawnDepth: 2,
@@ -1173,7 +1172,7 @@ describe("spawnAcpDirect", () => {
       agent: "codex",
       runtimeOptions: {
         model: "anthropic/claude-sonnet-4-6",
-        thinking: "adaptive",
+        thinking: "off",
       },
     });
   });

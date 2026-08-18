@@ -105,6 +105,7 @@ export async function prepareEmbeddedRunRuntime(input: {
     });
   const initialResolvedRuntimeModel = resolveEffectiveModel(runtimeModel);
   let contextTokenBudget = initialResolvedRuntimeModel.contextTokenBudget;
+  let authoredContextTokenCap = initialResolvedRuntimeModel.authoredContextTokenCap;
   let contextWindowInfo = initialResolvedRuntimeModel.contextWindowInfo;
   let outerContextTokenMeta: { contextTokens?: number } =
     contextTokenBudget === undefined ? {} : { contextTokens: contextTokenBudget };
@@ -116,6 +117,7 @@ export async function prepareEmbeddedRunRuntime(input: {
     runtimeModel = candidate;
     effectiveModel = resolved.effectiveModel;
     contextTokenBudget = resolved.contextTokenBudget;
+    authoredContextTokenCap = resolved.authoredContextTokenCap;
     contextWindowInfo = resolved.contextWindowInfo;
     outerContextTokenMeta =
       contextTokenBudget === undefined ? {} : { contextTokens: contextTokenBudget };
@@ -364,15 +366,25 @@ export async function prepareEmbeddedRunRuntime(input: {
     log,
   });
   authStages?.mark("controller");
+  const cooldownProbePolicy = resolveEmbeddedAuthCooldownProbePolicy({
+    authStore: attemptAuthProfileStore,
+    profileCandidates,
+    lockedProfileId,
+    modelId,
+    allowTransientCooldownProbe: params.allowTransientCooldownProbe === true,
+  });
+  let didTransientCooldownProbe = false;
   const advancePluginHarnessAuthAttempt = async (): Promise<boolean> => {
-    if (!pluginHarnessOwnsTransport || lockedProfileId) {
+    if (!pluginHarnessOwnsTransport) {
       return false;
     }
     let nextIndex = profileIndex + 1;
     while (nextIndex < preparedAuthAttempts.length) {
-      const candidateAttempt = preparedAuthAttempts[nextIndex];
+      const candidateIndex = nextIndex++;
+      const candidateAttempt = preparedAuthAttempts[candidateIndex];
+      // Harness-owned auth shares the controller's run-local exhaustion invariant.
+      profileIndex = candidateIndex;
       if (!candidateAttempt) {
-        nextIndex += 1;
         continue;
       }
       const candidate = candidateAttempt.profileId;
@@ -380,8 +392,13 @@ export async function prepareEmbeddedRunRuntime(input: {
         candidate &&
         isProfileInCooldown(attemptAuthProfileStore, candidate, undefined, modelId)
       ) {
-        nextIndex += 1;
-        continue;
+        if (didTransientCooldownProbe || !cooldownProbePolicy.probeProfileIds.has(candidate)) {
+          continue;
+        }
+        didTransientCooldownProbe = true;
+        log.warn(
+          `probing cooldowned auth profile for ${provider}/${modelId} due to ${cooldownProbePolicy.unavailableReason ?? "transient"} unavailability`,
+        );
       }
       if (
         !canRunPreparedAgentRuntimeAuthAttempt({
@@ -389,22 +406,20 @@ export async function prepareEmbeddedRunRuntime(input: {
           priorProfileAttempted: preparedProfileAttempted,
         })
       ) {
+        profileIndex = preparedAuthAttempts.length;
         return false;
       }
       if (candidateAttempt.plan.modelRoute?.authRequirement === "api-key") {
         try {
-          await authController.applyAuthProfileCandidate(candidate, nextIndex);
-          profileIndex = nextIndex;
+          await authController.applyAuthProfileCandidate(candidate, candidateIndex);
           thinkLevel = initialThinkLevel;
           attemptedThinking.clear();
           return true;
         } catch {
-          nextIndex += 1;
           continue;
         }
       }
       if (!candidate || candidateAttempt.plan.forwardedAuthProfileId !== candidate) {
-        nextIndex += 1;
         continue;
       }
       const prepared = await prepareAuthAttempt(candidateAttempt);
@@ -412,12 +427,12 @@ export async function prepareEmbeddedRunRuntime(input: {
       apiKeyInfo = null;
       runtimeAuthState = null;
       prepared.commit();
-      profileIndex = nextIndex;
       lastProfileId = candidate;
       thinkLevel = initialThinkLevel;
       attemptedThinking.clear();
       return true;
     }
+    profileIndex = preparedAuthAttempts.length;
     return false;
   };
   const advanceAttemptAuthProfile = pluginHarnessOwnsAuthBootstrap
@@ -426,21 +441,17 @@ export async function prepareEmbeddedRunRuntime(input: {
 
   if (!pluginHarnessOwnsTransport || pluginHarnessNeedsOpenClawAuthBootstrap) {
     await authController.initializeAuthProfile();
-  } else if (lockedProfileId) {
-    lastProfileId = lockedProfileId;
   } else if (forwardedPluginHarnessProfileId) {
     const initialAttempt = preparedAuthAttempts[profileIndex];
     const initialProfileInCooldown =
       initialAttempt?.kind === "profile" &&
       isProfileInCooldown(attemptAuthProfileStore, initialAttempt.profileId, undefined, modelId);
-    const cooldownProbePolicy = resolveEmbeddedAuthCooldownProbePolicy({
-      authStore: attemptAuthProfileStore,
-      profileCandidates,
-      lockedProfileId,
-      modelId,
-      allowTransientCooldownProbe: params.allowTransientCooldownProbe === true,
-    });
-    if (initialProfileInCooldown && !cooldownProbePolicy.allowProbe) {
+    const initialProfileId = initialAttempt?.profileId;
+    const canProbeInitialProfile =
+      initialProfileInCooldown &&
+      initialProfileId !== undefined &&
+      cooldownProbePolicy.probeProfileIds.has(initialProfileId);
+    if (initialProfileInCooldown && !canProbeInitialProfile) {
       if (!(await advancePluginHarnessAuthAttempt())) {
         throw new Error(
           `Prepared auth profiles are temporarily unavailable for ${provider}/${modelId}.`,
@@ -448,6 +459,7 @@ export async function prepareEmbeddedRunRuntime(input: {
       }
     } else {
       if (initialProfileInCooldown) {
+        didTransientCooldownProbe = true;
         log.warn(
           `probing cooldowned auth profile for ${provider}/${modelId} due to ${cooldownProbePolicy.unavailableReason ?? "transient"} unavailability`,
         );
@@ -562,6 +574,7 @@ export async function prepareEmbeddedRunRuntime(input: {
       pluginHarnessOwnsTransport,
       effectiveModel,
       contextTokenBudget,
+      authoredContextTokenCap,
       contextWindowInfo,
       outerContextTokenMeta,
       activePreparedAuthPlan,

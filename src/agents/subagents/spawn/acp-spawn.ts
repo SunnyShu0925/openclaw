@@ -28,12 +28,12 @@ import {
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
 } from "../../../routing/session-key.js";
+import { recordSessionParticipantBestEffort } from "../../../sessions/session-participant-recording.js";
 import {
   recordSessionCreated,
   recordSubagentSpawned,
 } from "../../../sessions/session-state-events.js";
 import { deliveryContextFromSession } from "../../../utils/delivery-context.shared.js";
-import { resolveDefaultAgentId } from "../../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
 import {
   findAcpUnsupportedInheritedToolAllow,
@@ -449,7 +449,7 @@ export async function spawnAcpDirect(
   let initializedRuntime: AcpSpawnRuntimeCloseHandle | undefined;
   const childIdem = crypto.randomUUID();
   const parentAgentId = parentSessionKey
-    ? resolveAgentIdFromSessionKey(parentSessionKey, resolveDefaultAgentId(cfg))
+    ? resolveAgentIdFromSessionKey(parentSessionKey, requesterAgentId)
     : undefined;
   // Resolve parent session delivery context so system events route to the
   // correct thread/topic instead of falling back to the main DM.
@@ -493,7 +493,7 @@ export async function spawnAcpDirect(
     async initialize() {
       const creationStamp = buildSessionCreationStamp({
         via: "spawn",
-        actor: { type: "agent", id: requesterInternalKey },
+        actor: { type: "agent", id: requesterAgentId },
       });
       const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId });
       const childSessionPatch = admission.childSessionPatch
@@ -605,6 +605,13 @@ export async function spawnAcpDirect(
           ...(gatewayAttachments ? { attachments: gatewayAttachments } : {}),
         },
         timeoutMs: 10_000,
+      });
+      recordSessionParticipantBestEffort({
+        actor: { type: "agent", id: requesterAgentId },
+        agentId: targetAgentId,
+        sessionKey,
+        source: "agent",
+        storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
       });
       const runId = readGatewayRunId(response) ?? childIdem;
       if (state.parentRelay && runId !== childIdem && parentSessionKey) {

@@ -217,7 +217,6 @@ export function renderGroupedMessage(
     showReasoning: boolean;
     showToolCalls?: boolean;
     runActive?: boolean;
-    turnSucceeded?: boolean;
     autoExpandToolCalls?: boolean;
     isToolMessageExpanded?: (messageId: string) => boolean | undefined;
     onToggleToolMessageExpanded?: (messageId: string, expanded?: boolean) => void;
@@ -296,6 +295,7 @@ export function renderGroupedMessage(
     codeBlockChrome: role === "user" ? "none" : "copy",
     fileLinks: true,
     interactiveImages: opts.onOpenImage !== undefined,
+    sessionLinks: true,
   };
 
   // Detect pure-JSON messages and render as collapsible block
@@ -328,7 +328,7 @@ export function renderGroupedMessage(
   const toolMessageExpanded = opts.isToolMessageExpanded?.(toolMessageDisclosureId) ?? false;
   const toolNames = [...new Set(toolCards.map((c) => c.name))];
   const singleToolCard = toolCards.length === 1 ? toolCards[0] : null;
-  const toolMessageHasError = toolCards.some(isToolCardError) && opts.turnSucceeded !== true;
+  const toolMessageHasError = toolCards.some(isToolCardError);
   const singleToolDisplay = singleToolCard
     ? resolveToolDisplay({
         name: singleToolCard.name,
@@ -337,28 +337,21 @@ export function renderGroupedMessage(
       })
     : null;
   const singleToolDisplayDetail =
-    !toolMessageHasError && singleToolCard && singleToolDisplay
+    singleToolCard && singleToolDisplay
       ? resolveCollapsedToolDetail(singleToolCard, singleToolDisplay.detail)
       : undefined;
-  const toolSummaryLabelRaw = toolMessageHasError
-    ? singleToolDisplay
-      ? singleToolDisplay.label
-      : toolNames.length <= 3
-        ? toolNames.join(", ")
-        : `${toolNames.slice(0, 2).join(", ")} +${toolNames.length - 2} more`
-    : singleToolDisplayDetail
-      ? !markdown && !hasImages
-        ? singleToolDisplayDetail
-        : singleToolCard?.outputText?.trim()
-          ? "output"
-          : undefined
-      : toolNames.length <= 3
-        ? toolNames.join(", ")
-        : `${toolNames.slice(0, 2).join(", ")} +${toolNames.length - 2} more`;
+  const toolSummaryLabelRaw = singleToolDisplayDetail
+    ? !markdown && !hasImages
+      ? singleToolDisplayDetail
+      : singleToolCard?.outputText?.trim()
+        ? "output"
+        : undefined
+    : toolNames.length <= 3
+      ? toolNames.join(", ")
+      : `${toolNames.slice(0, 2).join(", ")} +${toolNames.length - 2} more`;
   const toolPreview = markdown ? (formatCollapsedToolPreviewText(markdown) ?? "") : "";
-  const toolMessageLabelRaw = toolMessageHasError
-    ? t("chat.toolCards.toolError")
-    : singleToolDisplay && !markdown && !hasImages
+  const toolMessageLabelRaw =
+    singleToolDisplay && !markdown && !hasImages
       ? singleToolDisplay.label
       : t("chat.toolCards.toolOutput");
   const toolMessageLabel =
@@ -471,9 +464,7 @@ export function renderGroupedMessage(
                 : ""}"
             >
               <button
-                class="chat-tool-msg-summary ${toolMessageHasError
-                  ? "chat-tool-msg-summary--error"
-                  : ""}"
+                class="chat-inline-disclosure chat-tool-msg-summary"
                 type="button"
                 aria-expanded=${String(toolMessageExpanded)}
                 @click=${(event: MouseEvent) => {
@@ -489,6 +480,12 @@ export function renderGroupedMessage(
                   : toolPreview
                     ? html`<span class="chat-tool-msg-summary__preview">${toolPreview}</span>`
                     : nothing}
+                <span class="chat-inline-disclosure__chevron" aria-hidden="true"
+                  >${icons.chevronDown}</span
+                >
+                ${toolMessageHasError
+                  ? html`<span class="chat-tool-row__badge">${t("chat.toolCards.failed")}</span>`
+                  : nothing}
               </button>
               ${toolMessageExpanded
                 ? html`
@@ -518,7 +515,7 @@ export function renderGroupedMessage(
                             ?open=${Boolean(opts.autoExpandToolCalls)}
                           >
                             <summary class="chat-json-summary">
-                              <span class="chat-json-badge">JSON</span>
+                              <span class="chat-json-badge">${t("chat.codeBlock.jsonBadge")}</span>
                               <span class="chat-json-label"
                                 >${jsonSummaryLabel(jsonResult.parsed)}</span
                               >
@@ -582,7 +579,7 @@ export function renderGroupedMessage(
             ${jsonResult
               ? html`<details class="chat-json-collapse">
                   <summary class="chat-json-summary">
-                    <span class="chat-json-badge">JSON</span>
+                    <span class="chat-json-badge">${t("chat.codeBlock.jsonBadge")}</span>
                     <span class="chat-json-label">${jsonSummaryLabel(jsonResult.parsed)}</span>
                   </summary>
                   <pre class="chat-json-content"><code>${jsonResult.pretty}</code></pre>

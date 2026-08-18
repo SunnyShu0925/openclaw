@@ -1115,6 +1115,7 @@
                 "group": "Hosting",
                 "pages": [
                   "install/azure",
+                  "install/cloudflare",
                   "install/daytona",
                   "install/digitalocean",
                   "install/docker-vm-runtime",
@@ -1385,6 +1386,7 @@
                   "tools/code-mode",
                   "tools/diffs",
                   "tools/screen",
+                  "tools/progress-card",
                   "tools/show-widget",
                   "tools/elevated",
                   "tools/permission-modes",
@@ -1700,7 +1702,8 @@
                       "gateway/operator-scopes",
                       "gateway/sandboxing",
                       "gateway/openshell",
-                      "gateway/sandbox-vs-tool-policy-vs-elevated"
+                      "gateway/sandbox-vs-tool-policy-vs-elevated",
+                      "gateway/permission-modes"
                     ]
                   },
                   {
@@ -1724,6 +1727,7 @@
                       "network",
                       "gateway/pairing",
                       "gateway/discovery",
+                      "gateway/portals",
                       "gateway/bonjour"
                     ]
                   }
@@ -1857,6 +1861,7 @@
                       "cli/browser",
                       "cli/cron",
                       "cli/flows",
+                      "cli/connect",
                       "cli/node",
                       "cli/nodes",
                       "cli/sandbox",

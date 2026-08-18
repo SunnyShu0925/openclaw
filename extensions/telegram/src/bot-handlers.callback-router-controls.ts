@@ -3,6 +3,7 @@ import {
   resolveApprovalOverGateway,
   type ApprovalResolveResult,
 } from "openclaw/plugin-sdk/approval-gateway-runtime";
+import type { ChannelApprovalKind } from "openclaw/plugin-sdk/approval-handler-runtime";
 import type { parseExecApprovalCommandText } from "openclaw/plugin-sdk/approval-reply-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
@@ -12,6 +13,7 @@ import {
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { isApprovalNotFoundError } from "openclaw/plugin-sdk/error-runtime";
 import { logVerbose, sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { TelegramApprovalCallback } from "./approval-callback-data.js";
 import {
   buildTelegramCanonicalApprovalTerminalText,
@@ -229,7 +231,7 @@ export function createTelegramCallbackApprovalRuntime(params: {
   const handleLegacy = async (approvalCallback: LegacyApprovalCallback): Promise<void> => {
     const { execApprovalAuthorizedSender, pluginApprovalAuthorizedSender } =
       resolveApprovalAuthorizations();
-    const approvalKinds: Array<"exec" | "plugin"> = [];
+    const approvalKinds: ChannelApprovalKind[] = [];
     if (execApprovalAuthorizedSender || pluginApprovalAuthorizedSender) {
       approvalKinds.push("exec");
     }
@@ -420,11 +422,7 @@ const updateMultiSelectKeyboard = (
   );
 
 const resolvePluginCallbackSubmitText = (submitText: unknown): string | undefined => {
-  if (typeof submitText !== "string") {
-    return undefined;
-  }
-  const trimmed = submitText.trim();
-  return trimmed ? trimmed : undefined;
+  return normalizeOptionalString(submitText);
 };
 
 const isReplySessionInitConflictError = (err: unknown): boolean =>
