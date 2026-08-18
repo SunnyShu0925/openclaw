@@ -207,6 +207,14 @@ export async function mergeHybridResults<TSource extends HybridSource>(params: {
       ? entry.vectorScore
       : params.vectorWeight * entry.vectorScore + params.textWeight * keywordScore;
     const hasWeightedContentRelevance = contentScore > 0;
+    // LIKE-fallback body hits carry textScore = 0 (no BM25) but still have a
+    // manager-computed lexical ranking score in `rankingScore`. The weighted
+    // `keywordScore` above correctly stays 0 so LIKE never inflates the hybrid
+    // content score; carry the lexical score here as an unweighted tie-break
+    // signal so keyword-only / vector-less fallback results order by lexical
+    // overlap rather than collapsing into a path-ordered tie at score 0.
+    const lexicalRank =
+      entry.textScore === 0 && entry.exactPathSpecificity === 0 ? (entry.rankingScore ?? 0) : 0;
     // With decay enabled, reserve the lower half of an exact tier for path
     // identity and the upper half for content relevance. This lets recency beat
     // a stale cap-selected content hit. Otherwise retain the established score.
@@ -227,6 +235,7 @@ export async function mergeHybridResults<TSource extends HybridSource>(params: {
       textScore: entry.textScore,
       exactPathSpecificity: entry.exactPathSpecificity,
       hasWeightedContentRelevance,
+      lexicalRank,
       snippet: entry.snippet,
       source: entry.source,
       importance: entry.importance,
@@ -267,6 +276,7 @@ export async function mergeHybridResults<TSource extends HybridSource>(params: {
     .toSorted(
       (a, b) =>
         b.score - a.score ||
+        b.lexicalRank - a.lexicalRank ||
         a.path.localeCompare(b.path) ||
         a.startLine - b.startLine ||
         a.endLine - b.endLine,
@@ -313,6 +323,7 @@ export async function mergeHybridResults<TSource extends HybridSource>(params: {
       exactPathSpecificity: _exactPathSpecificity,
       exactPathTieScore: _exactPathTieScore,
       hasWeightedContentRelevance: _hasWeightedContentRelevance,
+      lexicalRank: _lexicalRank,
       ...entry
     }) => entry,
   );

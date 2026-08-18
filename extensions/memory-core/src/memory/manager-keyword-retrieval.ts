@@ -35,7 +35,23 @@ export type KeywordSearchHit = MemorySearchResult & {
   textScore: number;
   pathScore: number;
   exactPathSpecificity: ExactPathSpecificity;
+  // LIKE fallback body hits carry no BM25 (textScore = 0, recall only) but
+  // boost mode still derives a lexical score. Without this flag the manager's
+  // path-only sentinel (textScore === 0) would erase that boost-derived score.
+  likeFallbackBody?: boolean;
 };
+
+// A hit counts as a body hit when it has real BM25 (textScore > 0) OR is a
+// LIKE fallback body hit (textScore = 0 but boost-derived score present).
+function keywordHitHasBody(hit: KeywordSearchHit): boolean {
+  return hit.textScore > 0 || hit.likeFallbackBody === true;
+}
+
+// The path-only sentinel must exclude LIKE fallback body hits so their
+// boost-derived score survives manager normalization.
+function keywordHitIsPathOnly(hit: KeywordSearchHit): boolean {
+  return hit.textScore === 0 && hit.likeFallbackBody !== true;
+}
 
 function compareKeywordSearchHits(
   a: KeywordSearchHit,
@@ -47,7 +63,7 @@ function compareKeywordSearchHits(
     return specificityDelta;
   }
   if (preferExactBody && a.exactPathSpecificity > 0) {
-    const bodyPresenceDelta = Number(b.textScore > 0) - Number(a.textScore > 0);
+    const bodyPresenceDelta = Number(keywordHitHasBody(b)) - Number(keywordHitHasBody(a));
     if (bodyPresenceDelta !== 0) {
       return bodyPresenceDelta;
     }
@@ -154,7 +170,7 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
           if (entry.exactPathSpecificity === 0) {
             return entry;
           }
-          const contentScore = entry.textScore > 0 ? entry.score : 0;
+          const contentScore = keywordHitHasBody(entry) ? entry.score : 0;
           return { ...entry, score: scoreExactPathTieForTemporalDecay(contentScore) };
         })
       : params.results;
@@ -324,8 +340,8 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
           seenIds.set(result.id, result);
           continue;
         }
-        const existingHasBody = existing.textScore > 0;
-        const resultHasBody = result.textScore > 0;
+        const existingHasBody = keywordHitHasBody(existing);
+        const resultHasBody = keywordHitHasBody(result);
         const existingBodyScore = existingHasBody ? existing.score : 0;
         const resultBodyScore = resultHasBody ? result.score : 0;
         existing.textScore = Math.max(existing.textScore, result.textScore);
@@ -334,6 +350,10 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
           existing.exactPathSpecificity,
           result.exactPathSpecificity,
         ) as ExactPathSpecificity;
+        // Preserve the LIKE fallback body flag across merges so the path-only
+        // sentinel keeps excluding boost-derived fallback body scores.
+        existing.likeFallbackBody =
+          existing.likeFallbackBody === true || result.likeFallbackBody === true;
         const bodyScore = Math.max(existingBodyScore, resultBodyScore);
         existing.score = bodyScore > 0 ? bodyScore : existing.pathScore;
         // Path hits project the first chunk; keep a real body-match snippet
@@ -355,9 +375,11 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
       }
     }
     for (const result of merged) {
-      if (result.textScore === 0) {
+      if (keywordHitIsPathOnly(result)) {
         // A uniform exact-only baseline lets temporal decay order otherwise
         // equivalent filename hits without reusing incomparable path BM25.
+        // LIKE fallback body hits (textScore = 0 but boost-derived score) are
+        // excluded so their lexical ranking survives normalization.
         result.score = result.exactPathSpecificity > 0 ? 1 : result.pathScore;
       }
     }
@@ -370,10 +392,10 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
   ): KeywordSearchHit[] {
     const ranked = results.toSorted(compareKeywordSearchHits);
     const exactBody = ranked
-      .filter((entry) => entry.exactPathSpecificity > 0 && entry.textScore > 0)
+      .filter((entry) => entry.exactPathSpecificity > 0 && keywordHitHasBody(entry))
       .slice(0, nonExactLimit);
     const exactPathOnly = ranked.filter(
-      (entry) => entry.exactPathSpecificity > 0 && entry.textScore === 0,
+      (entry) => entry.exactPathSpecificity > 0 && keywordHitIsPathOnly(entry),
     );
     const boundedExact = exactBody.concat(exactPathOnly).toSorted(compareKeywordSearchHits);
     const selectedPathKeys = new Set<string>();
@@ -398,6 +420,7 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
         id: _id,
         pathScore: _pathScore,
         exactPathSpecificity: _exactPathSpecificity,
+        likeFallbackBody: _likeFallbackBody,
         ...result
       }) => result,
     );
