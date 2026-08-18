@@ -1,3 +1,4 @@
+import { unwrapNodePayloadJSON } from "@openclaw/normalization-core/node-payload";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   SessionCatalogHost,
@@ -119,17 +120,7 @@ function nodeLabel(node: { displayName?: string; remoteIp?: string; nodeId: stri
 }
 
 function unwrapNodePayload(value: unknown): unknown {
-  if (!isRecord(value)) {
-    return value;
-  }
-  if (typeof value.payloadJSON === "string" && value.payloadJSON.trim()) {
-    try {
-      return JSON.parse(value.payloadJSON) as unknown;
-    } catch (error) {
-      throw new Error("node returned malformed session catalog JSON", { cause: error });
-    }
-  }
-  return "payload" in value ? value.payload : value;
+  return unwrapNodePayloadJSON(value);
 }
 
 function isOptionalString(value: unknown): boolean {
