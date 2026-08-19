@@ -2846,6 +2846,31 @@ describe("dispatchCronDelivery — double-announce guard", () => {
     );
   });
 
+  it("does not persist the outbound route when direct cron delivery fails (#112710)", async () => {
+    mockResolvedOutboundRoute({
+      sessionKey: "agent:main:telegram:direct:123456",
+      baseSessionKey: "agent:main:telegram:direct:123456",
+      to: "telegram:123456",
+    });
+    const deliveryError = new Error("open_id cross app");
+    vi.mocked(deliverOutboundPayloads).mockRejectedValue(deliveryError);
+
+    const params = makeBaseParams({
+      synthesizedText: "This delivery will fail.",
+      runStartedAt: 1_000,
+    });
+    const state = await dispatchCronDelivery(params);
+
+    expectResultFields(state.result, {
+      status: "error",
+      error: deliveryError.message,
+      deliveryAttempted: true,
+    });
+    // The route must NOT be persisted when delivery fails — a failed send
+    // must not mint a conversation identity or rebind the session route.
+    expect(ensureOutboundSessionEntry).not.toHaveBeenCalled();
+  });
+
   it("does not claim no delivery when direct cron delivery partially fails", async () => {
     mockResolvedOutboundRoute({
       sessionKey: "agent:main:telegram:direct:123456",
@@ -2891,6 +2916,118 @@ describe("dispatchCronDelivery — double-announce guard", () => {
         contextKey: "cron-direct-delivery:v1:cron:test-job:1000:telegram::123456::failure",
       },
     );
+    // The first payload ("tg-first") already reached the recipient before the
+    // second failed, so the route MUST be persisted even though the batch
+    // threw — later sends to this target need the route to continue the
+    // conversation. Matches the partial-failure safety net in gateway send.ts.
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledTimes(1);
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledWith({
+      cfg: expect.anything(),
+      channel: "telegram",
+      route: expect.objectContaining({ to: "telegram:123456", from: "telegram:123456" }),
+    });
+  });
+
+  it("persists the outbound route when a best-effort partial batch reaches the recipient (#112710)", async () => {
+    mockResolvedOutboundRoute({
+      sessionKey: "agent:main:telegram:direct:123456",
+      baseSessionKey: "agent:main:telegram:direct:123456",
+      to: "telegram:123456",
+    });
+    const deliveryError = new Error("second payload failed");
+    vi.mocked(deliverOutboundPayloads).mockImplementationOnce(async (deliveryParams) => {
+      deliveryParams.onPayloadDeliveryOutcome?.({
+        index: 1,
+        status: "failed",
+        error: deliveryError,
+        sentBeforeError: true,
+        stage: "platform_send",
+      });
+      return [{ channel: "telegram", messageId: "tg-first" }] as never;
+    });
+
+    const params = makeBaseParams({
+      synthesizedText: undefined,
+      runStartedAt: 1_000,
+    });
+    params.deliveryPayloads = [{ text: "First payload." }, { text: "Second payload." }];
+    params.outputText = "Second payload.";
+    params.summary = "Second payload.";
+    params.deliveryBestEffort = true;
+    await dispatchCronDelivery(params);
+
+    // Best-effort swallows the partial failure, so the batch does not throw
+    // and no full receipt is minted. But the first payload ("tg-first") already
+    // reached the recipient, so the route MUST still be persisted — later
+    // sends to this target need it to continue the conversation. Matches the
+    // partial-failure safety net in gateway server-methods/send.ts.
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledTimes(1);
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledWith({
+      cfg: expect.anything(),
+      channel: "telegram",
+      route: expect.objectContaining({ to: "telegram:123456", from: "telegram:123456" }),
+    });
+  });
+
+  it("commits the route from the first platform result before a later sub-send failure throws (#112710)", async () => {
+    mockResolvedOutboundRoute({
+      sessionKey: "agent:main:telegram:direct:123456",
+      baseSessionKey: "agent:main:telegram:direct:123456",
+      to: "telegram:123456",
+    });
+    const deliveryError = new Error("second payload failed");
+    // Tracks whether the route was committed BEFORE the durable batch mock
+    // returned (i.e. via the onDeliveryResult early-commit callback), which is
+    // the ordering the post-success-only commit could not guarantee.
+    let committedBeforeBatchReturned = false;
+    vi.mocked(deliverOutboundPayloads).mockImplementationOnce(async (deliveryParams) => {
+      // The durable sender fires onDeliveryResult after the first identified
+      // platform result, before later fallible work in the batch. Simulate a
+      // first successful sub-send reaching the recipient.
+      await deliveryParams.onDeliveryResult?.({
+        channel: "telegram",
+        messageId: "tg-first",
+      });
+      // The early commit must have persisted the route by this point — before
+      // the second payload fails and the batch throws.
+      committedBeforeBatchReturned = vi.mocked(ensureOutboundSessionEntry).mock.calls.length > 0;
+      // Second payload fails after the first already reached the recipient.
+      deliveryParams.onPayloadDeliveryOutcome?.({
+        index: 1,
+        status: "failed",
+        error: deliveryError,
+        sentBeforeError: true,
+        stage: "platform_send",
+      });
+      return [{ channel: "telegram", messageId: "tg-first" }] as never;
+    });
+
+    const params = makeBaseParams({
+      synthesizedText: undefined,
+      runStartedAt: 1_000,
+    });
+    params.deliveryPayloads = [{ text: "First payload." }, { text: "Second payload." }];
+    params.outputText = "Second payload.";
+    params.summary = "Second payload.";
+    const state = await dispatchCronDelivery(params);
+
+    expectResultFields(state.result, {
+      status: "error",
+      error: deliveryError.message,
+      deliveryAttempted: true,
+    });
+    // The route MUST be committed from the first platform result (early), not
+    // only after the batch returns/throws — a later sub-send failure must not
+    // leave an already-reached recipient without its route. Matches the
+    // onDeliveryResult early commit in gateway server-methods/send.ts.
+    expect(committedBeforeBatchReturned).toBe(true);
+    // Once-only: the throw-path safety net must not double-commit.
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledTimes(1);
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledWith({
+      cfg: expect.anything(),
+      channel: "telegram",
+      route: expect.objectContaining({ to: "telegram:123456", from: "telegram:123456" }),
+    });
   });
 
   it("surfaces structured direct delivery failures without retry when best-effort is disabled", async () => {
