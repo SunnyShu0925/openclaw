@@ -424,6 +424,15 @@ export async function dispatchCronDelivery(
       }
       if (completedByConcurrentDelivery) {
         delivered = true;
+        // Another process completed the same fenced recipient intent. The
+        // local send failed, so its onDeliveryResult never fired and the
+        // resolved route was never committed. Persist it now so later
+        // conversation sends to this target have a route — matching the
+        // post-success invariant (the concurrent completion IS a success).
+        // commitDirectCronRouteEarly is once-only, so this is a no-op if the
+        // early onDeliveryResult commit already ran for a recipient-reached
+        // sub-send before the failure.
+        await commitDirectCronRouteEarly();
         return null;
       }
       // Only mark delivered when ALL payloads succeeded (no partial failure).

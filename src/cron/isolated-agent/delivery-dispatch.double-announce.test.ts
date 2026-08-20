@@ -2509,6 +2509,44 @@ describe("dispatchCronDelivery — double-announce guard", () => {
     expect(enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
+  it("commits the outbound route when adopting a concurrently completed receipt (#112710)", async () => {
+    // The local send fails because another process already owns the fenced
+    // recipient intent, but that intent is reported "completed" — so this
+    // process adopts the receipt. The resolved route must still be persisted,
+    // because the concurrent completion IS a delivery success and later
+    // conversation sends to this target need the route. The local send never
+    // fired onDeliveryResult (it failed), so the early-commit callback did
+    // not run — the adoption branch must commit explicitly.
+    mockResolvedOutboundRoute({
+      sessionKey: "agent:main:telegram:direct:123456",
+      baseSessionKey: "agent:main:telegram:direct:123456",
+      to: "telegram:123456",
+    });
+    vi.mocked(deliverOutboundPayloads).mockRejectedValueOnce(
+      new Error("Stable delivery intent is already queued"),
+    );
+    vi.mocked(deliveryQueueSqlite.getDeliveryQueueEntryStatus)
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce("completed");
+
+    const state = await dispatchCronDelivery(
+      makeBaseParams({ synthesizedText: "Concurrent completed cron update." }),
+    );
+
+    expect(state.delivered).toBe(true);
+    expect(state.deliveryAttempted).toBe(true);
+    // The route MUST be persisted exactly once when a concurrently completed
+    // receipt is adopted — the adoption branch commits the resolved route
+    // before returning, since the local failed send never invoked
+    // onDeliveryResult.
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledTimes(1);
+    expect(ensureOutboundSessionEntry).toHaveBeenCalledWith({
+      cfg: expect.anything(),
+      channel: "telegram",
+      route: expect.objectContaining({ to: "telegram:123456", from: "telegram:123456" }),
+    });
+  });
+
   it("adopts completion when a competing pending owner disappears during lookup", async () => {
     vi.mocked(deliverOutboundPayloads).mockRejectedValueOnce(
       new Error("Stable delivery intent is already queued"),
