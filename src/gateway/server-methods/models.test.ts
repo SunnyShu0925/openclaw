@@ -4,13 +4,18 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentDir, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
+  getPreparedRuntimeAuthProfileStoreSnapshot,
+  loadAuthProfileStoreWithoutExternalProfiles,
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../../agents/auth-profiles.js";
+import type { PreparedModelRuntimeAuth } from "../../agents/prepared-model-runtime-auth.js";
+import { materializeRuntimeCapabilities } from "../../agents/prepared-model-runtime.configured-catalog.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { loadManifestMetadataSnapshot } from "../../plugins/manifest-contract-eligibility.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import {
@@ -18,6 +23,10 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { assertPluginMetadataSnapshotConsistency } from "../plugin-metadata.test-helpers.js";
+import {
+  type PreparedGatewayModelCatalogSnapshot,
+  registerGatewayModelCatalogPrivateAccess,
+} from "../server-model-catalog-auth.js";
 import { modelsHandlers } from "./models.js";
 import type { RespondFn } from "./types.js";
 
@@ -145,7 +154,30 @@ vi.mock("../../plugins/plugin-metadata-snapshot.js", async (importOriginal) => (
 }));
 
 vi.mock("../../plugins/provider-thinking.js", () => ({
-  resolveEffectiveThinkingProfile: () => undefined,
+  resolveEffectiveThinkingProfile: (params: { provider: string; context: { modelId: string } }) => {
+    if (params.provider !== "claude-cli") {
+      return undefined;
+    }
+    if (params.context.modelId === "claude-mythos-5") {
+      return { levels: [{ id: "off" }], defaultLevel: "off" };
+    }
+    if (params.context.modelId === "claude-fable-5") {
+      return {
+        levels: [
+          { id: "minimal" },
+          { id: "low" },
+          { id: "medium" },
+          { id: "high" },
+          { id: "xhigh" },
+          { id: "adaptive" },
+          { id: "max" },
+        ],
+        defaultLevel: "high",
+        preserveWhenCatalogReasoningFalse: true,
+      };
+    }
+    return undefined;
+  },
 }));
 
 const withoutOpenAIEnvAuth = async <T>(run: () => Promise<T>): Promise<T> =>
@@ -157,6 +189,18 @@ const withoutOpenAIEnvAuth = async <T>(run: () => Promise<T>): Promise<T> =>
       OPENAI_BASE_URL: undefined,
       OPENAI_OAUTH_TOKEN: undefined,
       CHATGPT_OAUTH_TOKEN: undefined,
+    },
+    run,
+  );
+
+const withoutAnthropicEnvAuth = async <T>(run: () => Promise<T>): Promise<T> =>
+  await withEnvAsync(
+    {
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_AUTH_TOKEN: undefined,
+      CLAUDE_API_KEY: undefined,
+      CLAUDE_CODE_OAUTH_TOKEN: undefined,
+      HOME: modelsTestState.home,
     },
     run,
   );
@@ -219,10 +263,64 @@ function requestModelsList(params: {
   }) => Promise<Array<Record<string, unknown>>>;
   reqId?: string;
   includeProviderCapabilities?: boolean;
+  deferredAuth?: Promise<PreparedModelRuntimeAuth>;
+  preparedAuthModes?: PreparedModelRuntimeAuth["authModes"];
 }) {
   const respond = params.respond ?? vi.fn();
   const runtimeConfig = params.runtimeConfig ?? ({} as OpenClawConfig);
   const getRuntimeConfig = params.getRuntimeConfig ?? (() => runtimeConfig);
+  const resolveOwnerFacts = () => {
+    const config = getRuntimeConfig();
+    const agentId = params.agentId ?? resolveDefaultAgentId(config);
+    const agentDir = resolveAgentDir(config, agentId);
+    return {
+      agentId,
+      agentDir,
+      workspaceDir: agentDir,
+      config,
+      authModes: params.preparedAuthModes ?? {},
+      authStore:
+        getPreparedRuntimeAuthProfileStoreSnapshot(agentDir) ??
+        loadAuthProfileStoreWithoutExternalProfiles(agentDir, { allowKeychainPrompt: false }),
+      metadataSnapshot: loadManifestMetadataSnapshot({ config, env: process.env }),
+    };
+  };
+  const loadSnapshot = async (loadParams: Parameters<typeof params.loadGatewayModelCatalog>[0]) => {
+    const entries = await params.loadGatewayModelCatalog(loadParams);
+    const owner = resolveOwnerFacts();
+    return {
+      ...owner,
+      ...(loadParams?.agentId ? { agentId: loadParams.agentId } : {}),
+      catalogComplete: loadParams?.readOnly === false,
+      entries,
+      routeVariants: entries,
+      authMaterializations: [],
+    } as unknown as PreparedGatewayModelCatalogSnapshot;
+  };
+  const loadGatewayModelCatalogSnapshot = async (
+    loadParams: Parameters<typeof params.loadGatewayModelCatalog>[0],
+  ) => loadSnapshot(loadParams);
+  registerGatewayModelCatalogPrivateAccess(loadGatewayModelCatalogSnapshot, {
+    loadDeferred: async (loadParams) => {
+      const snapshot = await loadSnapshot(loadParams);
+      if (!params.deferredAuth) {
+        return snapshot;
+      }
+      try {
+        return { ...snapshot, ...(await params.deferredAuth) };
+      } catch {
+        return snapshot;
+      }
+    },
+    readPrepared: async () =>
+      ({
+        ...resolveOwnerFacts(),
+        catalogComplete: false,
+        entries: [],
+        routeVariants: [],
+        authMaterializations: [],
+      }) as PreparedGatewayModelCatalogSnapshot,
+  });
   const request = expectDefined(
     modelsHandlers["models.list"],
     'modelsHandlers["models.list"] test invariant',
@@ -248,19 +346,7 @@ function requestModelsList(params: {
     context: {
       getRuntimeConfig,
       loadGatewayModelCatalog: params.loadGatewayModelCatalog,
-      loadGatewayModelCatalogSnapshot: async (
-        loadParams: Parameters<typeof params.loadGatewayModelCatalog>[0],
-      ) => {
-        const entries = await params.loadGatewayModelCatalog(loadParams);
-        const config = getRuntimeConfig();
-        return {
-          agentId: loadParams?.agentId ?? resolveDefaultAgentId(config),
-          agentDir: "/tmp/models-list-agent",
-          config,
-          entries,
-          routeVariants: entries,
-        };
-      },
+      loadGatewayModelCatalogSnapshot,
       logGateway: {
         debug: vi.fn(),
       },
@@ -421,6 +507,279 @@ describe("models.list", () => {
     const custom = payload?.models.find((model) => model.provider === "custom-cloud");
     expect(custom).toBeDefined();
     expect(custom).not.toHaveProperty("apiKeySupported");
+  });
+
+  it("projects exact CLI runtime thinking capabilities onto every configured Claude model", async () => {
+    const modelIds = [
+      "claude-opus-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "claude-sonnet-5",
+      "claude-fable-5",
+      "claude-sonnet-4-6",
+    ];
+    const runtimeConfig: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: Object.fromEntries(
+            modelIds.map((modelId) => [
+              `anthropic/${modelId}`,
+              { agentRuntime: { id: "claude-cli" } },
+            ]),
+          ),
+        },
+      },
+    };
+    const loadGatewayModelCatalog = vi.fn(async () =>
+      modelIds.map((modelId) => ({
+        id: modelId,
+        name: modelId,
+        provider: "anthropic",
+        reasoning: true,
+      })),
+    );
+    const { request, respond } = requestModelsList({
+      view: "all",
+      runtimeConfig,
+      loadGatewayModelCatalog,
+    });
+
+    await request;
+
+    const payload = respond.mock.calls[0]?.[1] as
+      | { models: Array<Record<string, unknown>> }
+      | undefined;
+    for (const modelId of modelIds) {
+      expect(
+        payload?.models.find((entry) => entry.provider === "anthropic" && entry.id === modelId),
+      ).toMatchObject({
+        reasoning: true,
+        agentRuntime: { id: "claude-cli" },
+        thinkingLevels: [
+          { id: "off", label: "off" },
+          { id: "minimal", label: "minimal" },
+          { id: "low", label: "low" },
+          { id: "medium", label: "medium" },
+          { id: "high", label: "high" },
+        ],
+      });
+    }
+  });
+
+  it("preserves a configured reasoning opt-out on a Claude CLI route", async () => {
+    const modelId = "claude-opus-5";
+    const runtimeConfig = {
+      agents: {
+        defaults: {
+          models: {
+            [`anthropic/${modelId}`]: { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+      },
+      models: {
+        providers: {
+          anthropic: {
+            models: [{ id: modelId, name: modelId, reasoning: false }],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    const loadGatewayModelCatalog = vi.fn(async () => [
+      { id: modelId, name: modelId, provider: "anthropic", reasoning: false },
+      {
+        id: modelId,
+        name: `${modelId} (Claude CLI)`,
+        provider: "claude-cli",
+        reasoning: true,
+      },
+    ]);
+    const { request, respond } = requestModelsList({
+      view: "all",
+      runtimeConfig,
+      loadGatewayModelCatalog,
+    });
+
+    await request;
+
+    const payload = respond.mock.calls[0]?.[1] as
+      | { models: Array<Record<string, unknown>> }
+      | undefined;
+    expect(
+      payload?.models.find((entry) => entry.provider === "anthropic" && entry.id === modelId),
+    ).toMatchObject({
+      reasoning: false,
+      agentRuntime: { id: "claude-cli" },
+      thinkingLevels: [{ id: "off", label: "off" }],
+    });
+  });
+
+  it("preserves mandatory Claude CLI thinking despite a configured reasoning opt-out", async () => {
+    const modelId = "claude-fable-5";
+    const runtimeConfig = {
+      agents: {
+        defaults: {
+          models: {
+            [`anthropic/${modelId}`]: { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+      },
+      models: {
+        providers: {
+          anthropic: {
+            models: [{ id: modelId, name: modelId, reasoning: false }],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    const materializedCatalog = materializeRuntimeCapabilities(
+      [{ id: modelId, name: modelId, provider: "anthropic", reasoning: false }],
+      [
+        {
+          provider: "anthropic",
+          modelId,
+          model: {
+            id: modelId,
+            name: `${modelId} (Claude CLI)`,
+            provider: "claude-cli",
+            reasoning: true,
+          } as never,
+        },
+      ],
+    );
+    const { request, respond } = requestModelsList({
+      view: "configured",
+      runtimeConfig,
+      loadGatewayModelCatalog: vi.fn(async () => materializedCatalog),
+    });
+
+    await request;
+
+    const payload = respond.mock.calls[0]?.[1] as
+      | { models: Array<Record<string, unknown>> }
+      | undefined;
+    expect(
+      payload?.models.find((entry) => entry.provider === "anthropic" && entry.id === modelId),
+    ).toMatchObject({
+      reasoning: false,
+      agentRuntime: { id: "claude-cli" },
+      thinkingLevels: [
+        { id: "minimal", label: "minimal" },
+        { id: "low", label: "low" },
+        { id: "medium", label: "medium" },
+        { id: "adaptive", label: "adaptive" },
+        { id: "high", label: "high" },
+        { id: "xhigh", label: "xhigh" },
+        { id: "max", label: "max" },
+      ],
+      thinkingDefault: "high",
+    });
+  });
+
+  it("publishes a materialized Claude CLI logical row with its configured thinking default", async () => {
+    const modelIds = ["claude-opus-5", "claude-sonnet-5"];
+    const runtimeConfig = {
+      agents: {
+        defaults: {
+          model: { primary: `anthropic/${modelIds[0]}` },
+          models: Object.fromEntries(
+            modelIds.map((modelId) => [
+              `anthropic/${modelId}`,
+              { agentRuntime: { id: "claude-cli" }, params: { thinking: "medium" } },
+            ]),
+          ),
+        },
+      },
+      models: {
+        providers: {
+          anthropic: { models: modelIds.map((id) => ({ id, name: id })) },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    const { request, respond } = requestModelsList({
+      view: "configured",
+      runtimeConfig,
+      // Prepared catalog shape: runtime-only rows are deliberately absent.
+      loadGatewayModelCatalog: vi.fn(async () =>
+        modelIds.map((id) => ({ id, name: id, provider: "anthropic", reasoning: true })),
+      ),
+    });
+
+    await request;
+
+    const payload = respond.mock.calls[0]?.[1] as
+      | { models: Array<Record<string, unknown>> }
+      | undefined;
+    for (const modelId of modelIds) {
+      expect(
+        payload?.models.find((entry) => entry.provider === "anthropic" && entry.id === modelId),
+      ).toMatchObject({
+        reasoning: true,
+        agentRuntime: { id: "claude-cli" },
+        thinkingDefault: "medium",
+        thinkingLevels: expect.arrayContaining([
+          { id: "off", label: "off" },
+          { id: "medium", label: "medium" },
+          { id: "high", label: "high" },
+        ]),
+      });
+    }
+  });
+
+  it("publishes the concrete Claude CLI thinking policy for a configured logical model", async () => {
+    const modelId = "claude-mythos-5";
+    const runtimeConfig = {
+      agents: {
+        defaults: {
+          model: { primary: `anthropic/${modelId}` },
+          models: {
+            [`anthropic/${modelId}`]: { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+      },
+      models: {
+        providers: {
+          anthropic: { models: [{ id: modelId, name: "Claude Mythos 5" }] },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    const materializedCatalog = materializeRuntimeCapabilities(
+      [{ id: modelId, name: "Claude Mythos 5", provider: "anthropic" }],
+      [
+        {
+          provider: "anthropic",
+          modelId,
+          model: {
+            id: modelId,
+            name: "Claude Mythos 5 (Claude CLI)",
+            provider: "claude-cli",
+            reasoning: true,
+          } as never,
+        },
+      ],
+    );
+    const { request, respond } = requestModelsList({
+      view: "configured",
+      runtimeConfig,
+      loadGatewayModelCatalog: vi.fn(async () => materializedCatalog),
+    });
+
+    await request;
+
+    const payload = respond.mock.calls[0]?.[1] as
+      | { models: Array<Record<string, unknown>> }
+      | undefined;
+    const model = payload?.models.find(
+      (entry) => entry.provider === "anthropic" && entry.id === modelId,
+    );
+    expect(model).toMatchObject({
+      provider: "anthropic",
+      reasoning: true,
+      agentRuntime: { id: "claude-cli" },
+      thinkingLevels: [{ id: "off", label: "off" }],
+      thinkingDefault: "off",
+    });
+    expect(model).not.toHaveProperty("thinkingPolicyProvider");
   });
 
   it("keeps source-authored provider inventory when the canonical catalog is missing", async () => {
@@ -585,6 +944,7 @@ describe("models.list", () => {
               name: "Llama Secure",
               provider: "vllm",
               input: ["text", "image", "document"],
+              tags: ["default"],
             },
           ],
         },
@@ -631,8 +991,15 @@ describe("models.list", () => {
                 id: "gpt-test",
                 name: "GPT Test",
                 provider: "openai",
-                agentRuntime: { id: "openclaw", source: "implicit" },
+                agentRuntime: {
+                  id: "openclaw",
+                  cloudPlacementSupported: true,
+                  cloudPlacementExecutionMode: "worker-turn",
+                  devicePlacementSupported: true,
+                  source: "implicit",
+                },
                 available: false,
+                tags: ["default"],
               },
             ],
           },
@@ -644,6 +1011,162 @@ describe("models.list", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  it("does not let deferred auth outlive the configured browse deadline", async () => {
+    await withoutOpenAIEnvAuth(async () => {
+      const auth = createDeferred<PreparedModelRuntimeAuth>();
+      const runtimeConfig = {
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "https://openai.example.com",
+              models: [{ id: "gpt-test", name: "GPT Test" }],
+            },
+          },
+        },
+      } as unknown as OpenClawConfig;
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { request, respond } = requestModelsList({
+          view: "configured",
+          runtimeConfig,
+          deferredAuth: auth.promise,
+          loadGatewayModelCatalog: vi.fn(() =>
+            Promise.resolve([{ id: "gpt-test", name: "GPT Test", provider: "openai" }]),
+          ),
+          reqId: "req-models-list-slow-auth",
+        });
+
+        await vi.advanceTimersByTimeAsync(800);
+        await vi.runOnlyPendingTimersAsync();
+        await request;
+
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          {
+            models: [
+              {
+                id: "gpt-test",
+                name: "GPT Test",
+                provider: "openai",
+                agentRuntime: {
+                  id: "openclaw",
+                  cloudPlacementSupported: true,
+                  cloudPlacementExecutionMode: "worker-turn",
+                  devicePlacementSupported: true,
+                  source: "implicit",
+                },
+                available: false,
+                tags: ["default"],
+              },
+            ],
+          },
+          undefined,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("keeps prepared auth when deferred auth refresh rejects", async () => {
+    await withoutOpenAIEnvAuth(async () => {
+      const runtimeConfig = {
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "https://openai.example.com",
+              models: [{ id: "gpt-test", name: "GPT Test" }],
+            },
+          },
+        },
+      } as unknown as OpenClawConfig;
+      const { request, respond } = requestModelsList({
+        view: "configured",
+        runtimeConfig,
+        deferredAuth: Promise.reject(new Error("auth refresh failed")),
+        loadGatewayModelCatalog: vi.fn(() =>
+          Promise.resolve([{ id: "gpt-test", name: "GPT Test", provider: "openai" }]),
+        ),
+        reqId: "req-models-list-rejected-auth",
+      });
+
+      await request;
+
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        {
+          models: [
+            {
+              id: "gpt-test",
+              name: "GPT Test",
+              provider: "openai",
+              agentRuntime: {
+                id: "openclaw",
+                cloudPlacementSupported: true,
+                cloudPlacementExecutionMode: "worker-turn",
+                devicePlacementSupported: true,
+                source: "implicit",
+              },
+              available: false,
+              tags: ["default"],
+            },
+          ],
+        },
+        undefined,
+      );
+    });
+  });
+
+  it("does not advertise a subscription route after deferred auth observes logout", async () => {
+    await withoutOpenAIEnvAuth(async () => {
+      const runtimeConfig = {
+        models: {
+          providers: {
+            openai: {
+              api: "openai-chatgpt-responses",
+              baseUrl: "https://chatgpt.com/backend-api/codex",
+              models: [{ id: "gpt-5.4", name: "GPT-5.4" }],
+            },
+          },
+        },
+      } as unknown as OpenClawConfig;
+      const { request, respond } = requestModelsList({
+        view: "configured",
+        runtimeConfig,
+        preparedAuthModes: { openai: "oauth" },
+        deferredAuth: Promise.resolve({
+          authStore: { version: 1, profiles: {} },
+          authModes: {},
+        }),
+        loadGatewayModelCatalog: vi.fn(() =>
+          Promise.resolve([
+            {
+              id: "gpt-5.4",
+              name: "GPT-5.4",
+              provider: "openai",
+              api: "openai-chatgpt-responses",
+              baseUrl: "https://chatgpt.com/backend-api/codex",
+            },
+          ]),
+        ),
+        reqId: "req-models-list-cli-logout",
+      });
+
+      await request;
+
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        {
+          models: [
+            expect.objectContaining({ id: "gpt-5.4", provider: "openai", available: false }),
+          ],
+        },
+        undefined,
+      );
     });
   });
 
@@ -687,6 +1210,7 @@ describe("models.list", () => {
               id: "llama-local",
               name: "Llama Local",
               provider: "vllm",
+              tags: ["default"],
             },
           ],
         },
@@ -750,6 +1274,7 @@ describe("models.list", () => {
               name: "Llama Secure",
               provider: "vllm",
               available: false,
+              tags: ["default"],
             },
           ],
         },
@@ -788,7 +1313,12 @@ describe("models.list", () => {
                 id: "gpt-test",
                 name: "GPT Test",
                 provider: "openai",
-                agentRuntime: { id: "codex", source: "implicit" },
+                agentRuntime: {
+                  id: "codex",
+                  cloudPlacementSupported: false,
+                  devicePlacementSupported: false,
+                  source: "implicit",
+                },
                 available: false,
               },
             ],
@@ -877,14 +1407,24 @@ describe("models.list", () => {
               id: "gpt-5.4",
               name: "GPT-5.4 Codex",
               provider: "openai",
-              agentRuntime: { id: "codex", source: "implicit" },
+              agentRuntime: {
+                id: "codex",
+                cloudPlacementSupported: false,
+                devicePlacementSupported: false,
+                source: "implicit",
+              },
               available: true,
             },
             {
               id: "gpt-codex-test",
               name: "GPT Codex Test",
               provider: "openai",
-              agentRuntime: { id: "codex", source: "implicit" },
+              agentRuntime: {
+                id: "codex",
+                cloudPlacementSupported: false,
+                devicePlacementSupported: false,
+                source: "implicit",
+              },
               available: true,
             },
             { id: "llama-local", name: "Llama Local", provider: "vllm", available: true },
@@ -919,14 +1459,24 @@ describe("models.list", () => {
               id: "gpt-5.4",
               name: "GPT-5.4 Codex",
               provider: "openai",
-              agentRuntime: { id: "codex", source: "implicit" },
+              agentRuntime: {
+                id: "codex",
+                cloudPlacementSupported: false,
+                devicePlacementSupported: false,
+                source: "implicit",
+              },
               available: true,
             },
             {
               id: "gpt-codex-test",
               name: "GPT Codex Test",
               provider: "openai",
-              agentRuntime: { id: "codex", source: "implicit" },
+              agentRuntime: {
+                id: "codex",
+                cloudPlacementSupported: false,
+                devicePlacementSupported: false,
+                source: "implicit",
+              },
               available: true,
             },
             { id: "llama-local", name: "Llama Local", provider: "vllm", available: true },
@@ -983,6 +1533,7 @@ describe("models.list", () => {
                 name: "Llama Configured",
                 provider: "vllm",
                 available: true,
+                tags: ["default"],
               },
               {
                 id: "llama-discovered",
@@ -1055,7 +1606,12 @@ describe("models.list", () => {
                   id: "gpt-5.4",
                   name: "GPT-5.4 Codex",
                   provider: "openai",
-                  agentRuntime: { id: "codex", source: "implicit" },
+                  agentRuntime: {
+                    id: "codex",
+                    cloudPlacementSupported: false,
+                    devicePlacementSupported: false,
+                    source: "implicit",
+                  },
                   available: true,
                 },
               ],
@@ -1067,8 +1623,8 @@ describe("models.list", () => {
     });
   });
 
-  it("marks catalog models available through their configured CLI runtime", async () => {
-    await withEnvAsync({ ANTHROPIC_API_KEY: undefined }, async () => {
+  it("keeps catalog models available through a refresh-owned CLI runtime", async () => {
+    await withoutAnthropicEnvAuth(async () => {
       await withModelsTestState(
         {
           layout: "state-only",
@@ -1076,7 +1632,7 @@ describe("models.list", () => {
           agentEnv: "main",
         },
         async (state) => {
-          await state.writeAuthProfiles({
+          const store = {
             version: 1,
             profiles: {
               "anthropic:claude-cli": {
@@ -1084,12 +1640,26 @@ describe("models.list", () => {
                 provider: "claude-cli",
                 access: "claude-cli-access",
                 refresh: "claude-cli-refresh",
-                expires: Date.now() + 30 * 60_000,
+                expires: Date.now() - 60_000,
               },
             },
-          });
+          } as const;
+          await state.writeAuthProfiles(store);
+          replaceRuntimeAuthProfileStoreSnapshots([
+            {
+              agentDir: state.agentDir(),
+              store: Object.assign({}, store, {
+                runtimeExternalCliProfileIds: ["anthropic:claude-cli"],
+              }),
+            },
+          ]);
 
           const runtimeConfig = {
+            auth: {
+              profiles: {
+                "anthropic:claude-cli": { provider: "anthropic", mode: "token" },
+              },
+            },
             agents: {
               defaults: {
                 models: {
@@ -1124,8 +1694,14 @@ describe("models.list", () => {
                   id: "claude-opus-4-8",
                   name: "Claude Opus 4.8",
                   provider: "anthropic",
-                  agentRuntime: { id: "claude-cli", source: "model" },
+                  agentRuntime: {
+                    id: "claude-cli",
+                    cloudPlacementSupported: false,
+                    devicePlacementSupported: false,
+                    source: "model",
+                  },
                   available: true,
+                  tags: ["configured"],
                 },
               ],
             },
@@ -1329,7 +1905,7 @@ describe("models.list", () => {
     );
   });
 
-  it("uses refreshed persisted OAuth when the runtime auth snapshot is stale", async () => {
+  it("does not mix refreshed persisted OAuth into a stale runtime generation", async () => {
     await withModelsTestState(
       {
         layout: "state-only",
@@ -1374,7 +1950,7 @@ describe("models.list", () => {
                   id: "demo-model",
                   name: "Demo Model",
                   provider: "demo-provider",
-                  available: true,
+                  available: false,
                 },
               ],
             },
