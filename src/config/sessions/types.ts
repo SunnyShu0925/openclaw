@@ -33,10 +33,14 @@ import type {
   SessionOwnerAssignment,
   SessionParticipant,
 } from "./session-entry-provenance.js";
-import type { AgentPatchedSessionModelFallback } from "./session-model-fallback.js";
+import type {
+  AgentPatchedSessionModelFallback,
+  InternalAgentPatchedSessionModelFallback,
+} from "./session-model-fallback.js";
 import type { SessionSkillSnapshot } from "./session-prompt-types.js";
 import type { SessionSystemPromptReport } from "./session-system-prompt-report.js";
 import type { SessionToolOverrides } from "./session-tool-overrides.js";
+import type { SessionThinkingLevelSelection } from "./thinking-level-selection.js";
 
 export type { SessionToolOverrides } from "./session-tool-overrides.js";
 export type { SessionSystemPromptReport } from "./session-system-prompt-report.js";
@@ -55,6 +59,7 @@ export type SessionOrigin = {
   to?: string;
   nativeChannelId?: string;
   nativeDirectUserId?: string;
+  avatar?: string;
   accountId?: string;
   threadId?: string | number;
 };
@@ -374,7 +379,13 @@ type SessionEntryCore = SessionRestartRecoveryState &
      * Managed worktree bound to this session; set with spawnedCwd at worktree
      * creation and cleared together when a plain New Chat detaches the checkout.
      */
-    worktree?: { id: string; branch: string; repoRoot: string };
+    worktree?: {
+      id: string;
+      branch: string;
+      repoRoot: string;
+      /** Durable skill workspace prepared when this session runs from a managed worktree. */
+      canonicalWorkspaceDir?: string;
+    };
     /** Project registry id selected when this logical session node was created. */
     projectId?: string;
     /** Explicit parent session linkage for dashboard-created child sessions. */
@@ -574,6 +585,8 @@ type SessionEntryCore = SessionRestartRecoveryState &
     agentHarnessId?: string;
     fallbackNotice?: FallbackNoticeState;
     contextTokens?: number;
+    /** Origin of the persisted context window; `resolved` is legacy/unverified. */
+    contextTokensSource?: "runtime" | "runtime-configured" | "resolved" | "resolved-v1";
     contextBudgetStatus?: SessionContextBudgetStatus;
     compactionCount?: number;
     compactionCheckpoints?: SessionCompactionCheckpoint[];
@@ -612,7 +625,10 @@ type SessionEntryCore = SessionRestartRecoveryState &
 export interface SessionEntry extends SessionEntryCore {}
 
 /** Internal durable fields excluded from public/plugin session projections. */
-export type InternalSessionEntryCore = SessionEntryCore & {
+export type InternalSessionEntryCore = Omit<SessionEntryCore, "modelFallback"> & {
+  modelFallback?: InternalAgentPatchedSessionModelFallback;
+  /** Exact model/runtime fact that validated the persisted thinking override. */
+  thinkingLevelSelection?: SessionThinkingLevelSelection;
   /** Run that owns the current non-terminal Gateway lifecycle projection. */
   lifecycleRunId?: string;
   /** Run admitted by the session lane; overwritten at admission and checked by transcript writes. */

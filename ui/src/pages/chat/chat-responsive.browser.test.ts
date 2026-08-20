@@ -202,40 +202,85 @@ function activityAlignmentHtml() {
   return `
     <div class="chat-thread" role="log">
       <div class="chat-thread-inner">
-        <div class="chat-group tool chat-group--activity">
-          <div class="chat-avatar tool">A</div>
+        <div class="chat-group tool chat-group--activity chat-group--with-footer">
           <div class="chat-group-messages">
             <div class="chat-activity-group is-open">
               <button class="chat-inline-disclosure chat-activity-group__summary" type="button" aria-expanded="true">
                 <span class="chat-activity-group__icon">${iconSvg()}</span>
-                <span class="chat-activity-group__label">Activity: 2 tools</span>
-                <span class="chat-inline-disclosure__chevron">${iconSvg()}</span>
+                <span class="chat-tool-disclosure__content">
+                  <span class="chat-activity-group__label">Activity: 2 tools</span>
+                </span>
+                <span class="chat-tool-row__chevron">${iconSvg()}</span>
               </button>
               <div class="chat-activity-group__body">
                 <div class="chat-bubble chat-bubble--tool-shell" data-activity-call-row>
                   <div class="chat-tools-inline">
                     <div class="chat-tool-msg-collapse">
-                      <button class="chat-inline-disclosure chat-tool-msg-summary" type="button" aria-expanded="false">
+                      <button class="chat-inline-disclosure chat-tool-msg-summary chat-tool-row" type="button" aria-expanded="false">
                         <span class="chat-tool-msg-summary__icon">${iconSvg()}</span>
-                        <span class="chat-tool-msg-summary__label">Bash</span>
-                        <span class="chat-tool-msg-summary__names">search a deliberately long workspace path without extra card chrome</span>
-                        <span class="chat-inline-disclosure__chevron">${iconSvg()}</span>
+                        <span class="chat-tool-disclosure__content">
+                          <span class="chat-tool-msg-summary__label">Bash</span>
+                          <span class="chat-tool-msg-summary__names">search a deliberately long workspace path without extra card chrome</span>
+                        </span>
+                        <span class="chat-tool-row__chevron">${iconSvg()}</span>
                       </button>
                     </div>
                   </div>
                 </div>
                 <div class="chat-bubble chat-bubble--tool-shell">
                   <div class="chat-tool-msg-collapse">
-                    <button class="chat-inline-disclosure chat-tool-msg-summary" data-failed-call-row type="button" aria-expanded="false">
+                    <button class="chat-inline-disclosure chat-tool-msg-summary chat-tool-row" data-failed-call-row type="button" aria-expanded="false">
                       <span class="chat-tool-msg-summary__icon">${iconSvg()}</span>
-                      <span class="chat-tool-msg-summary__label">Bash</span>
-                      <span class="chat-tool-msg-summary__names">Bash</span>
-                      <span class="chat-inline-disclosure__chevron">${iconSvg()}</span>
-                      <span class="chat-tool-row__badge">failed</span>
+                      <span class="chat-tool-disclosure__content">
+                        <span class="chat-tool-msg-summary__label">Bash</span>
+                        <span class="chat-tool-msg-summary__names">Bash</span>
+                      </span>
+                      <span class="chat-tool-row__chevron">${iconSvg()}</span>
                     </button>
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function completedWorkSpacingHtml() {
+  return `
+    <div class="chat-thread" role="log">
+      <div class="chat-thread-inner chat-thread-inner--virtual">
+        <div class="chat-virtual-sizer" style="height: 400px;">
+          <div class="chat-virtual-row" data-spacing-row="prompt">
+            <div class="chat-group user chat-group--with-footer">
+              <div class="chat-group-messages">
+                <div class="chat-bubble"><div class="chat-text">Prompt</div></div>
+              </div>
+              <div class="chat-group-footer"><span class="chat-sender-name">You</span></div>
+            </div>
+          </div>
+          <div class="chat-virtual-row" data-spacing-row="work">
+            <div class="chat-group tool chat-group--work">
+              <div class="chat-group-messages">
+                <div class="chat-activity-group chat-work-group">
+                  <button class="chat-inline-disclosure chat-activity-group__summary" type="button">
+                    <span class="chat-tool-disclosure__content">
+                      <span class="chat-activity-group__label">Worked for 10s</span>
+                    </span>
+                  </button>
+                  <div class="chat-work-group__separator"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="chat-virtual-row" data-spacing-row="reply">
+            <div class="chat-group assistant chat-group--with-footer">
+              <div class="chat-group-messages">
+                <div class="chat-bubble"><div class="chat-text">Final reply</div></div>
+              </div>
+              <div class="chat-group-footer"><span class="chat-sender-name">Assistant</span></div>
             </div>
           </div>
         </div>
@@ -592,14 +637,14 @@ async function openFixture(width: number, height: number, opts: ChatFixtureOptio
 async function openBrowserPage(
   width: number,
   height: number,
-  options: { isolated?: boolean } = {},
+  options: { hasTouch?: boolean; isolated?: boolean } = {},
 ): Promise<Page> {
   sharedBrowser ??= await chromium.launch({
     executablePath: chromiumExecutablePath,
     headless: true,
   });
   if (options.isolated) {
-    return await sharedBrowser.newPage({ viewport: { width, height } });
+    return await sharedBrowser.newPage({ hasTouch: options.hasTouch, viewport: { width, height } });
   }
   // Static setContent fixtures do not mutate context-owned storage or routes,
   // so they can share one context while their pages remain concurrent.
@@ -1193,12 +1238,14 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       const activityGroup = await getRect(page, ".chat-activity-group");
       const activitySummary = await getRect(page, ".chat-activity-group__summary");
       const failedSummary = await getRect(page, "[data-failed-call-row]");
+      const thread = await getRect(page, ".chat-thread-inner");
       expect(activitySummary.width).toBeLessThan(activityGroup.width);
       expect(failedSummary.width).toBeLessThan(activityGroup.width);
+      expect(activityGroup.left - thread.left).toBeCloseTo(51, 0);
       const styles = await page.evaluate(() => {
         const activity = document.querySelector<HTMLElement>(".chat-activity-group__summary")!;
         const label = activity.querySelector<HTMLElement>(".chat-activity-group__label")!;
-        const chevron = activity.querySelector<HTMLElement>(".chat-inline-disclosure__chevron")!;
+        const chevron = activity.querySelector<HTMLElement>(".chat-tool-row__chevron")!;
         return {
           activity: getComputedStyle(activity).userSelect,
           activityBackground: getComputedStyle(activity).backgroundColor,
@@ -1210,9 +1257,50 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       expect(styles).toEqual({
         activity: "text",
         activityBackground: "rgba(0, 0, 0, 0)",
-        chevronGap: 8,
+        // Summary gap (8px) less the chevron's own -3px inset.
+        chevronGap: 5,
         tool: "text",
       });
+    } finally {
+      await closeBrowserPage(page);
+    }
+  });
+
+  it.each([
+    { label: "desktop", width: 1366, hasTouch: false, expectedGap: 9 },
+    { label: "narrow touch", width: 430, hasTouch: true, expectedGap: 23 },
+    { label: "wide touch", width: 1366, hasTouch: true, expectedGap: 23 },
+  ])("balances completed-work spacing on $label", async ({ width, hasTouch, expectedGap }) => {
+    const page = await openBrowserPage(width, 720, { hasTouch, isolated: true });
+    try {
+      await page.setContent(
+        `<!doctype html><html><head><style>${readUiCss()}</style></head><body>${completedWorkSpacingHtml()}</body></html>`,
+      );
+      await waitForLayoutSettled(page, "[data-spacing-row], .chat-group--work");
+
+      const gaps = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll<HTMLElement>("[data-spacing-row]")];
+        let offset = 0;
+        for (const row of rows) {
+          row.style.transform = `translateY(${offset}px)`;
+          offset += row.getBoundingClientRect().height;
+        }
+        const prompt = document.querySelector<HTMLElement>(
+          '[data-spacing-row="prompt"] .chat-group',
+        )!;
+        const summary = document.querySelector<HTMLElement>(".chat-work-group > button")!;
+        const separator = document.querySelector<HTMLElement>(".chat-work-group__separator")!;
+        const reply = document.querySelector<HTMLElement>(
+          '[data-spacing-row="reply"] .chat-group',
+        )!;
+        return {
+          after: reply.getBoundingClientRect().top - separator.getBoundingClientRect().bottom,
+          before: summary.getBoundingClientRect().top - prompt.getBoundingClientRect().bottom,
+        };
+      });
+
+      expect(gaps.before).toBeCloseTo(expectedGap, 0);
+      expect(gaps.after).toBeCloseTo(expectedGap, 0);
     } finally {
       await closeBrowserPage(page);
     }
@@ -1284,7 +1372,6 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
           <div class="chat-thread chat-thread--direct" role="log">
             <div class="chat-thread-inner">
               <div class="chat-group tool">
-                <div class="chat-avatar tool">A</div>
                 <div class="chat-group-messages" data-tool-lane>
                   <div class="chat-bubble chat-bubble--tool-shell" data-tool-shell>
                     <div class="chat-tool-msg-collapse">Tool output</div>
@@ -1292,7 +1379,6 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
                 </div>
               </div>
               <div class="chat-group tool chat-group--activity">
-                <div class="chat-avatar tool">A</div>
                 <div class="chat-group-messages" data-activity-lane>
                   <div class="chat-activity-group">Activity</div>
                 </div>
@@ -1596,6 +1682,32 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       });
 
       expect(layout.commandContentRight).toBeLessThanOrEqual(layout.actionLeft + 1);
+    } finally {
+      await closeBrowserPage(page);
+    }
+  });
+
+  it("keeps tool-card header actions visible without hover", async () => {
+    const page = await openBrowserPage(430, 720);
+    try {
+      await page.setContent(
+        `<!doctype html><html><head><style>${readUiCss()}</style></head><body>
+          <div class="chat-tool-card">
+            <div class="chat-tool-card__header">
+              <span>ui/src/styles/chat/tool-cards.css</span>
+              <div class="chat-tool-card__actions">
+                <button class="chat-tool-card__action-btn" type="button">${iconSvg()}</button>
+              </div>
+            </div>
+          </div>
+        </body></html>`,
+      );
+
+      expect(
+        await page
+          .locator(".chat-tool-card__header > .chat-tool-card__actions")
+          .evaluate((node) => getComputedStyle(node).opacity),
+      ).toBe("1");
     } finally {
       await closeBrowserPage(page);
     }

@@ -169,6 +169,18 @@ const withoutOpenAIEnvAuth = async <T>(run: () => Promise<T>): Promise<T> =>
     run,
   );
 
+const withoutAnthropicEnvAuth = async <T>(run: () => Promise<T>): Promise<T> =>
+  await withEnvAsync(
+    {
+      ANTHROPIC_API_KEY: undefined,
+      ANTHROPIC_AUTH_TOKEN: undefined,
+      CLAUDE_API_KEY: undefined,
+      CLAUDE_CODE_OAUTH_TOKEN: undefined,
+      HOME: modelsTestState.home,
+    },
+    run,
+  );
+
 let modelsTestState: OpenClawTestState;
 
 beforeAll(async () => {
@@ -635,6 +647,7 @@ describe("models.list", () => {
               name: "Llama Secure",
               provider: "vllm",
               input: ["text", "image", "document"],
+              tags: ["default"],
             },
           ],
         },
@@ -684,9 +697,11 @@ describe("models.list", () => {
                 agentRuntime: {
                   id: "openclaw",
                   cloudPlacementSupported: true,
+                  devicePlacementSupported: true,
                   source: "implicit",
                 },
                 available: false,
+                tags: ["default"],
               },
             ],
           },
@@ -742,9 +757,11 @@ describe("models.list", () => {
                 agentRuntime: {
                   id: "openclaw",
                   cloudPlacementSupported: true,
+                  devicePlacementSupported: true,
                   source: "implicit",
                 },
                 available: false,
+                tags: ["default"],
               },
             ],
           },
@@ -791,9 +808,11 @@ describe("models.list", () => {
               agentRuntime: {
                 id: "openclaw",
                 cloudPlacementSupported: true,
+                devicePlacementSupported: true,
                 source: "implicit",
               },
               available: false,
+              tags: ["default"],
             },
           ],
         },
@@ -891,6 +910,7 @@ describe("models.list", () => {
               id: "llama-local",
               name: "Llama Local",
               provider: "vllm",
+              tags: ["default"],
             },
           ],
         },
@@ -954,6 +974,7 @@ describe("models.list", () => {
               name: "Llama Secure",
               provider: "vllm",
               available: false,
+              tags: ["default"],
             },
           ],
         },
@@ -995,6 +1016,7 @@ describe("models.list", () => {
                 agentRuntime: {
                   id: "codex",
                   cloudPlacementSupported: false,
+                  devicePlacementSupported: false,
                   source: "implicit",
                 },
                 available: false,
@@ -1088,6 +1110,7 @@ describe("models.list", () => {
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
+                devicePlacementSupported: false,
                 source: "implicit",
               },
               available: true,
@@ -1099,6 +1122,7 @@ describe("models.list", () => {
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
+                devicePlacementSupported: false,
                 source: "implicit",
               },
               available: true,
@@ -1138,6 +1162,7 @@ describe("models.list", () => {
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
+                devicePlacementSupported: false,
                 source: "implicit",
               },
               available: true,
@@ -1149,6 +1174,7 @@ describe("models.list", () => {
               agentRuntime: {
                 id: "codex",
                 cloudPlacementSupported: false,
+                devicePlacementSupported: false,
                 source: "implicit",
               },
               available: true,
@@ -1207,6 +1233,7 @@ describe("models.list", () => {
                 name: "Llama Configured",
                 provider: "vllm",
                 available: true,
+                tags: ["default"],
               },
               {
                 id: "llama-discovered",
@@ -1282,6 +1309,7 @@ describe("models.list", () => {
                   agentRuntime: {
                     id: "codex",
                     cloudPlacementSupported: false,
+                    devicePlacementSupported: false,
                     source: "implicit",
                   },
                   available: true,
@@ -1295,8 +1323,8 @@ describe("models.list", () => {
     });
   });
 
-  it("marks catalog models available through their configured CLI runtime", async () => {
-    await withEnvAsync({ ANTHROPIC_API_KEY: undefined }, async () => {
+  it("keeps catalog models available through a refresh-owned CLI runtime", async () => {
+    await withoutAnthropicEnvAuth(async () => {
       await withModelsTestState(
         {
           layout: "state-only",
@@ -1304,7 +1332,7 @@ describe("models.list", () => {
           agentEnv: "main",
         },
         async (state) => {
-          await state.writeAuthProfiles({
+          const store = {
             version: 1,
             profiles: {
               "anthropic:claude-cli": {
@@ -1312,12 +1340,26 @@ describe("models.list", () => {
                 provider: "claude-cli",
                 access: "claude-cli-access",
                 refresh: "claude-cli-refresh",
-                expires: Date.now() + 30 * 60_000,
+                expires: Date.now() - 60_000,
               },
             },
-          });
+          } as const;
+          await state.writeAuthProfiles(store);
+          replaceRuntimeAuthProfileStoreSnapshots([
+            {
+              agentDir: state.agentDir(),
+              store: Object.assign({}, store, {
+                runtimeExternalCliProfileIds: ["anthropic:claude-cli"],
+              }),
+            },
+          ]);
 
           const runtimeConfig = {
+            auth: {
+              profiles: {
+                "anthropic:claude-cli": { provider: "anthropic", mode: "token" },
+              },
+            },
             agents: {
               defaults: {
                 models: {
@@ -1355,9 +1397,11 @@ describe("models.list", () => {
                   agentRuntime: {
                     id: "claude-cli",
                     cloudPlacementSupported: false,
+                    devicePlacementSupported: false,
                     source: "model",
                   },
                   available: true,
+                  tags: ["configured"],
                 },
               ],
             },

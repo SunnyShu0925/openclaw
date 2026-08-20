@@ -17,6 +17,7 @@ import type { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { PluginHookGatewayCronService } from "../plugins/hook-types.js";
 import type { loadOpenClawPlugins } from "../plugins/loader.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { getPluginModuleLoaderStats } from "../plugins/plugin-module-loader-cache.js";
 import type { PluginRegistry } from "../plugins/registry.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
@@ -33,7 +34,7 @@ import {
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type { GatewayControlUiRootLifecycle } from "./server-control-ui-root.js";
 import type { GatewayRecoveryRuntime } from "./server-instance-runtime.types.js";
-import type { GatewayClient } from "./server-methods/shared-types.js";
+import type { GatewayClient, GatewayContextResolver } from "./server-methods/shared-types.js";
 import type { GatewayResidentRegistry } from "./server-resident-registry.js";
 import type { refreshLatestUpdateRestartSentinel } from "./server-restart-sentinel.js";
 import type { GatewaySidecarStartupMode } from "./server-sidecar-startup-mode.js";
@@ -429,6 +430,7 @@ async function waitForAcpRuntimeBackendReady(params: {
 
 async function prewarmConfiguredPrimaryModel(params: {
   cfg: OpenClawConfig;
+  pluginMetadataSnapshot?: PluginMetadataSnapshot;
   workspaceDir?: string;
   log: { warn: (msg: string) => void };
   startupTrace?: GatewayStartupTrace;
@@ -499,6 +501,7 @@ async function hydrateConfiguredExternalCliAuth(params: {
 
 async function publishConfiguredModelRuntimeSnapshots(params: {
   cfg: OpenClawConfig;
+  pluginMetadataSnapshot?: PluginMetadataSnapshot;
   workspaceDir?: string;
   log: { warn: (msg: string) => void };
   startupTrace?: GatewayStartupTrace;
@@ -509,6 +512,9 @@ async function publishConfiguredModelRuntimeSnapshots(params: {
     gatewayLifecycle: true,
     catalogMode: "static",
     allowGatewaySubagentBinding: true,
+    ...(params.pluginMetadataSnapshot
+      ? { pluginMetadataSnapshot: params.pluginMetadataSnapshot }
+      : {}),
     ...(params.workspaceDir ? { defaultWorkspaceDir: params.workspaceDir } : {}),
     ...(params.startupTrace
       ? {
@@ -544,6 +550,7 @@ async function publishConfiguredModelRuntimeSnapshots(params: {
 async function publishStartupModelRuntime(
   params: {
     cfg: OpenClawConfig;
+    pluginMetadataSnapshot?: PluginMetadataSnapshot;
     workspaceDir?: string;
     log: { warn: (msg: string) => void };
     startupTrace?: GatewayStartupTrace;
@@ -559,6 +566,7 @@ async function publishStartupModelRuntime(
 /** Start post-ready sidecars such as channels, hooks, plugin services, and cleanup tasks. */
 export async function startGatewaySidecars(params: {
   cfg: OpenClawConfig;
+  pluginMetadataSnapshot?: PluginMetadataSnapshot;
   pluginRegistry: ReturnType<typeof loadOpenClawPlugins>;
   defaultWorkspaceDir: string;
   deps: CliDeps;
@@ -648,6 +656,9 @@ export async function startGatewaySidecars(params: {
     publishStartupModelRuntime(
       {
         cfg: params.cfg,
+        ...(params.pluginMetadataSnapshot
+          ? { pluginMetadataSnapshot: params.pluginMetadataSnapshot }
+          : {}),
         workspaceDir: params.defaultWorkspaceDir,
         log: params.log,
         startupTrace: params.startupTrace,
@@ -664,26 +675,24 @@ export async function startGatewaySidecars(params: {
   await measureStartup(params.startupTrace, "sidecars.chat-metadata", async () => {
     await params.refreshChatMetadata?.();
   });
+  const shouldStartChannels = params.shouldStartChannels?.() !== false;
   await measureStartup(params.startupTrace, "sidecars.channels", async () => {
-    if (skipChannels) {
-      await measureStartup(params.startupTrace, "sidecars.channel-skip", () =>
-        params.logChannels.info(
-          "skipping channel start (OPENCLAW_SKIP_CHANNELS=1 or OPENCLAW_SKIP_PROVIDERS=1)",
-        ),
-      );
-    } else if (params.shouldStartChannels?.() !== false) {
-      try {
-        await measureStartup(params.startupTrace, "sidecars.channel-start", () =>
-          params.startChannels(),
-        );
-      } catch (err) {
-        params.logChannels.error(`channel startup failed: ${String(err)}`);
-      }
-    }
+    const channelStart = skipChannels
+      ? measureStartup(params.startupTrace, "sidecars.channel-skip", () =>
+          params.logChannels.info(
+            "skipping channel start (OPENCLAW_SKIP_CHANNELS=1 or OPENCLAW_SKIP_PROVIDERS=1)",
+          ),
+        )
+      : shouldStartChannels
+        ? measureStartup(params.startupTrace, "sidecars.channel-start", params.startChannels).catch(
+            (err: unknown) => params.logChannels.error(`channel startup failed: ${String(err)}`),
+          )
+        : Promise.resolve();
+    // Account tasks can depend on this generation gate, so release it after
+    // their handoff is prepared but before waiting for that handoff to settle.
+    const accountStartGateRelease = shouldStartChannels ? params.onChannelsStarted?.() : undefined;
+    await Promise.all([accountStartGateRelease, channelStart]);
   });
-  if (params.shouldStartChannels?.() !== false) {
-    await params.onChannelsStarted?.();
-  }
 
   const shouldStartPluginServices = params.shouldStartPluginServices?.() !== false;
   let pluginServicesOwner: PluginServicesHandle | null = null;
@@ -932,7 +941,9 @@ type GatewayPostAttachRuntimeDeps = {
   ) => Awaitable<ReturnType<typeof scheduleGatewayUpdateCheck>>;
   startGatewaySidecars: typeof startGatewaySidecars;
   warmSystemCa: typeof warmMacOSSystemCaOffMainThread;
-  loadSubagentRegistrySweep: () => Awaitable<() => void>;
+  loadSubagentRegistryActivation: () => Awaitable<
+    (resolveGatewayContext: GatewayContextResolver) => void
+  >;
 };
 
 const defaultGatewayPostAttachRuntimeDeps: GatewayPostAttachRuntimeDeps = {
@@ -947,9 +958,8 @@ const defaultGatewayPostAttachRuntimeDeps: GatewayPostAttachRuntimeDeps = {
     (await import("../infra/update-startup.js")).scheduleGatewayUpdateCheck(...args),
   startGatewaySidecars,
   warmSystemCa: warmMacOSSystemCaOffMainThread,
-  loadSubagentRegistrySweep: async () =>
-    (await import("../agents/subagents/registry/subagent-registry.js"))
-      .scheduleSubagentRegistrySweep,
+  loadSubagentRegistryActivation: async () =>
+    (await import("../agents/subagents/registry/subagent-registry.js")).activateSubagentRegistry,
 };
 
 function createDeferredGatewayUpdateCheck(params: {
@@ -1097,6 +1107,7 @@ export async function startGatewayPostAttachRuntime(
     gatewayPluginConfigAtStart: OpenClawConfig;
     activationSourceConfig: OpenClawConfig;
     pluginManifestRecords: readonly PluginManifestRecord[];
+    pluginMetadataSnapshot?: PluginMetadataSnapshot;
     ambientEnvTriggers?: AmbientEnvTriggerPolicy;
     pluginRegistry: ReturnType<typeof loadOpenClawPlugins>;
     defaultWorkspaceDir: string;
@@ -1104,6 +1115,7 @@ export async function startGatewayPostAttachRuntime(
     startChannels: () => Promise<void>;
     refreshChatMetadata?: () => Promise<void>;
     recoveryRuntime: GatewayRecoveryRuntime;
+    resolveGatewayContext: GatewayContextResolver;
     logHooks: {
       info: (msg: string) => void;
       warn: (msg: string) => void;
@@ -1339,6 +1351,9 @@ export async function startGatewayPostAttachRuntime(
               return await measureStartup(params.startupTrace, "sidecars.total", () =>
                 runtimeDeps.startGatewaySidecars({
                   cfg: params.gatewayPluginConfigAtStart,
+                  ...(params.pluginMetadataSnapshot
+                    ? { pluginMetadataSnapshot: params.pluginMetadataSnapshot }
+                    : {}),
                   pluginRegistry,
                   defaultWorkspaceDir: params.defaultWorkspaceDir,
                   deps: params.deps,
@@ -1420,17 +1435,6 @@ export async function startGatewayPostAttachRuntime(
           ]);
           let mainSessionRecoverySidecar: GatewayPostReadySidecarHandle | undefined;
           try {
-            const scheduleSubagentRegistrySweep = await runtimeDeps.loadSubagentRegistrySweep();
-            if (params.isClosing?.() !== true) {
-              scheduleSubagentRegistrySweep();
-            }
-          } catch (err) {
-            params.log.warn(`subagent restart recovery failed to schedule: ${String(err)}`);
-          }
-          if (params.isClosing?.()) {
-            return await stopStartupSidecars(mainSessionRecoverySidecar);
-          }
-          try {
             await startupLog;
           } catch (error) {
             try {
@@ -1503,6 +1507,17 @@ export async function startGatewayPostAttachRuntime(
           ];
           params.log.info(formatGatewayStartupOutcomes(startupOutcomes.snapshot()));
           params.onSidecarsReady?.();
+          try {
+            const activateSubagentRegistry = await runtimeDeps.loadSubagentRegistryActivation();
+            if (params.isClosing?.() !== true) {
+              activateSubagentRegistry(params.resolveGatewayContext);
+            }
+          } catch (err) {
+            params.log.warn(`subagent restart recovery failed to activate: ${String(err)}`);
+          }
+          if (params.isClosing?.()) {
+            return await stopStartupSidecars(mainSessionRecoverySidecar);
+          }
           params.startupTrace?.detail("sidecars.ready", [
             [
               "loadedPluginCount",
