@@ -25,6 +25,26 @@ const session = (threadId: string): SessionCatalogSession => ({
   canArchive: false,
 });
 
+
+/** Minimal plugin runtime mock exposing only the paired-node surface used by catalog tests. */
+function makeMockNodeRuntime(invoke: ReturnType<typeof vi.fn>): Pick<PluginRuntime, "nodes"> {
+  return {
+    nodes: {
+      list: vi.fn().mockResolvedValue({
+        nodes: [
+          {
+            nodeId: "node-1",
+            displayName: "Remote",
+            connected: true,
+            commands: ["family.list", "family.read", "family.terminal"],
+          },
+        ],
+      }),
+      invoke,
+    },
+  };
+}
+
 describe("session catalog SDK", () => {
   it("owns canonical list/read parameter and cursor parsing", () => {
     const cursor = sessionCatalogPaging.encodeCursor(2);
@@ -57,21 +77,7 @@ describe("session catalog SDK", () => {
     const invoke = vi.fn().mockResolvedValue({
       payloadJSON: JSON.stringify({ sessions: [session("remote-thread")] }),
     });
-    const runtime = {
-      nodes: {
-        list: vi.fn().mockResolvedValue({
-          nodes: [
-            {
-              nodeId: "node-1",
-              displayName: "Remote",
-              connected: true,
-              commands: ["family.list", "family.read", "family.terminal"],
-            },
-          ],
-        }),
-        invoke,
-      },
-    } as unknown as PluginRuntime;
+    const runtime = makeMockNodeRuntime(invoke) as PluginRuntime;
     const create = vi.fn().mockResolvedValue({ sessionKey: "agent:main:created" });
     const complete = vi.fn(async (continued: { sessionKey: string }) => continued);
     const options: SessionCatalogFamilyOptions = {
@@ -180,21 +186,7 @@ describe("session catalog SDK", () => {
 
   it("rejects malformed paired-node payloadJSON with a stable error on read", async () => {
     const invoke = vi.fn().mockResolvedValue({ payloadJSON: "{bad json" });
-    const runtime = {
-      nodes: {
-        list: vi.fn().mockResolvedValue({
-          nodes: [
-            {
-              nodeId: "node-1",
-              displayName: "Remote",
-              connected: true,
-              commands: ["family.list", "family.read", "family.terminal"],
-            },
-          ],
-        }),
-        invoke,
-      },
-    } as unknown as PluginRuntime;
+    const runtime = makeMockNodeRuntime(invoke) as PluginRuntime;
     const options: SessionCatalogFamilyOptions = {
       runtime,
       local: {
@@ -271,21 +263,7 @@ describe("session catalog SDK", () => {
       payloadJSON: "",
       payload: { threadId: "remote-thread", items: [] },
     });
-    const runtime = {
-      nodes: {
-        list: vi.fn().mockResolvedValue({
-          nodes: [
-            {
-              nodeId: "node-1",
-              displayName: "Remote",
-              connected: true,
-              commands: ["family.list", "family.read", "family.terminal"],
-            },
-          ],
-        }),
-        invoke,
-      },
-    } as unknown as PluginRuntime;
+    const runtime = makeMockNodeRuntime(invoke) as PluginRuntime;
     const options: SessionCatalogFamilyOptions = {
       runtime,
       local: {
@@ -357,21 +335,7 @@ describe("session catalog SDK", () => {
 
   it("rejects malformed paired-node payloadJSON with a stable error on terminal", async () => {
     const invoke = vi.fn().mockResolvedValue({ payloadJSON: "{bad json" });
-    const runtime = {
-      nodes: {
-        list: vi.fn().mockResolvedValue({
-          nodes: [
-            {
-              nodeId: "node-1",
-              displayName: "Remote",
-              connected: true,
-              commands: ["family.list", "family.read", "family.terminal"],
-            },
-          ],
-        }),
-        invoke,
-      },
-    } as unknown as PluginRuntime;
+    const runtime = makeMockNodeRuntime(invoke) as PluginRuntime;
     const options: SessionCatalogFamilyOptions = {
       runtime,
       local: {
