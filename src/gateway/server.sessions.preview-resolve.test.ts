@@ -127,16 +127,8 @@ test("sessions.preview grows the read window past a toolcall-heavy tail to fill 
 });
 
 test("sessions.preview reads a bounded visible-message tail instead of the full transcript", async () => {
-  // Regression guard for the bounded-tail performance fix. The previous
-  // implementation read every visible message event on the active path before
-  // discarding all but the last `limit` projected items, so read/parse work
-  // scaled with total transcript length. The fix reads only a tail window and
-  // grows it backwards. The distinguishing invariant is the *first* read
-  // range: the legacy full scan starts at `[0, total)` (range == total), while
-  // the bounded reader starts at the tail with range <= `limit`.
-  //
-  // This assertion fails on the prior full scan (first range == total) and
-  // passes once the bounded-tail reader is in place (first range <= limit).
+  // Regression guard: the bounded-tail reader's first read must be a tail window (range <= limit),
+  // not a full scan (range == total). Also verifies preview content is correct.
   const { storePath } = await createSessionStoreDir();
   const sessionId = "sess-preview-bounded-read";
   const transcriptSize = 2000;
@@ -158,45 +150,35 @@ test("sessions.preview reads a bounded visible-message tail instead of the full 
   });
 
   const readRanges: Array<{ start: number; endExclusive: number }> = [];
+  const originalRead = resetWindow.readVisibleMessageRange;
   const spy = vi
     .spyOn(resetWindow, "readVisibleMessageRange")
-    .mockImplementation((_projection, start, endExclusive) => {
+    .mockImplementation((projection, start, endExclusive) => {
       readRanges.push({ start, endExclusive });
-      // Defer to the original by re-reading through the unspied module path is
-      // not available here; returning [] is sufficient because this guard only
-      // asserts read-range shape, not preview content (content correctness is
-      // covered by the tests above).
-      return [];
+      return originalRead(projection, start, endExclusive);
     });
 
   const preview = await directSessionReq<{
-    previews: Array<{ status: string; items: unknown[] }>;
+    previews: Array<{ status: string; items: Array<{ role: string; text: string }> }>;
   }>("sessions.preview", { keys: ["main"], limit: previewLimit, maxChars: 120 });
   spy.mockRestore();
 
   expect(preview.ok).toBe(true);
+  // Verify preview content correctness, not just read-range shape.
+  const items = preview.payload?.previews[0]?.items ?? [];
+  expect(items.length).toBeLessThanOrEqual(previewLimit);
+  expect(items[items.length - 1]?.text).toContain(`msg-${transcriptSize - 1}`);
+  // The bounded reader's first read must be the tail window, never the whole transcript.
   expect(readRanges.length).toBeGreaterThan(0);
   const firstRead = readRanges[0];
   const firstRange = firstRead ? firstRead.endExclusive - firstRead.start : 0;
-  // The bounded reader's first read must be the tail window, never the whole
-  // transcript. The legacy full scan would make this equal to `transcriptSize`.
   expect(firstRange).toBeLessThanOrEqual(previewLimit);
-  // The growth is bounded: doubling from `limit` reaches `total` in
-  // ceil(log2(total / limit)) steps, so a generous fixed cap guards against an
-  // unbounded/linear scan regressing in the future.
   expect(readRanges.length).toBeLessThan(30);
 });
 
 test("sessions.preview never rereads overlapping tail ranges on an all-filtered tail", async () => {
-  // Regression guard for the non-overlapping expansion. When the tail is made
-  // entirely of non-displayable messages (toolcalls), projection yields zero
-  // items and the window must grow all the way to the start. The prior
-  // doubling loop reread the entire suffix on every iteration, so total read
-  // work peaked at ~2x the transcript. The fix reads only each newly uncovered
-  // prefix interval, so total read positions never exceed one full scan.
-  //
-  // This assertion fails on the overlapping expansion (total read > transcript
-  // size) and passes once each expansion reads only the new prefix.
+  // Regression guard: non-overlapping expansion reads each position at most once (total <= transcriptSize).
+  // Also verifies all-filtered tail yields zero preview items.
   const { storePath } = await createSessionStoreDir();
   const sessionId = "sess-preview-non-overlapping";
   const transcriptSize = 2000;
@@ -218,11 +200,12 @@ test("sessions.preview never rereads overlapping tail ranges on an all-filtered 
   });
 
   const readRanges: Array<{ start: number; endExclusive: number }> = [];
+  const originalRead = resetWindow.readVisibleMessageRange;
   const spy = vi
     .spyOn(resetWindow, "readVisibleMessageRange")
-    .mockImplementation((_projection, start, endExclusive) => {
+    .mockImplementation((projection, start, endExclusive) => {
       readRanges.push({ start, endExclusive });
-      return [];
+      return originalRead(projection, start, endExclusive);
     });
 
   const preview = await directSessionReq<{
@@ -231,14 +214,14 @@ test("sessions.preview never rereads overlapping tail ranges on an all-filtered 
   spy.mockRestore();
 
   expect(preview.ok).toBe(true);
+  // All-filtered tail yields zero preview items (toolcalls are not displayable).
+  expect(preview.payload?.previews[0]?.items ?? []).toHaveLength(0);
   expect(readRanges.length).toBeGreaterThan(0);
   const totalReadPositions = readRanges.reduce(
     (sum, range) => sum + (range.endExclusive - range.start),
     0,
   );
-  // The non-overlapping reader reads each position at most once, so total read
-  // work is bounded by one full scan. The prior overlapping loop read
-  // ~2.28x transcriptSize here.
+  // The non-overlapping reader reads each position at most once.
   expect(totalReadPositions).toBeLessThanOrEqual(transcriptSize);
 });
 
