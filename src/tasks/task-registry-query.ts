@@ -111,15 +111,7 @@ function taskMatchesAgent(
 }
 
 function taskUpdatedAt(task: TaskRecord): number {
-  // Rank by the latest available activity timestamp: a terminal task can
-  // receive events (delivery, terminal outcome) after its completion time,
-  // and the write layer preserves that newer lastEventAt monotonically.
-  return Math.max(
-    task.endedAt ?? 0,
-    task.lastEventAt ?? 0,
-    task.startedAt ?? 0,
-    task.createdAt ?? 0,
-  );
+  return task.lastEventAt ?? task.endedAt ?? task.startedAt ?? task.createdAt;
 }
 
 export function listTaskRecordPage(params: {

@@ -113,6 +113,57 @@ const activePageOneTasks = [
 ];
 
 suite.define(() => {
+  it("keeps completed tasks visible when active work fills the unfiltered page", async () => {
+    await mkdir(artifactDir, { recursive: true });
+    const context = await suite.browser.newContext({
+      locale: "en-US",
+      serviceWorkers: "block",
+      viewport: { width: 1440, height: 900 },
+    });
+    const page = await context.newPage();
+    try {
+      const activeTasks = activePageOneTasks.slice(0, 200);
+      const terminalStatuses = ["completed", "failed", "timed_out", "cancelled"];
+      const gateway = await installMockGateway(page, {
+        methodResponses: {
+          "tasks.list": {
+            cases: [
+              {
+                match: { agentId: "main", limit: 500, status: ["queued", "running"] },
+                response: { tasks: activeTasks },
+              },
+              {
+                match: { agentId: "main", limit: 200, status: terminalStatuses },
+                response: { tasks: [completedTask, failedTask] },
+              },
+              {
+                match: { agentId: "main", limit: 200 },
+                response: { tasks: activeTasks },
+              },
+            ],
+          },
+        },
+      });
+
+      await page.goto(`${suite.server.baseUrl}tasks`);
+      const active = page.locator('[data-task-section="active"]');
+      const recent = page.locator('[data-task-section="recent"]');
+      await active.locator('[data-task-id="task-running"]').waitFor({ state: "visible" });
+      await recent.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(artifactDir, "10-recent-terminal-starvation.png") });
+
+      expect(await recent.textContent()).toContain("Generate media index");
+      expect(await recent.textContent()).toContain("Worker exited");
+      expect(await gateway.getRequests("tasks.list")).toContainEqual({
+        id: expect.any(String),
+        method: "tasks.list",
+        params: { agentId: "main", limit: 200, status: terminalStatuses },
+      });
+    } finally {
+      await context.close();
+    }
+  });
+
   it("renders every active page, applies pushed completion, and cancels a page-two task", async () => {
     await rm(artifactDir, { force: true, recursive: true });
     await mkdir(artifactDir, { recursive: true });
