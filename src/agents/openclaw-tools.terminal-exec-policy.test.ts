@@ -147,4 +147,45 @@ describe("createOpenClawTools terminal exec-policy wiring", () => {
         ?.nonInteractiveApproval,
     ).toBeUndefined();
   });
+
+  it("forwards the prepared session permission policy to the terminal tool", () => {
+    const sessionPermissionPolicy = { root: "/workspace", mode: "read-only" as const };
+    createOpenClawTools({
+      agentSessionKey: "agent:main:main",
+      sessionPermissionPolicy,
+    });
+
+    expect(mocks.createTerminalTool).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalToolOptions).toMatchObject({
+      sessionPermissionPolicy,
+    });
+  });
+
+  it("leaves the session permission policy unset for unrestricted runs", () => {
+    createOpenClawTools({
+      agentSessionKey: "agent:main:main",
+    });
+
+    expect(mocks.createTerminalTool).toHaveBeenCalledTimes(1);
+    expect(
+      (mocks.terminalToolOptions as { sessionPermissionPolicy?: unknown } | undefined)
+        ?.sessionPermissionPolicy,
+    ).toBeUndefined();
+  });
+
+  it("forwards per-run exec overrides to the terminal tool", () => {
+    // Gateway/MCP loopback runs carry run-level deny, ask, or host restrictions
+    // as execOverrides. The terminal tool must receive them so it cannot bypass
+    // those run-level restrictions by reopening policy resolution from scratch.
+    const execOverrides = { security: "deny" as const, ask: "off" as const };
+    createOpenClawTools({
+      agentSessionKey: "agent:main:main",
+      execOverrides,
+    });
+
+    expect(mocks.createTerminalTool).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalToolOptions).toMatchObject({
+      execOverrides,
+    });
+  });
 });

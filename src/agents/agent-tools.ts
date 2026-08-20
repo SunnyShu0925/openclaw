@@ -205,6 +205,11 @@ type OpenClawCodingToolsOptions = {
   runId?: string;
   /** Exact admitted run instance for lifecycle-bound subprocess capabilities. */
   operationalRunInstance?: OperationalRunInstanceRef;
+  /**
+   * Closure-bound authority check from the host capability. Forwarded to the
+   * terminal tool so it can revalidate run authority after an approval await.
+   */
+  assertRunActive?: () => void;
   /** Device-scoped operator session allowed to review approvals initiated by this run. */
   approvalReviewerDeviceId?: string;
   /** Diagnostic trace context for hook/log correlation during this run. */
@@ -772,6 +777,16 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             agentSessionKey: options?.sessionKey,
             runId: options?.runId,
             runSessionKey: options?.runSessionKey,
+            sessionPermissionPolicy: options?.sessionPermissionPolicy,
+            execOverrides: options?.exec
+              ? {
+                  ...(options.exec.security ? { security: options.exec.security } : {}),
+                  ...(options.exec.ask ? { ask: options.exec.ask } : {}),
+                  ...(options.exec.node ? { node: options.exec.node } : {}),
+                  ...(options.exec.host ? { host: options.exec.host } : {}),
+                }
+              : undefined,
+            assertRunActive: options?.assertRunActive,
             agentChannel: resolveGatewayMessageChannel(
               options?.messageChannel ?? options?.messageProvider,
             ),

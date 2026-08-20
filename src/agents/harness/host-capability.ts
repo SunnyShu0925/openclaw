@@ -342,7 +342,11 @@ export function createAgentHarnessHostCapabilities(params: {
     createToolSurface: (options, bindingOptions) => {
       assertActive();
       return bindToolSurface(
-        createOpenClawCodingTools({ ...options, operationalRunInstance }),
+        createOpenClawCodingTools({
+          ...options,
+          operationalRunInstance,
+          assertRunActive: assertActive,
+        }),
         bindingOptions,
       );
     },

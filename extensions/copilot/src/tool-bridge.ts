@@ -455,6 +455,14 @@ function buildOpenClawCodingToolsOptions(
     spawnWorkspaceDir,
     config: toolSurfaceRuntime?.config ?? a.config,
     abortSignal: input.abortSignal,
+    // bindToolSurface asserts at entry/exit but not across a terminal approval
+    // await; bind assertRunActive to the abort signal to fail closed post-approval.
+    assertRunActive: input.abortSignal
+      ? () => {
+          if (input.abortSignal?.aborted)
+            throw new Error("terminal open denied: copilot run is no longer active");
+        }
+      : undefined,
     modelProvider: input.modelProvider,
     modelId: input.modelId,
     includeCoreTools: toolPlan.includeCoreTools,

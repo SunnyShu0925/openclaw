@@ -1,5 +1,6 @@
 import { Value } from "typebox/value";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { TERMINAL_OPEN_DEADLINE_MS } from "../../gateway/terminal/open-deadline.js";
 import { TerminalSessionManager } from "../../gateway/terminal/session-manager.js";
 import {
@@ -16,11 +17,21 @@ import { compactToolOutputHint } from "../tool-schema-hints.js";
 import { createTerminalTool } from "./terminal-tool.js";
 
 const callInProcessGatewayTool = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+// Stub the host exec-approvals file so the real resolveTerminalExecPolicyDefault
+// path (which calls loadExecApprovals) does not read the developer's production
+// ~/.openclaw/exec-approvals.json. Returning an empty file lets the default
+// resolver run for real, exercising the session-permission short-circuit.
+const loadExecApprovalsMock = vi.hoisted(() => vi.fn(() => ({ version: 1 }) as const));
 
 vi.mock("./in-process-gateway.js", () => ({
   callInProcessGatewayTool,
   getInProcessGatewayToolContext: vi.fn(),
 }));
+
+vi.mock("../../infra/exec-approvals.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../infra/exec-approvals.js")>();
+  return { ...actual, loadExecApprovals: loadExecApprovalsMock };
+});
 
 type TerminalPtyHandle = Awaited<ReturnType<typeof spawnTerminalPty>>;
 
@@ -81,10 +92,18 @@ function makeContext(manager: TerminalSessionManager) {
   };
 }
 
+function makeContextWithConfig(manager: TerminalSessionManager, cfg: OpenClawConfig) {
+  return {
+    ...makeContext(manager),
+    getRuntimeConfig: () => cfg,
+  };
+}
+
 const allowExecPolicy = () => ({
   mode: "full" as const,
   security: "full" as const,
   ask: "off" as const,
+  effectiveHost: "gateway" as const,
 });
 
 type TerminalApprovalRequesterParams = {
@@ -580,7 +599,13 @@ describe("terminal tool", () => {
     const tool = createTerminalTool({
       agentId: "main",
       agentSessionKey: "agent:main:main",
-      resolveExecPolicy: () => ({ mode: "deny", security: "deny", ask: "off" }),
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "deny",
+        security: "deny",
+        ask: "off",
+        effectiveHost: "gateway" as const,
+      }),
       getGatewayContext: () => makeContext(manager),
     });
 
@@ -591,13 +616,110 @@ describe("terminal tool", () => {
     expect(manager.size).toBe(0);
   });
 
+  it("denies a read-only session even when global exec policy is full", async () => {
+    // The restriction comes ONLY from the prepared session permission policy
+    // (read-only → deny). Without carrying it into the terminal's policy
+    // resolution, a permissive global config would let a restricted session
+    // open a host PTY.
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      sessionPermissionPolicy: { root: "/workspace", mode: "read-only" },
+      getGatewayContext: () =>
+        makeContextWithConfig(manager, { tools: { exec: { mode: "full" } } }),
+    });
+
+    await expect(tool.execute("open", { action: "open" })).rejects.toThrow(
+      "exec policy denies host command execution",
+    );
+    expect(spawn).not.toHaveBeenCalled();
+    expect(manager.size).toBe(0);
+  });
+
+  it("prompts for approval on a guarded session under global full exec", async () => {
+    // guarded → ask: the terminal must route through the approval flow rather
+    // than opening silently under the permissive global policy.
+    const backend = makeBackend();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => true);
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      sessionPermissionPolicy: { root: "/workspace", mode: "guarded" },
+      requestTerminalApproval,
+      getGatewayContext: () =>
+        makeContextWithConfig(manager, { tools: { exec: { mode: "full" } } }),
+    });
+
+    const opened = await tool.execute("open", { action: "open" });
+    expect(requestTerminalApproval).toHaveBeenCalledTimes(1);
+    expect(opened.details).toMatchObject({ ok: true });
+  });
+
+  it("denies a terminal when a per-run exec override sets security deny under global full", async () => {
+    // The exec tool honors a run-level security override; the terminal must too,
+    // so a per-run deny cannot be bypassed by opening a terminal instead.
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      execOverrides: { security: "deny" },
+      getGatewayContext: () =>
+        makeContextWithConfig(manager, { tools: { exec: { mode: "full" } } }),
+    });
+
+    await expect(tool.execute("open", { action: "open" })).rejects.toThrow(
+      "exec policy denies host command execution",
+    );
+    expect(spawn).not.toHaveBeenCalled();
+    expect(manager.size).toBe(0);
+  });
+
+  it("routes a workspace session through approval under global full exec", async () => {
+    // workspace → auto → ask:on-miss: the session-permission short-circuit
+    // replaces the permissive global full, so the terminal must route through
+    // the approval flow rather than opening silently.
+    const backend = makeBackend();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => true);
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      sessionPermissionPolicy: { root: "/workspace", mode: "workspace" },
+      requestTerminalApproval,
+      getGatewayContext: () =>
+        makeContextWithConfig(manager, { tools: { exec: { mode: "full" } } }),
+    });
+
+    const opened = await tool.execute("open", { action: "open" });
+    expect(requestTerminalApproval).toHaveBeenCalledTimes(1);
+    expect(opened.details).toMatchObject({ ok: true });
+  });
+
   it("refuses to open a terminal under allowlist-only exec policy", async () => {
     const spawn = vi.fn(async () => makeBackend());
     const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
     const tool = createTerminalTool({
       agentId: "main",
       agentSessionKey: "agent:main:main",
-      resolveExecPolicy: () => ({ mode: "allowlist", security: "allowlist", ask: "off" }),
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "allowlist",
+        security: "allowlist",
+        ask: "off",
+        effectiveHost: "gateway" as const,
+      }),
       getGatewayContext: () => makeContext(manager),
     });
 
@@ -614,7 +736,13 @@ describe("terminal tool", () => {
     const tool = createTerminalTool({
       agentId: "main",
       agentSessionKey: "agent:main:main",
-      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "ask",
+        security: "allowlist",
+        ask: "on-miss",
+        effectiveHost: "gateway" as const,
+      }),
       requestTerminalApproval,
       getGatewayContext: () => makeContext(manager),
     });
@@ -640,7 +768,13 @@ describe("terminal tool", () => {
     const tool = createTerminalTool({
       agentId: "main",
       agentSessionKey: "agent:main:main",
-      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "ask",
+        security: "allowlist",
+        ask: "on-miss",
+        effectiveHost: "gateway" as const,
+      }),
       requestTerminalApproval,
       getGatewayContext: () => makeContext(manager),
     });
@@ -662,7 +796,13 @@ describe("terminal tool", () => {
     const tool = createTerminalTool({
       agentId: "main",
       agentSessionKey: "agent:main:main",
-      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "ask",
+        security: "allowlist",
+        ask: "on-miss",
+        effectiveHost: "gateway" as const,
+      }),
       requestTerminalApproval,
       nonInteractiveApproval: true,
       getGatewayContext: () => makeContext(manager),
@@ -691,7 +831,13 @@ describe("terminal tool", () => {
     const tool = createTerminalTool({
       agentId: "main",
       agentSessionKey: "agent:main:main",
-      resolveExecPolicy: () => ({ mode: "ask", security: "allowlist", ask: "on-miss" }),
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "ask",
+        security: "allowlist",
+        ask: "on-miss",
+        effectiveHost: "gateway" as const,
+      }),
       requestTerminalApproval,
       getGatewayContext: () => makeContext(manager),
     });
@@ -703,5 +849,105 @@ describe("terminal tool", () => {
     // A stale run must fail closed before any gateway-host PTY is spawned.
     expect(spawn).not.toHaveBeenCalled();
     expect(manager.size).toBe(0);
+  });
+
+  it.each([
+    ["node", "node" as const],
+    ["sandbox", "sandbox" as const],
+  ])(
+    "refuses to open a terminal when exec policy targets a %s host",
+    async (_label, effectiveHost) => {
+      // An interactive terminal always opens on the gateway host. When the exec
+      // policy resolves effectiveHost to anything other than "gateway" (node or
+      // sandbox), the terminal must refuse rather than spawning a gateway PTY
+      // that bypasses the operator's host placement. A sandbox effective host is
+      // reachable via per-run exec overrides that lift security above deny, so it
+      // must be rejected at the host gate, not only the node gate.
+      const spawn = vi.fn(async () => makeBackend());
+      const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+      const tool = createTerminalTool({
+        agentId: "main",
+        agentSessionKey: "agent:main:main",
+        sessionId: "main-session-id",
+        resolveExecPolicy: () => ({
+          mode: "full",
+          security: "full",
+          ask: "off",
+          effectiveHost,
+        }),
+        getGatewayContext: () => makeContext(manager),
+      });
+
+      await expect(tool.execute("open", { action: "open" })).rejects.toThrow("non-gateway host");
+      expect(spawn).not.toHaveBeenCalled();
+      expect(manager.size).toBe(0);
+    },
+  );
+
+  it("revalidates closure-bound authority after approval before spawning the PTY", async () => {
+    // The host capability's assertActive checks the exact operational instance
+    // and delegated authority — not just abort. After the approval await, a run
+    // that was rotated (authority changed without aborting the signal) must
+    // fail closed before any PTY is spawned.
+    const spawn = vi.fn(async () => makeBackend());
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+    const assertRunActive = vi.fn(() => {
+      throw new Error("agent harness host capability is no longer active");
+    });
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => true);
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "ask",
+        security: "allowlist",
+        ask: "on-miss",
+        effectiveHost: "gateway" as const,
+      }),
+      requestTerminalApproval,
+      assertRunActive,
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    await expect(tool.execute("open", { action: "open" })).rejects.toThrow("no longer active");
+    expect(requestTerminalApproval).toHaveBeenCalledTimes(1);
+    expect(assertRunActive).toHaveBeenCalledTimes(1);
+    // A stale run must fail closed before any gateway-host PTY is spawned.
+    expect(spawn).not.toHaveBeenCalled();
+    expect(manager.size).toBe(0);
+  });
+
+  it("opens a terminal when assertRunActive confirms authority after approval", async () => {
+    // When assertRunActive confirms the run is still active after the approval
+    // await, the terminal should proceed to spawn the PTY normally.
+    const backend = makeBackend();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const assertRunActive = vi.fn(() => undefined);
+    const requestTerminalApproval = vi.fn<
+      (params: TerminalApprovalRequesterParams) => Promise<boolean>
+    >(async () => true);
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      resolveExecPolicy: () => ({
+        mode: "ask",
+        security: "allowlist",
+        ask: "on-miss",
+        effectiveHost: "gateway" as const,
+      }),
+      requestTerminalApproval,
+      assertRunActive,
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    const opened = await tool.execute("open", { action: "open" });
+    expect(requestTerminalApproval).toHaveBeenCalledTimes(1);
+    expect(assertRunActive).toHaveBeenCalledTimes(1);
+    expect(opened.details).toMatchObject({ ok: true });
+    expect(manager.size).toBe(1);
   });
 });

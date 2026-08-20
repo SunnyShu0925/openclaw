@@ -62,6 +62,7 @@ import {
   filterRuntimeCompatibleTools,
 } from "../tool-schema-projection.js";
 import { logRuntimeToolSchemaQuarantine } from "../tool-schema-quarantine.js";
+import { ToolInputError } from "../tools/common.js";
 import { prepareWatchedSessionsPrompt } from "../watched-sessions-prompt.js";
 import { resolveCompactionContextTokenBudget } from "./compaction-runtime-context.js";
 import type { DirectCompactionPreparation } from "./direct-compaction-preparation.js";
@@ -348,6 +349,16 @@ export async function buildPreparedCompactionRuntime(prepared: DirectCompactionP
           config: params.config,
           webSearchEnabled: params.toolOverrides?.webSearch !== false,
           abortSignal: runAbortController.signal,
+          // Compaction creates terminal-capable tools whose approval await can
+          // straddle run closure. runAbortController is aborted by the attempt
+          // finalize path when the run ends, so binding assertRunActive to it
+          // gives the terminal tool the same closure-bound authority recheck the
+          // host-capability wrapper provides on the principal path.
+          assertRunActive: () => {
+            if (runAbortController.signal.aborted) {
+              throw new ToolInputError("terminal open denied: compaction run is no longer active");
+            }
+          },
           sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
           modelProvider: effectiveModel.provider,
           modelId,

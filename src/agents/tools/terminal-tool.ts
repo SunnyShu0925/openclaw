@@ -15,13 +15,15 @@ import {
   loadExecApprovals,
   type ExecApprovalsFile,
   type ExecAsk,
+  type ExecHost,
   type ExecMode,
   type ExecSecurity,
 } from "../../infra/exec-approvals.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { isTerminalTaskStatus } from "../../tasks/task-executor-policy.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
-import { resolveExecDefaults } from "../exec-defaults.js";
+import { resolveExecDefaults, type ExecPolicyOverrides } from "../exec-defaults.js";
+import type { PreparedSessionPermissionPolicy } from "../tool-fs-policy.types.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
@@ -117,6 +119,26 @@ type TerminalToolOptions = {
   requestTerminalApproval?: TerminalApprovalRequester;
   /** Deny approval-requiring terminal opens without creating approval events. */
   nonInteractiveApproval?: boolean;
+  /**
+   * Prepared session permission policy. When set, the terminal inherits the
+   * same hard short-circuit the exec tool enforces (read-only → deny,
+   * guarded → ask), so a restricted session cannot open a host PTY even when
+   * the global exec policy is permissive.
+   */
+  sessionPermissionPolicy?: PreparedSessionPermissionPolicy;
+  /**
+   * Per-run exec policy overrides (security/ask/host) the exec tool already
+   * applies. Forwarded to resolveExecDefaults so a run-level deny/ask override
+   * is honored by terminal opens, not just by the exec tool.
+   */
+  execOverrides?: ExecPolicyOverrides;
+  /**
+   * Closure-bound authority check from the host capability. Called after the
+   * approval await (which can straddle run closure/rotation) and before the
+   * PTY is spawned, so a stale run fails closed with the same exact
+   * operational-instance and delegated-authority check assertActive enforces.
+   */
+  assertRunActive?: () => void;
   lookupTaskByRunIdForChildSession?: (
     runId: string,
     childSessionKey: string,
@@ -129,6 +151,7 @@ type TerminalExecPolicy = {
   mode: ExecMode;
   security: ExecSecurity;
   ask: ExecAsk;
+  effectiveHost: ExecHost;
 };
 
 type TerminalExecPolicyResolver = (params: {
@@ -136,6 +159,8 @@ type TerminalExecPolicyResolver = (params: {
   execApprovals?: ExecApprovalsFile;
   agentId: string;
   sessionKey: string;
+  sessionPermissionPolicy?: PreparedSessionPermissionPolicy;
+  execOverrides?: ExecPolicyOverrides;
 }) => TerminalExecPolicy;
 
 type TerminalApprovalRequester = (params: {
@@ -163,8 +188,23 @@ function resolveTerminalExecPolicyDefault(
     execApprovals: params.execApprovals ?? loadExecApprovals(),
     agentId: params.agentId,
     sessionKey: params.sessionKey,
+    // Carry the prepared session permission through so the terminal inherits
+    // the same hard short-circuit (read-only → deny, guarded → ask) the exec
+    // tool applies. Without this, a restricted session can still open a host
+    // PTY when the global exec policy is permissive.
+    ...(params.sessionPermissionPolicy
+      ? { sessionEntry: { permissionMode: params.sessionPermissionPolicy.mode } }
+      : {}),
+    // Carry per-run exec overrides (security/ask/host) the exec tool already
+    // applies, so a run-level deny/ask override is honored by terminal opens.
+    ...(params.execOverrides ? { execOverrides: params.execOverrides } : {}),
   });
-  return { mode: defaults.mode, security: defaults.security, ask: defaults.ask };
+  return {
+    mode: defaults.mode,
+    security: defaults.security,
+    ask: defaults.ask,
+    effectiveHost: defaults.effectiveHost,
+  };
 }
 
 /**
@@ -329,10 +369,17 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
           execApprovals: opts.execApprovals,
           agentId,
           sessionKey: agentSessionKey,
+          sessionPermissionPolicy: opts.sessionPermissionPolicy,
+          execOverrides: opts.execOverrides,
         });
         if (execPolicy.mode === "deny" || execPolicy.security === "deny") {
           throw new ToolInputError(
             "terminal unavailable: exec policy denies host command execution",
+          );
+        }
+        if (execPolicy.effectiveHost !== "gateway") {
+          throw new ToolInputError(
+            "terminal unavailable: exec policy targets a non-gateway host; an interactive terminal is only available on the gateway host",
           );
         }
         if (execPolicy.security === "allowlist" && execPolicy.ask === "off") {
@@ -362,15 +409,17 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
             throw new ToolInputError("terminal open denied: exec approval not granted");
           }
         }
-        // Revalidate run authority after the awaited approval. The
+        // Revalidate closure-bound authority after the awaited approval. The
         // host-capability wrapper asserts authority at execute entry/exit,
         // but an interactive approval await can straddle run closure or
-        // rotation — recheck the canonical run abort signal (the same source
-        // assertActive's capabilityAbortController feeds) so a stale run
-        // fails closed before any gateway-host PTY is spawned.
+        // rotation. assertRunActive checks the same exact operational-instance
+        // and delegated-authority identity assertActive enforces, so a stale
+        // run fails closed before any gateway-host PTY is spawned. The abort
+        // signal is also checked as a fast-path for explicit cancellation.
         if (signal?.aborted) {
           throw new ToolInputError("terminal open denied: requesting run is no longer active");
         }
+        opts.assertRunActive?.();
         const runId = opts.runId?.trim();
         const taskLookupId = runId ? (getAgentRunTaskRunId(runId) ?? runId) : undefined;
         const task = taskLookupId ? await findOwnerTask(taskLookupId, agentSessionKey) : undefined;
