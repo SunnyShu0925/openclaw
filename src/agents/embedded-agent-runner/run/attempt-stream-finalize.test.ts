@@ -632,8 +632,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
   });
 
   it("drains queued events after a run-budget abort before re-flushing partial assistant text", async () => {
-    // Regression for #119935 (ClawSweeper P1): abortRun(true) aborts the run
-    // signal synchronously before settlement, so the abort-aware join returns
+    // abortRun(true) aborts the run signal synchronously before settlement, so the abort-aware join returns
     // without draining. The run-budget terminal must still drain the serialized
     // event chain (bounded) so a message_update queued behind the abort commits
     // before the re-flush.
@@ -664,8 +663,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
   });
 
   it("discards buffered partial text when an external abort supersedes the run-budget timeout during the drain", async () => {
-    // P1 regression (ClawSweeper 08-12): partial output must be committed only
-    // after terminal ownership is final. The drain is awaited, then the
+    // Partial output must be committed only after terminal ownership is final. The drain is awaited, then the
     // terminal is re-read: if an external abort wins while the queued chain
     // drains, the run-budget timeout no longer owns the terminal and the
     // buffered text must NOT be published.
@@ -697,8 +695,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
   });
 
   it("discards buffered partial text when a provider failure is attached before the terminal-owned flush", async () => {
-    // P1 regression (ClawSweeper 08-12, second round): a provider error queued
-    // behind the run-budget abort is merged into the terminal before the
+    // A provider error queued behind the run-budget abort is merged into the terminal before the
     // post-drain flush decision. The failure-terminal invariant must suppress
     // the salvage — a timed-out run that also failed must not publish partial
     // output.
@@ -735,10 +732,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
   });
 
   it("skips the bounded drain when a provider failure is already attached before settlement", async () => {
-    // P1 regression (ClawSweeper 08-14 round): the prior regression covered a
-    // failure attached DURING the drain. This covers the coverage gap — a
-    // failure ALREADY attached to the run-budget terminal when settlement
-    // chooses whether to drain. The bounded drain can only stall settlement
+    // A failure already attached to the run-budget terminal must prevent the drain. The bounded drain can only stall settlement
     // for the full 120s liveness deadline when a serialized handler is wedged,
     // and partial output would be discarded by the flush gate anyway. A failed
     // run-budget terminal must skip the drain entirely so a wedged event chain
@@ -762,8 +756,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
         fixture.order.push("flush-partial");
       }),
     });
-    // Failure is attached BEFORE settlement chooses whether to drain — this is
-    // the gap the prior regression did not cover.
+    // Failure is attached before settlement chooses whether to drain.
     fixture.state.terminal = {
       kind: "timeout",
       phase: "prompt",
@@ -817,8 +810,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
   });
 
   it("re-drains queued events when the run-budget timeout fires during the abort-aware join", async () => {
-    // P1 regression (ClawSweeper 08-12, third round): settlement starts with a
-    // non-budget terminal and waits on the abort-aware join. If the run-budget
+    // Settlement starts with a non-budget terminal and waits on the abort-aware join. If the run-budget
     // timer fires while that join is pending, the abort resolves the join
     // immediately WITHOUT draining; the salvage must then run the bounded
     // drain before flushing so a queued suffix is not lost.
@@ -871,8 +863,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
   });
 
   it("does not re-flush partial assistant text on non-run-budget terminals", async () => {
-    // P2 gate: cancellation and provider-failure aborts must not publish
-    // partial output through the settlement path.
+    // Cancellation and provider-failure aborts must not publish partial output through settlement.
     const abortController = new AbortController();
     abortController.abort(new Error("operator cancel"));
     const fixture = createFixture({ runAbortController: abortController });

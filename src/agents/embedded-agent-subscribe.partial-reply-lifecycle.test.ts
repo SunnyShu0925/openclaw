@@ -98,8 +98,7 @@ describe("subscribeEmbeddedAgentSession partial reply lifecycle", () => {
   });
 
   it("queue-only drain is not blocked by a stalled partial reply callback", async () => {
-    // Regression (ClawSweeper 08-12, fourth round): timeout salvage drains only
-    // the serialized event chain — the queue whose handlers mutate the assistant
+    // Timeout salvage drains only the serialized event chain — the queue whose handlers mutate the assistant
     // text buffer. A stalled onPartialReply transport callback is external
     // fan-out and cannot change the buffered text, so it must not hold an
     // already-aborted run in settlement. Pre-fix, the salvage path used
