@@ -800,7 +800,8 @@ describe("onboard (non-interactive): gateway and remote auth", () => {
 
         try {
           await expectOnboardLocalJsonSetupFailure({
-            runSetup: (opts, runtime) => runNonInteractiveSetup({ ...opts, skipHealth }, runtime),
+            runSetup: (opts, runtimeEnv) =>
+              runNonInteractiveSetup({ ...opts, skipHealth }, runtimeEnv),
             stateDir,
             runtime: runtimeWithCapture,
           });
