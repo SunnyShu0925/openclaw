@@ -541,9 +541,9 @@ describe("channel turn finalize", () => {
       [historyKey, [{ sender: "alice", body: "earlier group msg", timestamp: 1 }]],
     ]);
     const recordError = new Error("session store failed");
-    const recordInboundSession = vi.fn(async () => {
+    const recordInboundSession = vi.fn<RecordInboundSession>(async () => {
       throw recordError;
-    }) as unknown as RecordInboundSession;
+    });
 
     await expect(
       runPreparedChannelTurn({
