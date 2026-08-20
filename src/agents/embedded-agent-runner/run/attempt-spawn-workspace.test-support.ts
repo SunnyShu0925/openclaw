@@ -138,7 +138,6 @@ function createSubscriptionMock(): SubscriptionMock {
     setTerminalLifecycleMeta: () => {},
     waitForCompactionRetry: async () => {},
     waitForPendingEvents: async () => {},
-    waitForPendingEventChain: async () => {},
     flushPartialAssistantText: () => {},
     getAcceptedSessionSpawns: () => [],
     getMessagingToolSentTexts: () => [] as string[],

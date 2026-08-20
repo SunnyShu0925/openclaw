@@ -131,7 +131,7 @@ describe("subscribeEmbeddedAgentSession partial reply lifecycle", () => {
     // deltas are processed, regardless of the stalled fan-out callback.
     await expect(
       Promise.race([
-        subscription.waitForPendingEventChain().then(() => "drained"),
+        subscription.waitForPendingEvents({ includePartialReplies: false }).then(() => "drained"),
         new Promise<"timeout">((resolve) => {
           setTimeout(() => resolve("timeout"), 1000);
         }),

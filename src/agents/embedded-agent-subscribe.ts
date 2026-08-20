@@ -469,12 +469,8 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     }
   };
 
-  /**
-   * Fresh block state is used so an unclosed <think> or <final> tag from the
-   * live-stream boundary does not cause the earlier visible prefix to be
-   * treated as hidden content (see P1: Finalize the full buffer with fresh
-   * filter state).
-   */
+  // Re-filter the full raw buffer. Reusing live scanner state would hide the
+  // visible prefix when timeout interrupts an open <think> or <final> block.
   const finalizeFlushedAssistantText = (text: string) =>
     stripDowngradedToolCallText(
       stripBlockTags(
@@ -484,73 +480,29 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
           final: false,
           inlineCode: createInlineCodeState(),
         },
-        // Terminal chunk: resolve any trailing fence/tag fragments. This does
-        // not change the final-tag policy — stripBlockTags still honors the
-        // configured params.enforceFinalTag (same as handleMessageEnd).
         { final: true },
       ),
     ).trimEnd();
 
-  /**
-   * Commits visible assistant text buffered in deltaBuffer into assistantTexts
-   * when the run-budget timeout owns the final terminal (see #113182 /
-   * #119935). Called by the settle phase after the pending event queue drains,
-   * and only when the terminal was re-confirmed to still belong to the
-   * run-budget timeout with no attached failure. The timeout callback itself
-   * never commits — terminal ownership is not final until settlement.
-   *
-   * - Commentary-phase items are deliberately excluded from reply buffers by
-   *   the normal stream path; they are never committed at the timeout boundary.
-   * - The raw buffer is retained (not cleared) between flushes so a queued
-   *   suffix is re-filtered against the full buffer: an unclosed hidden tag
-   *   from the first flush remains visible to the filter and cannot leak its
-   *   continuation as visible output.
-   * - The refreshed cumulative text is the terminal authority for this message,
-   *   so a committed segment (live block chunks and/or an earlier flush) is
-   *   REPLACED rather than extended: append-based dedupe would either re-add
-   *   the whole cumulative buffer on top of already-delivered chunks or
-   *   double-count a queued suffix that the live path already committed.
-   */
+  // Settlement calls this only for the final, failure-free run-budget terminal.
+  // Retain and re-filter the full buffer so queued suffixes keep hidden-tag
+  // context; replace live chunks instead of appending cumulative text twice.
   const flushPartialAssistantText = () => {
     const text = state.deltaBuffer;
     if (!text) {
       return;
     }
     if (state.deltaBufferIsCommentary) {
-      state.flushedVisibleCursor = 0;
+      state.hasFlushedPartialText = false;
       return;
     }
     const visibleText = finalizeFlushedAssistantText(text);
-    const committedSegmentCount = assistantTexts.length - state.assistantTextBaseline;
-
-    if (committedSegmentCount > 0 || state.flushedVisibleCursor > 0) {
-      // Live block chunks (and/or an earlier flush) have already committed this
-      // message's visible projection into assistantTexts. Replacing the segment
-      // with the refreshed cumulative text is exactly-once:
-      //   - no re-add of text the live projection already delivered;
-      //   - a queued suffix that arrived after the first flush is folded in
-      //     instead of appended to an entry that already contains it;
-      //   - a sanitizer retraction (e.g. orphan reasoning close) replaces the
-      //     stale bytes with the terminal view, or removes them entirely.
-      if (visibleText) {
-        if (committedSegmentCount > 0) {
-          assistantTexts.splice(state.assistantTextBaseline, committedSegmentCount, visibleText);
-          replyDelivery.rememberAssistantText(visibleText);
-        } else {
-          replyDelivery.pushAssistantText(visibleText);
-        }
-      } else if (committedSegmentCount > 0) {
-        assistantTexts.splice(state.assistantTextBaseline, committedSegmentCount);
-      }
-      state.flushedVisibleCursor = visibleText.length;
-      return;
-    }
-
-    // Nothing committed yet for this message: this flush is the salvage.
-    if (visibleText) {
+    if (assistantTexts.length > state.assistantTextBaseline || state.hasFlushedPartialText) {
+      replyDelivery.replaceCurrentAssistantText(visibleText);
+    } else if (visibleText) {
       replyDelivery.pushAssistantText(visibleText);
     }
-    state.flushedVisibleCursor = visibleText.length;
+    state.hasFlushedPartialText = Boolean(visibleText);
   };
 
   const ctx: EmbeddedAgentSubscribeContext = {
@@ -753,7 +705,6 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     getLastCompactionTokensAfter: () => state.lastCompactionTokensAfter,
     getAssistantTurnCount: () => state.assistantTurnCount,
     waitForPendingEvents: replyDelivery.waitForPendingEvents,
-    waitForPendingEventChain: replyDelivery.waitForPendingEventChain,
     flushPartialAssistantText,
     getItemLifecycle: () => ({
       startedCount: state.itemStartedCount,

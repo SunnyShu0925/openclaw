@@ -71,12 +71,8 @@ export function prepareEmbeddedAttemptTimeout(input: {
         ) {
           input.markTimedOutDuringCompaction();
         }
-        // Do NOT commit partial output here: the terminal is not owned yet.
-        // An external abort or provider failure can supersede this timeout
-        // while settlement drains queued events, and a committed mutation
-        // would have no rollback. The settle phase commits the buffered text
-        // only after it re-confirms the final terminal still belongs to the
-        // run-budget timeout (see attempt-settle.ts / #119935).
+        // Settlement owns partial-output publication because abort or failure
+        // can still supersede this timeout while queued events drain.
         input.markTimedOutByRunBudget();
         input.abortRun(true);
         if (!abortWarnTimer) {

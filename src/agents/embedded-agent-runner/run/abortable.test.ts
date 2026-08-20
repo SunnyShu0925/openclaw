@@ -2,7 +2,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   abortable,
-  joinWithBoundedDeadline,
   joinWithRunLivenessDeadline,
   RUN_LIVENESS_JOIN_TIMEOUT_MS,
 } from "./abortable.js";
@@ -83,27 +82,13 @@ describe("joinWithRunLivenessDeadline", () => {
     });
     expect(onTimeout).not.toHaveBeenCalled();
   });
-});
 
-describe("joinWithBoundedDeadline", () => {
-  it("runs the joined work and resolves when it settles", async () => {
-    const joinWork = vi.fn(async () => undefined);
-    const onTimeout = vi.fn();
-    await joinWithBoundedDeadline({ joinWork, onTimeout });
-    expect(joinWork).toHaveBeenCalledOnce();
-    expect(onTimeout).not.toHaveBeenCalled();
-  });
-
-  it("still runs the joined work and resolves at the liveness deadline when it hangs", async () => {
-    // Unlike joinWithRunLivenessDeadline, this variant must not skip the
-    // joined work when invoked after the run signal has already aborted (the
-    // run-budget timeout terminal). Bounded, so a hung handler cannot
-    // dead-end the turn.
+  it("runs work without an abort signal and remains bounded", async () => {
     vi.useFakeTimers();
     try {
       const joinWork = vi.fn(() => new Promise<never>(() => {}));
       const onTimeout = vi.fn();
-      const join = joinWithBoundedDeadline({ joinWork, onTimeout });
+      const join = joinWithRunLivenessDeadline({ joinWork, onTimeout });
       await vi.advanceTimersByTimeAsync(RUN_LIVENESS_JOIN_TIMEOUT_MS);
       await join;
       expect(joinWork).toHaveBeenCalledOnce();

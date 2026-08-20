@@ -47,7 +47,7 @@ export const RUN_LIVENESS_JOIN_TIMEOUT_MS = 120_000;
  */
 export function joinWithRunLivenessDeadline(input: {
   joinWork: () => Promise<void> | void;
-  runAbortSignal: AbortSignal;
+  runAbortSignal?: AbortSignal;
   timeoutMs?: number;
   onTimeout: () => void;
 }): Promise<void> {
@@ -59,7 +59,7 @@ export function joinWithRunLivenessDeadline(input: {
       }
       settled = true;
       clearTimeout(timer);
-      input.runAbortSignal.removeEventListener("abort", onAbort);
+      input.runAbortSignal?.removeEventListener("abort", onAbort);
       if (reason === "timeout") {
         input.onTimeout();
       }
@@ -71,55 +71,16 @@ export function joinWithRunLivenessDeadline(input: {
       input.timeoutMs ?? RUN_LIVENESS_JOIN_TIMEOUT_MS,
     );
     timer.unref?.();
-    if (input.runAbortSignal.aborted) {
+    if (input.runAbortSignal?.aborted) {
       finish("abort");
       return;
     }
-    input.runAbortSignal.addEventListener("abort", onAbort, { once: true });
+    input.runAbortSignal?.addEventListener("abort", onAbort, { once: true });
     Promise.resolve()
       .then(() => input.joinWork())
       .then(
         () => finish("settled"),
         () => finish("settled"),
-      );
-  });
-}
-
-/**
- * Awaits post-turn work with the same bounded liveness deadline as
- * {@link joinWithRunLivenessDeadline}, but WITHOUT racing the run-abort
- * signal. Used for the run-budget timeout terminal: the timeout abort fires
- * the run signal synchronously before settlement, so the abort-aware join
- * would return immediately and skip the queued-event drain. This variant
- * still runs the drain (bounded, so a hung handler cannot dead-end the turn)
- * so a `message_update` queued behind the abort is committed before the
- * partial-output re-flush (see #113182 / #119935).
- */
-export function joinWithBoundedDeadline(input: {
-  joinWork: () => Promise<void> | void;
-  timeoutMs?: number;
-  onTimeout: () => void;
-}): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      input.onTimeout();
-      finish();
-    }, input.timeoutMs ?? RUN_LIVENESS_JOIN_TIMEOUT_MS);
-    timer.unref?.();
-    Promise.resolve()
-      .then(() => input.joinWork())
-      .then(
-        () => finish(),
-        () => finish(),
       );
   });
 }

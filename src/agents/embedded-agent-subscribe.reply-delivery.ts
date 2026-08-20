@@ -215,6 +215,18 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     rememberAssistantText(text);
   };
 
+  const replaceCurrentAssistantText = (text: string) => {
+    const count = assistantTexts.length - state.assistantTextBaseline;
+    if (!text) {
+      assistantTexts.splice(state.assistantTextBaseline, count);
+    } else if (count > 0) {
+      assistantTexts.splice(state.assistantTextBaseline, count, text);
+      rememberAssistantText(text);
+    } else {
+      pushAssistantText(text);
+    }
+  };
+
   const finalizeAssistantTexts = (args: {
     text: string;
     addedDuringMessage: boolean;
@@ -227,18 +239,9 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     // the flushed partial instead of appending a duplicate. The partial stays
     // when message_end never arrives (hard run-budget abort) — that is the
     // salvage the timeout flush exists for.
-    if (state.flushedVisibleCursor > 0 && text) {
-      if (assistantTexts.length > state.assistantTextBaseline) {
-        assistantTexts.splice(
-          state.assistantTextBaseline,
-          assistantTexts.length - state.assistantTextBaseline,
-          text,
-        );
-        rememberAssistantText(text);
-      } else {
-        pushAssistantText(text);
-      }
-      state.flushedVisibleCursor = 0;
+    if (state.hasFlushedPartialText && text) {
+      replaceCurrentAssistantText(text);
+      state.hasFlushedPartialText = false;
       state.assistantTextBaseline = assistantTexts.length;
       return;
     }
@@ -246,16 +249,7 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     // If we're not streaming block replies, ensure the final payload includes
     // the final text even when interim streaming was enabled.
     if (state.includeReasoning && text && !params.onBlockReply) {
-      if (assistantTexts.length > state.assistantTextBaseline) {
-        assistantTexts.splice(
-          state.assistantTextBaseline,
-          assistantTexts.length - state.assistantTextBaseline,
-          text,
-        );
-        rememberAssistantText(text);
-      } else {
-        pushAssistantText(text);
-      }
+      replaceCurrentAssistantText(text);
       state.suppressBlockChunks = true;
     } else if (!addedDuringMessage && !chunkerHasBuffered && text) {
       // Non-streaming models (no text_delta): ensure assistantTexts gets the final
@@ -266,26 +260,17 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     state.assistantTextBaseline = assistantTexts.length;
   };
 
-  const waitForPendingEvents = async () => {
+  const waitForPendingEvents = async (options?: { includePartialReplies?: boolean }) => {
     // Partial presentation stays concurrent with provider events, but terminal
     // settlement must observe callbacks launched while the event chain drains.
-    while (state.pendingEventChain || pendingPartialReplyTasks.size > 0) {
-      await Promise.allSettled([
-        ...(state.pendingEventChain ? [state.pendingEventChain] : []),
-        ...pendingPartialReplyTasks,
-      ]);
-    }
-  };
-
-  // Drain only the serialized event chain — the queue whose handlers can mutate
-  // the assistant text buffer that timeout salvage reads. Partial-reply delivery
-  // callbacks (pendingPartialReplyTasks) are external fan-out and cannot change
-  // the buffered text, so a stalled transport callback must not keep an already
-  // aborted run in settlement. Used by the timeout salvage path; ordinary
-  // terminal delivery still uses waitForPendingEvents to observe fan-out.
-  const waitForPendingEventChain = async () => {
-    while (state.pendingEventChain) {
-      await Promise.allSettled([state.pendingEventChain]);
+    const includePartialReplies = options?.includePartialReplies !== false;
+    while (true) {
+      const eventChain = state.pendingEventChain;
+      const partialReplyTasks = includePartialReplies ? [...pendingPartialReplyTasks] : [];
+      if (!eventChain && partialReplyTasks.length === 0) {
+        return;
+      }
+      await Promise.allSettled([...(eventChain ? [eventChain] : []), ...partialReplyTasks]);
     }
   };
 
@@ -300,9 +285,8 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     flushDeferredBlockReplies,
     pendingBlockReplyTasks,
     pushAssistantText,
-    rememberAssistantText,
+    replaceCurrentAssistantText,
     shouldSkipAssistantText,
     waitForPendingEvents,
-    waitForPendingEventChain,
   };
 }

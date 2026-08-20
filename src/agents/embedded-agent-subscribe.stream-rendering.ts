@@ -582,7 +582,7 @@ export function createStreamRendering({
     state.deltaBuffer = "";
     state.thinkingTagStream = createThinkingTagStreamState();
     state.deltaBufferIsCommentary = false;
-    state.flushedVisibleCursor = 0;
+    state.hasFlushedPartialText = false;
     state.blockBuffer = "";
     blockChunker?.reset();
     replyDirectiveAccumulator.reset();
