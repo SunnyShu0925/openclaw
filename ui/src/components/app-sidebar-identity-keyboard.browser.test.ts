@@ -66,11 +66,17 @@ describe.runIf("__vitest_browser__" in globalThis)("identity menu keyboard navig
     });
     await userEvent.keyboard("{Enter}");
     expect((await onThemeChange).detail.mode).toBe("light");
+    const afterHide = new Promise<Event>((resolve) => {
+      menu?.addEventListener("wa-after-hide", resolve, { once: true });
+    });
     await userEvent.keyboard("{Tab}");
-    await expect.poll(() => (menu as HTMLElement & { open: boolean }).open).toBe(false);
+    await afterHide;
+    await sidebar.updateComplete;
+    expect((menu as HTMLElement & { open: boolean }).open).toBe(false);
 
-    identity?.focus();
+    sidebar.querySelector<HTMLButtonElement>(".sidebar-identity-card")?.focus();
     await userEvent.keyboard("{Enter}");
+    await sidebar.updateComplete;
     const reopened = sidebar.querySelector<HTMLElement>(".sidebar-identity-menu");
     const reopenedItems = Array.from(reopened?.children ?? []).filter(
       (item): item is HTMLElement =>
