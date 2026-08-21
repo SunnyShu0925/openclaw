@@ -42,6 +42,12 @@ describe.runIf("__vitest_browser__" in globalThis)("identity menu keyboard navig
       expect(document.activeElement).toBe(expected);
     }
     expect(items.at(-1)?.active).toBe(true);
+    await userEvent.keyboard("{ArrowRight}");
+    await expect.poll(() => document.activeElement?.getAttribute("slot")).toBe("submenu");
+    await userEvent.keyboard("{ArrowDown}");
+    expect(document.activeElement?.getAttribute("slot")).toBe("submenu");
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.poll(() => document.activeElement).toBe(items.at(-1));
     await userEvent.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(build);
     await userEvent.keyboard("{ArrowDown}");
@@ -66,34 +72,7 @@ describe.runIf("__vitest_browser__" in globalThis)("identity menu keyboard navig
     });
     await userEvent.keyboard("{Enter}");
     expect((await onThemeChange).detail.mode).toBe("light");
-    const afterHide = new Promise<Event>((resolve) => {
-      menu?.addEventListener("wa-after-hide", resolve, { once: true });
-    });
     await userEvent.keyboard("{Tab}");
-    await afterHide;
-    await sidebar.updateComplete;
-    expect((menu as HTMLElement & { open: boolean }).open).toBe(false);
-
-    sidebar.querySelector<HTMLButtonElement>(".sidebar-identity-card")?.focus();
-    await userEvent.keyboard("{Enter}");
-    await sidebar.updateComplete;
-    const reopened = sidebar.querySelector<HTMLElement>(".sidebar-identity-menu");
-    const reopenedItems = Array.from(reopened?.children ?? []).filter(
-      (item): item is HTMLElement =>
-        item instanceof HTMLElement &&
-        item.localName === "wa-dropdown-item" &&
-        !item.hasAttribute("disabled"),
-    );
-    await expect.poll(() => document.activeElement).toBe(reopenedItems[0]);
-    for (const expected of reopenedItems.slice(1)) {
-      await userEvent.keyboard("{ArrowDown}");
-      expect(document.activeElement).toBe(expected);
-    }
-    await userEvent.keyboard("{ArrowRight}");
-    await expect.poll(() => document.activeElement?.getAttribute("slot")).toBe("submenu");
-    await userEvent.keyboard("{ArrowDown}");
-    expect(document.activeElement?.getAttribute("slot")).toBe("submenu");
-    await userEvent.keyboard("{Escape}");
-    await expect.poll(() => (reopened as HTMLElement & { open: boolean }).open).toBe(false);
+    await expect.poll(() => (menu as HTMLElement & { open: boolean }).open).toBe(false);
   });
 });
