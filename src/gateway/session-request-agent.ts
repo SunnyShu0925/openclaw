@@ -173,3 +173,22 @@ export function resolveRequestedSessionAgentId(
     error: errorShape(ErrorCodes.INVALID_REQUEST, selectionError.message),
   };
 }
+
+/**
+ * Resolves the agent id that owns a session key, combining the parsed
+ * agent-scoped key prefix with the compatibility owner fallback. Returns
+ * undefined for malformed agent-prefixed keys that cannot be parsed.
+ */
+export function resolveSessionKeyAgentId(
+  sessionKey: string | undefined,
+  cfg: OpenClawConfig,
+): string | undefined {
+  const key = sessionKey?.trim();
+  if (!key) {
+    return undefined;
+  }
+  if (!parseAgentSessionKey(key) && key.toLowerCase().startsWith("agent:")) {
+    return undefined;
+  }
+  return parseAgentSessionKey(key)?.agentId ?? tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
+}

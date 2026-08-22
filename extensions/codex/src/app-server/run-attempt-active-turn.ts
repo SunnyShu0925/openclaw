@@ -58,6 +58,7 @@ export async function activateCodexAttemptTurn(
     sandboxSessionKey,
     contextSessionKey,
     effectiveCwd,
+    attemptStartedAt,
   } = connection;
   const { dynamicToolParams, compactionPlanState, computerContextEpoch, toolBridge } = attemptTools;
   const { state, userInputBridgeRef, steeringQueueRef, turnWatches, completeTurn, interruptTurn } =
@@ -334,6 +335,7 @@ export async function activateCodexAttemptTurn(
   const handle = {
     kind: "embedded" as const,
     runId: params.runId,
+    startedAtMs: attemptStartedAt,
     toolAuthorityFingerprint: params.toolAuthorityFingerprint,
     claimPendingUserInputAnswer,
     cancelPendingUserInput,

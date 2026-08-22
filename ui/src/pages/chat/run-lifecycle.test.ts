@@ -69,11 +69,16 @@ function makeAbortHost(over: Partial<AbortHost> = {}): AbortHost {
   };
 }
 
+/** Minimal gateway client mock exposing only the request method used by abort tests. */
+function makeMockGatewayClient(request: ReturnType<typeof vi.fn>): GatewayBrowserClient {
+  return { request } as unknown as GatewayBrowserClient;
+}
+
 describe("handleAbortChat", () => {
   it("dispatches sessions.abort when only descendant work remains", async () => {
     const request = vi.fn(async () => ({ status: "aborted" }));
     const host = makeAbortHost({
-      client: { request } as unknown as GatewayBrowserClient,
+      client: makeMockGatewayClient(request),
       sessionsResult: makeSessionsResult([
         {
           key: "agent:main",
@@ -94,9 +99,29 @@ describe("handleAbortChat", () => {
     });
   });
 
+  it("routes Stop for a recovered embedded run through sessions.abort with its exact run id, not chat.abort", async () => {
+    const request = vi.fn(async () => ({ status: "aborted" }));
+    const host = makeAbortHost({
+      client: makeMockGatewayClient(request),
+      chatRunId: "run-embedded-recovered",
+      chatRunSessionAbortable: true,
+    });
+
+    await handleAbortChat(host);
+
+    expect(request).toHaveBeenCalledWith(
+      "sessions.abort",
+      expect.objectContaining({
+        key: "agent:main",
+        runId: "run-embedded-recovered",
+      }),
+    );
+    expect(request).not.toHaveBeenCalledWith("chat.abort", expect.anything());
+  });
+
   it("shows reconnect guidance when an offline session run has no browser run identity", async () => {
     const request = vi.fn();
-    const client = { request } as unknown as GatewayBrowserClient;
+    const client = makeMockGatewayClient(request);
     const host = makeAbortHost({
       client,
       connected: false,
@@ -118,7 +143,7 @@ describe("handleAbortChat", () => {
 
   it("keeps offline exact-run stops safely queued for reconnect", async () => {
     const request = vi.fn();
-    const client = { request } as unknown as GatewayBrowserClient;
+    const client = makeMockGatewayClient(request);
     const host = makeAbortHost({
       client,
       connected: false,
@@ -142,7 +167,7 @@ describe("handleAbortChat", () => {
 describe("replayPendingChatAbort", () => {
   it("dispatches a queued exact browser run stop through chat.abort", async () => {
     const request = vi.fn(async () => ({ aborted: true }));
-    const client = { request } as unknown as GatewayBrowserClient;
+    const client = makeMockGatewayClient(request);
     const host = makeAbortHost({
       client,
       pendingAbort: {
@@ -165,7 +190,7 @@ describe("replayPendingChatAbort", () => {
 
   it("denies a queued exact-run stop when the reconnect is read-only", async () => {
     const request = vi.fn();
-    const client = { request } as unknown as GatewayBrowserClient;
+    const client = makeMockGatewayClient(request);
     const host = makeAbortHost({
       client,
       hello: {
@@ -194,7 +219,7 @@ describe("replayPendingChatAbort", () => {
     const request = vi.fn(async () => {
       throw new Error("gateway closed before acknowledgement");
     });
-    const client = { request } as unknown as GatewayBrowserClient;
+    const client = makeMockGatewayClient(request);
     const host = makeAbortHost({
       client,
       pendingAbort: {
@@ -213,10 +238,10 @@ describe("replayPendingChatAbort", () => {
   });
 
   it("discards a queued stop when the reconnect uses a replacement client", async () => {
-    const sourceClient = { request: vi.fn() } as unknown as GatewayBrowserClient;
+    const sourceClient = makeMockGatewayClient(vi.fn());
     const replacementRequest = vi.fn();
     const host = makeAbortHost({
-      client: { request: replacementRequest } as unknown as GatewayBrowserClient,
+      client: makeMockGatewayClient(replacementRequest),
       pendingAbort: {
         sourceClient,
         runId: "run-main",

@@ -8,19 +8,23 @@ import {
   errorShape,
   validateSessionsAbortParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
+import {
+  abortEmbeddedAgentRun,
+  resolveActiveEmbeddedRunSessionKeyByRunId,
+} from "../../agents/embedded-agent-runner/runs.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import {
   isConfiguredSessionStoreAgentId,
   resolveExistingAgentSessionStoreTargetsSync,
 } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { resolveSessionKeyForRun } from "../server-session-key.js";
 import {
   resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId,
+  resolveSessionKeyAgentId,
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
 import {
@@ -69,20 +73,6 @@ export function resolveAbortSessionKey(params: {
     }
   }
   return params.requestedKey;
-}
-
-function resolveSessionKeyAgentId(
-  sessionKey: string | undefined,
-  cfg: OpenClawConfig,
-): string | undefined {
-  const key = normalizeOptionalString(sessionKey);
-  if (!key) {
-    return undefined;
-  }
-  if (!parseAgentSessionKey(key) && key.toLowerCase().startsWith("agent:")) {
-    return undefined;
-  }
-  return parseAgentSessionKey(key)?.agentId ?? tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
 }
 
 function sessionKeyBelongsToAgent(
@@ -141,6 +131,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const workerRunTarget = workerRunSessionId
       ? resolveWorkerSessionTarget(cfg, workerRunSessionId)
       : undefined;
+    const embeddedRunSessionKey = requestedRunId
+      ? resolveActiveEmbeddedRunSessionKeyByRunId(requestedRunId)
+      : undefined;
     const scopedRequestedKey = resolveScopedAbortKey({
       cfg,
       key: requestedKey,
@@ -165,7 +158,8 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       activeRunAgentId ??
       requestedKeyAgentId ??
       workerRunTarget?.agentId ??
-      resolveSessionKeyAgentId(activeRunSessionKey, cfg);
+      resolveSessionKeyAgentId(activeRunSessionKey, cfg) ??
+      resolveSessionKeyAgentId(embeddedRunSessionKey, cfg);
     if (requestedRunId && !inferredRunAgentId) {
       const runOwner = resolveRequestedGlobalAgentId(
         cfg,
@@ -198,7 +192,8 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             requestedRunAgentId ? { agentId: requestedRunAgentId } : undefined,
           )
         : undefined) ??
-      workerRunTarget?.sessionKey;
+      workerRunTarget?.sessionKey ??
+      embeddedRunSessionKey;
     if (!keyCandidate && requestedRunId) {
       respond(true, { ok: true, abortedRunId: null, status: "no-active-run" });
       return;
@@ -226,12 +221,14 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       : resolveExistingAgentSessionStoreTargetsSync(cfg, targetAgentId);
     const stableTargetOwner = tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
     const hasExactActiveRun = requestedRunId
-      ? scopedActiveRunSessionKey === key &&
-        resolveChatRunOwnerAgentId({
-          agentId: activeRunAgentId,
-          sessionKey: activeRunSessionKey,
-          defaultAgentId: stableTargetOwner,
-        }) === normalizeAgentId(targetAgentId)
+      ? (scopedActiveRunSessionKey === key &&
+          resolveChatRunOwnerAgentId({
+            agentId: activeRunAgentId,
+            sessionKey: activeRunSessionKey,
+            defaultAgentId: stableTargetOwner,
+          }) === normalizeAgentId(targetAgentId)) ||
+        (embeddedRunSessionKey === key &&
+          resolveSessionKeyAgentId(embeddedRunSessionKey, cfg) === normalizeAgentId(targetAgentId))
       : [...context.chatAbortControllers.values()].some(
           (entry) =>
             entry.controlUiVisible !== false &&

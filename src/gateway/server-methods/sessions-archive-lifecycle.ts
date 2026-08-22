@@ -143,7 +143,7 @@ export async function prepareSessionArchiveLifecycle(
       defaultAgentId: params.defaultAgentId,
       abortOrigin: "rpc",
       stopReason: "archive",
-      requester: { isAdmin: true },
+      requester: { isAdmin: true, hasWriteScope: true },
       includeProtectedRuns: true,
       onControllerTargets: (targets) => {
         controllerDrain = waitForChatAbortControllerRemoval({

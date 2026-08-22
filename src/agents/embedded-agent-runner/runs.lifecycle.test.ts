@@ -5,10 +5,12 @@ import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
+import { emitAgentEvent, rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { setDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
 import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
 import {
+  abortEmbeddedAgentRunByRunId,
   abortAndDrainEmbeddedAgentRun,
   clearActiveEmbeddedRun,
   getActiveEmbeddedRunSnapshot,
@@ -17,6 +19,7 @@ import {
   markActiveEmbeddedRunAbandoned,
   resolveActiveEmbeddedRunHandleSessionId,
   resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
+  resolveActiveEmbeddedAgentRunStartMs,
   setActiveEmbeddedRun,
   updateActiveEmbeddedRunSnapshot,
   waitForEmbeddedAgentRunEnd,
@@ -29,12 +32,14 @@ function createRunHandle(
   overrides: {
     abort?: () => void;
     isAbortable?: boolean;
+    isAborted?: () => boolean;
     isCompacting?: boolean;
     isStreaming?: boolean;
     isStopped?: () => boolean;
     messageInjection?: RunHandle["messageInjection"];
     runId?: string;
     queueMessage?: RunHandle["queueMessage"];
+    startedAtMs?: number;
     supportsQueueMessageImages?: boolean;
     supportsTranscriptCommitWait?: boolean;
   } = {},
@@ -44,10 +49,12 @@ function createRunHandle(
   const abort = overrides.abort ?? (() => {});
   return {
     runId: overrides.runId,
+    ...(overrides.startedAtMs !== undefined ? { startedAtMs: overrides.startedAtMs } : {}),
     queueMessage: overrides.queueMessage ?? (async () => {}),
     ...(overrides.messageInjection ? { messageInjection: overrides.messageInjection } : {}),
     isStreaming: () => overrides.isStreaming ?? true,
     ...(overrides.isStopped ? { isStopped: overrides.isStopped } : {}),
+    ...(overrides.isAborted ? { isAborted: overrides.isAborted } : {}),
     ...(overrides.isAbortable !== undefined
       ? { isAbortable: () => overrides.isAbortable !== false }
       : {}),
@@ -335,5 +342,295 @@ describe("embedded-agent runner run lifecycle", () => {
 
     clearActiveEmbeddedRun("session-snapshot", handle);
     expect(getActiveEmbeddedRunSnapshot("session-snapshot")).toBeUndefined();
+  });
+
+  it("exposes the run-owned start timestamp while the embedded run is active", () => {
+    const handle = createRunHandle({ runId: "run-started", startedAtMs: 1_700_000_000_000 });
+
+    setActiveEmbeddedRun("session-start", handle);
+
+    expect(resolveActiveEmbeddedAgentRunStartMs("session-start")).toBe(1_700_000_000_000);
+  });
+
+  it("hides the start timestamp of a retained aborted handle", () => {
+    const handle = createRunHandle({
+      runId: "run-aborted-start",
+      startedAtMs: 1_700_000_000_000,
+      isAborted: () => true,
+    });
+
+    setActiveEmbeddedRun("session-aborted-start", handle);
+
+    expect(resolveActiveEmbeddedAgentRunStartMs("session-aborted-start")).toBeUndefined();
+  });
+
+  it("returns undefined for sessions without an active embedded handle", () => {
+    expect(resolveActiveEmbeddedAgentRunStartMs("session-no-handle")).toBeUndefined();
+  });
+
+  it("records tool events on the active embedded run snapshot and releases the subscription on clear", () => {
+    const handle = createRunHandle({ runId: "run-events" });
+
+    setActiveEmbeddedRun("session-events", handle, "agent:main:main");
+    emitAgentEvent({
+      runId: "run-events",
+      stream: "tool",
+      data: { phase: "start", name: "read" },
+      sessionId: "session-events",
+      sessionKey: "agent:main:main",
+    });
+    emitAgentEvent({
+      runId: "run-events",
+      stream: "item",
+      data: { kind: "status", title: "ok" },
+    });
+
+    const events = getActiveEmbeddedRunSnapshot("session-events")?.events ?? [];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.stream).toBe("tool");
+
+    clearActiveEmbeddedRun("session-events", handle, "agent:main:main");
+    emitAgentEvent({ runId: "run-events", stream: "tool", data: { phase: "result" } });
+    expect(getActiveEmbeddedRunSnapshot("session-events")).toBeUndefined();
+  });
+
+  it("retains sanitized tool and preamble item events for hidden runs, drops other streams", () => {
+    const handle = createRunHandle({ runId: "run-boundary" });
+
+    setActiveEmbeddedRun("session-boundary", handle);
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "assistant",
+      data: { text: "SECRET_ASSISTANT_TEXT" },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "command_output",
+      data: { text: "SECRET_OUTPUT" },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "tool",
+      data: { phase: "start", name: "bash", args: { command: "echo SECRET" } },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "item",
+      data: { kind: "preamble", itemId: "msg-1", progressText: "analyzing" },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "item",
+      data: { kind: "status", title: "SECRET_TITLE", phase: "update", extra: "SECRET_EXTRA" },
+    });
+    emitAgentEvent({
+      runId: "run-boundary",
+      stream: "plan",
+      data: { phase: "update", steps: [{ step: "Plan", status: "in_progress" }] },
+    });
+
+    const events = getActiveEmbeddedRunSnapshot("session-boundary")?.events ?? [];
+    expect(events.map((event) => event.stream)).toEqual(["tool", "item"]);
+    expect(events[0]?.data).toEqual({ phase: "start", name: "bash", toolCallId: undefined });
+    expect(events[1]?.data).toEqual({
+      kind: "preamble",
+      itemId: "msg-1",
+      progressText: "analyzing",
+    });
+    expect(JSON.stringify(events)).not.toContain("SECRET");
+    // Plan updates are captured as a snapshot, not replay events.
+    expect(events.some((event) => event.stream === "plan")).toBe(false);
+    expect(getActiveEmbeddedRunSnapshot("session-boundary")?.plan).toEqual({
+      steps: [{ step: "Plan", status: "in_progress" }],
+    });
+  });
+
+  it("captures plan updates as a recovery snapshot, not replay events", () => {
+    const handle = createRunHandle({ runId: "run-plan" });
+
+    setActiveEmbeddedRun("session-plan", handle);
+    emitAgentEvent({
+      runId: "run-plan",
+      stream: "plan",
+      data: {
+        phase: "update",
+        steps: [
+          { step: "Step 1", status: "completed" },
+          { step: "Step 2", status: "in_progress" },
+        ],
+        explanation: "  Working on it  ",
+      },
+    });
+
+    const snapshot = getActiveEmbeddedRunSnapshot("session-plan");
+    expect(snapshot?.plan).toEqual({
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "in_progress" },
+      ],
+      explanation: "Working on it",
+    });
+    expect(snapshot?.events ?? []).toEqual([]);
+
+    // A later plan update replaces the earlier snapshot.
+    emitAgentEvent({
+      runId: "run-plan",
+      stream: "plan",
+      data: {
+        phase: "update",
+        steps: [
+          { step: "Step 1", status: "completed" },
+          { step: "Step 2", status: "completed" },
+        ],
+      },
+    });
+    expect(getActiveEmbeddedRunSnapshot("session-plan")?.plan).toEqual({
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "completed" },
+      ],
+    });
+
+    // Plan events with non-update phase are ignored.
+    emitAgentEvent({
+      runId: "run-plan",
+      stream: "plan",
+      data: { phase: "start", steps: [{ step: "Ignored", status: "pending" }] },
+    });
+    expect(getActiveEmbeddedRunSnapshot("session-plan")?.plan).toEqual({
+      steps: [
+        { step: "Step 1", status: "completed" },
+        { step: "Step 2", status: "completed" },
+      ],
+    });
+
+    clearActiveEmbeddedRun("session-plan", handle, "agent:main:main");
+  });
+
+  it("caps the embedded-run replay event buffer at 200 tool events", () => {
+    const handle = createRunHandle({ runId: "run-events-cap" });
+
+    setActiveEmbeddedRun("session-events-cap", handle);
+    for (let index = 0; index < 205; index += 1) {
+      emitAgentEvent({
+        runId: "run-events-cap",
+        stream: "tool",
+        data: { phase: "start", name: `tool-${index}` },
+      });
+    }
+
+    const events = getActiveEmbeddedRunSnapshot("session-events-cap")?.events ?? [];
+    expect(events).toHaveLength(200);
+    expect(events[0]?.seq).toBe(6);
+    expect(events[events.length - 1]?.seq).toBe(205);
+  });
+
+  it("drops an oversized tool event so the replay buffer stays within its byte budget", () => {
+    const handle = createRunHandle({ runId: "run-tool-oversized" });
+
+    setActiveEmbeddedRun("session-tool-oversized", handle);
+    const oversizedName = "x".repeat(80 * 1024);
+    emitAgentEvent({
+      runId: "run-tool-oversized",
+      stream: "tool",
+      data: { phase: "start", name: oversizedName },
+    });
+    emitAgentEvent({
+      runId: "run-tool-oversized",
+      stream: "tool",
+      data: { phase: "start", name: "small" },
+    });
+
+    const snapshot = getActiveEmbeddedRunSnapshot("session-tool-oversized");
+    const events = snapshot?.events ?? [];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.data).toEqual({ phase: "start", name: "small", toolCallId: undefined });
+    const byteLength = snapshot?.byteLength ?? 0;
+    expect(byteLength).toBeGreaterThan(0);
+    expect(byteLength).toBeLessThan(64 * 1024);
+  });
+
+  it("trims oldest tool events once the aggregate byte budget is exceeded", () => {
+    const handle = createRunHandle({ runId: "run-bytes-aggregate" });
+
+    setActiveEmbeddedRun("session-bytes-aggregate", handle);
+    const name = "y".repeat(40 * 1024);
+    for (let index = 0; index < 6; index += 1) {
+      emitAgentEvent({
+        runId: "run-bytes-aggregate",
+        stream: "tool",
+        data: { phase: "start", name: `${name}-${index}` },
+      });
+    }
+
+    const snapshot = getActiveEmbeddedRunSnapshot("session-bytes-aggregate");
+    const events = snapshot?.events ?? [];
+    expect(events.length).toBeLessThan(6);
+    expect(snapshot?.byteLength ?? 0).toBeLessThanOrEqual(128 * 1024);
+  });
+
+  it("aborts an embedded run by its exact run id", () => {
+    let cancelled = false;
+    const handle = createRunHandle({
+      runId: "run-exact",
+      abort: () => {
+        cancelled = true;
+      },
+    });
+
+    setActiveEmbeddedRun("session-exact", handle);
+
+    expect(abortEmbeddedAgentRunByRunId("run-exact")).toBe(true);
+    expect(cancelled).toBe(true);
+    expect(abortEmbeddedAgentRunByRunId("run-missing")).toBe(false);
+  });
+
+  it("retires a displaced run's event subscription and fences its replay snapshot", () => {
+    const firstHandle = createRunHandle({ runId: "run-first" });
+    const secondHandle = createRunHandle({ runId: "run-second" });
+
+    setActiveEmbeddedRun("session-replaced-events", firstHandle);
+    emitAgentEvent({
+      runId: "run-first",
+      stream: "tool",
+      data: { phase: "start", name: "first" },
+    });
+    expect(getActiveEmbeddedRunSnapshot("session-replaced-events")?.events).toHaveLength(1);
+
+    setActiveEmbeddedRun("session-replaced-events", secondHandle);
+    expect(getActiveEmbeddedRunSnapshot("session-replaced-events")).toBeUndefined();
+
+    // The displaced subscription is retired: stale events from run-first must
+    // not re-enter the session snapshot or evict the new run's buffer.
+    emitAgentEvent({ runId: "run-first", stream: "tool", data: { phase: "result" } });
+    emitAgentEvent({
+      runId: "run-second",
+      stream: "tool",
+      data: { phase: "start", name: "new" },
+    });
+    const events = getActiveEmbeddedRunSnapshot("session-replaced-events")?.events ?? [];
+    expect(events.map((event) => event.runId)).toEqual(["run-second"]);
+  });
+
+  it("releases an evicted run's event subscription during lifecycle rotation", () => {
+    const handle = createRunHandle({ runId: "run-rotate" });
+
+    setActiveEmbeddedRun("session-rotate", handle);
+    emitAgentEvent({
+      runId: "run-rotate",
+      stream: "tool",
+      data: { phase: "start", name: "rotate" },
+    });
+    expect(getActiveEmbeddedRunSnapshot("session-rotate")?.events).toHaveLength(1);
+
+    // Lifecycle rotation evicts stale-generation runs; the run's event
+    // subscription must be released so its listener does not survive for the
+    // process lifetime.
+    rotateAgentEventLifecycleGeneration();
+
+    // The snapshot is cleared by eviction, and stale events must not recreate
+    // it because the subscription listener was released.
+    emitAgentEvent({ runId: "run-rotate", stream: "tool", data: { phase: "result" } });
+    expect(getActiveEmbeddedRunSnapshot("session-rotate")).toBeUndefined();
   });
 });

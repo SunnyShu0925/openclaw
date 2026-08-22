@@ -107,6 +107,13 @@ type InFlightRunSnapshot = {
   runId: string;
   text: string;
   startedAt?: number;
+  /**
+   * True when the in-flight run is owned by the embedded-run registry and can
+   * only be cancelled through the session-owned abort path (sessions.abort),
+   * never through run-specific chat.abort. Control UI uses this to keep Stop
+   * routing session-scoped for recovered embedded runs.
+   */
+  sessionAbortable?: boolean;
   plan?: ChatRunPlanSnapshot;
   events?: AgentEventPayload[];
 };
@@ -455,6 +462,7 @@ export function boundInFlightRunSnapshotForChatHistory(params: {
   let bounded: InFlightRunSnapshot = {
     runId: params.snapshot.runId,
     text: "",
+    ...(params.snapshot.sessionAbortable ? { sessionAbortable: true } : {}),
     ...(params.snapshot.events ? { events: [] } : {}),
     ...(params.snapshot.plan ? { plan: { steps: [] } } : {}),
   };
