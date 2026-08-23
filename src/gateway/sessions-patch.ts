@@ -24,10 +24,6 @@ import {
   resolveDefaultModelForAgent,
   resolveSubagentConfiguredModelSelection,
 } from "../agents/model-selection.js";
-import {
-  readSessionThinkingLevelSelection,
-  updateSessionThinkingLevelSelection,
-} from "../agents/session-thinking-level-selection.js";
 import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import { normalizeGroupActivation } from "../auto-reply/group-activation.js";
 import {
@@ -80,8 +76,8 @@ import { parseSessionLabel, SESSION_LABEL_MAX_LENGTH } from "../sessions/session
 import {
   isAgentSessionModelPatchOrigin,
   snapshotAgentModelFallback,
-  updateAgentModelFallbackThinking,
 } from "./session-model-patch-origin.js";
+import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
 
 function invalid(message: string): { ok: false; error: ErrorShape } {
@@ -694,12 +690,17 @@ export async function projectSessionsPatchEntry(params: {
         });
       }
     }
-    updateSessionThinkingLevelSelection(next, {
-      provider: effectiveProvider,
-      model: effectiveModel,
-      agentRuntime: thinkingRuntime,
-      level: next.thinkingLevel,
-    });
+  }
+
+  const contextWindowPatch = await applySessionContextWindowPatch({
+    defaultModel: resolvedDefault.model,
+    defaultProvider: resolvedDefault.provider,
+    loadModelCatalog: loadPreparedModelCatalogForPatch,
+    next,
+    patch,
+  });
+  if (!contextWindowPatch.ok) {
+    return invalid(contextWindowPatch.error);
   }
 
   // A thinkingLevel change made on its own (no model switch) never touches the
@@ -710,10 +711,14 @@ export async function projectSessionsPatchEntry(params: {
     !("model" in patch) &&
     next.modelFallback?.source === "agent-patch"
   ) {
-    updateAgentModelFallbackThinking(next.modelFallback, {
-      thinkingLevel: next.thinkingLevel,
-      thinkingLevelSelection: readSessionThinkingLevelSelection(next),
-    });
+    next.modelFallback.prevThinkingLevel = next.thinkingLevel;
+  }
+  if (
+    "contextWindow" in patch &&
+    !("model" in patch) &&
+    next.modelFallback?.source === "agent-patch"
+  ) {
+    next.modelFallback.prevContextWindow = next.contextWindow;
   }
 
   if ("sendPolicy" in patch) {

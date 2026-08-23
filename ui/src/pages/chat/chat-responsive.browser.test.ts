@@ -1273,8 +1273,9 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
   ])("balances completed-work spacing on $label", async ({ width, hasTouch, expectedGap }) => {
     const page = await openBrowserPage(width, 720, { hasTouch, isolated: true });
     try {
+      // Isolate the final-layout contract from the 200ms settle-in transform.
       await page.setContent(
-        `<!doctype html><html><head><style>${readUiCss()}</style></head><body>${completedWorkSpacingHtml()}</body></html>`,
+        `<!doctype html><html><head><style>${readUiCss()}</style><style>.chat-group--work { animation: none; }</style></head><body>${completedWorkSpacingHtml()}</body></html>`,
       );
       await waitForLayoutSettled(page, "[data-spacing-row], .chat-group--work");
 
@@ -1383,6 +1384,11 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
                   <div class="chat-activity-group">Activity</div>
                 </div>
               </div>
+              <div class="chat-group assistant chat-group--with-footer">
+                <div class="chat-group-messages" data-frame-lane>
+                  <div class="chat-activity-group">Framed activity</div>
+                </div>
+              </div>
             </div>
           </div>
           <div class="chat-prs" data-chat-prs>Pull requests</div>
@@ -1397,10 +1403,11 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
           return { center: bounds.x + bounds.width / 2, width: bounds.width };
         };
         return {
-          activity: rect("[data-activity-lane]"),
+          activity: rect("[data-activity-lane] .chat-activity-group"),
           composer: rect("[data-composer]"),
           prs: rect("[data-chat-prs]"),
           shell: rect("[data-tool-shell]"),
+          framedActivity: rect("[data-frame-lane] .chat-activity-group"),
           thread: rect(".chat-thread-inner"),
           tool: rect("[data-tool-lane]"),
         };
@@ -1415,9 +1422,10 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       expect(defaults.tool.width).toBeCloseTo(defaults.thread.width, 0);
       expect(defaults.shell.width).toBeCloseTo(760, 0);
       expect(defaults.activity.width).toBeCloseTo(760, 0);
+      expect(defaults.framedActivity.width).toBeCloseTo(defaults.activity.width, 0);
 
       const configured = await renderFixture(true);
-      for (const key of ["activity", "shell", "tool"] as const) {
+      for (const key of ["activity", "framedActivity", "shell", "tool"] as const) {
         expect(configured[key].width).toBeCloseTo(configured.thread.width, 0);
       }
       expect(configured.composer.width).toBeCloseTo(configured.prs.width, 0);
@@ -1440,9 +1448,11 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
             <div class="chat-group assistant chat-group--with-footer">
               <div class="chat-group-messages">
                 <div class="chat-bubble">
-                  <div class="chat-tool-card__preview" data-content-kind="mcp-app">
-                    <div class="chat-tool-card__preview-panel">
-                      <mcp-app-view style="display:block;width:100%;height:320px"></mcp-app-view>
+                  <div class="chat-tool-card__widget-host">
+                    <div class="chat-tool-card__preview" data-content-kind="mcp-app">
+                      <div class="chat-tool-card__preview-panel">
+                        <mcp-app-view style="display:block;width:100%;height:320px"></mcp-app-view>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1578,6 +1588,120 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       expect(layout.bubbleBottom - layout.avatarBottom).toBeCloseTo(4, 0);
       expect(layout.footerBottom).toBeLessThanOrEqual(layout.firstBottom + 1);
       expect(layout.secondTop).toBeGreaterThanOrEqual(layout.firstBottom - 1);
+    } finally {
+      await closeBrowserPage(page);
+    }
+  });
+
+  it("keeps attributed user avatar fallbacks beside the message after identity resolution", async () => {
+    const page = await openBrowserPage(860, 900);
+    try {
+      await page.setContent(
+        `<!doctype html><html><head><style>${readUiCss()}</style></head><body>
+          <div class="chat-thread" style="width: 768px;">
+            <div class="chat-thread-inner" style="width: 768px;">
+              <div class="chat-group user chat-group--with-footer">
+                <span class="chat-avatar-slot">
+                  <img
+                    class="chat-avatar user"
+                    alt="Collin Johnson"
+                    src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Crect width='36' height='36' fill='purple'/%3E%3C/svg%3E"
+                  />
+                  <div class="chat-avatar user chat-avatar--sender-initials">C</div>
+                </span>
+                <div class="chat-group-messages">
+                  <div class="chat-bubble"><div class="chat-text">A newly sent message.</div></div>
+                </div>
+                <div class="chat-group-footer">
+                  <div class="chat-group-footer__meta">
+                    <span class="chat-sender-name">collinjohnsonw</span>
+                    <span class="chat-group-timestamp">now</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="agent-chat__typing-indicator">
+            <span class="agent-chat__typing-avatars">
+              <div class="chat-avatar user">B</div>
+              <span class="chat-avatar-slot">
+                <img
+                  class="chat-avatar user"
+                  alt="Typing participant"
+                  src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Crect width='36' height='36' fill='purple'/%3E%3C/svg%3E"
+                />
+                <div class="chat-avatar user chat-avatar--sender-initials">C</div>
+              </span>
+            </span>
+          </div>
+        </body></html>`,
+      );
+      const messageAvatarSlot = page.locator(".chat-group .chat-avatar-slot");
+      await messageAvatarSlot.locator("img").waitFor();
+
+      const readLayout = async () =>
+        await page.evaluate(() => {
+          const group = document.querySelector<HTMLElement>(".chat-group.user")!;
+          const bubble = group.querySelector<HTMLElement>(".chat-bubble")!;
+          const visibleAvatar = [...group.querySelectorAll<HTMLElement>(".chat-avatar")].find(
+            (avatar) => getComputedStyle(avatar).display !== "none",
+          )!;
+          const groupRect = group.getBoundingClientRect();
+          const bubbleRect = bubble.getBoundingClientRect();
+          const avatarRect = visibleAvatar.getBoundingClientRect();
+          return {
+            avatarLeft: avatarRect.left,
+            avatarRight: avatarRect.right,
+            bubbleRight: bubbleRect.right,
+            groupRight: groupRect.right,
+          };
+        });
+
+      const imageLayout = await readLayout();
+      expect(await messageAvatarSlot.evaluate((slot) => getComputedStyle(slot).display)).toBe(
+        "grid",
+      );
+      await messageAvatarSlot.evaluate((slot) => slot.classList.add("is-fallback"));
+      const fallbackLayout = await readLayout();
+
+      for (const layout of [imageLayout, fallbackLayout]) {
+        expect(layout.avatarLeft).toBeGreaterThanOrEqual(layout.bubbleRight + 9);
+        expect(layout.avatarRight).toBeLessThanOrEqual(layout.groupRight + 1);
+      }
+
+      const typingAvatars = await page.locator(".agent-chat__typing-avatars").evaluate((row) =>
+        [...row.children].map((avatar) => {
+          const bounds = avatar.getBoundingClientRect();
+          return {
+            height: bounds.height,
+            marginBottom: getComputedStyle(avatar).marginBottom,
+            top: bounds.top,
+            width: bounds.width,
+          };
+        }),
+      );
+      expect(typingAvatars).toHaveLength(2);
+      expect(
+        typingAvatars.map(({ height, marginBottom, width }) => ({ height, marginBottom, width })),
+      ).toEqual([
+        { height: 36, marginBottom: "0px", width: 36 },
+        { height: 36, marginBottom: "0px", width: 36 },
+      ]);
+      expect(Math.abs(typingAvatars[0]!.top - typingAvatars[1]!.top)).toBeLessThanOrEqual(0.5);
+
+      await page
+        .locator(".chat-thread")
+        .evaluate((thread) => thread.classList.add("chat-thread--direct"));
+      expect(await messageAvatarSlot.evaluate((slot) => getComputedStyle(slot).display)).toBe(
+        "none",
+      );
+      await page
+        .locator(".chat-thread")
+        .evaluate((thread) => thread.classList.remove("chat-thread--direct"));
+      await page.setViewportSize({ width: 390, height: 900 });
+      expect(await messageAvatarSlot.evaluate((slot) => getComputedStyle(slot).display)).toBe(
+        "none",
+      );
     } finally {
       await closeBrowserPage(page);
     }
@@ -1950,6 +2074,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
 
   it.each([
     [393, 852],
+    [900, 500],
     [1366, 900],
     [1920, 1080],
   ] as const)("uses compact radii and optical chat-box insets at %sx%s", async (width, height) => {
@@ -2001,14 +2126,17 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       expect(geometry.assistantBubble?.paddingRight).toBe(0);
       expect(geometry.composer?.borderRadius).toBe(mediumRadius);
 
-      const composerInset = width <= 768 ? 4 : 8;
-      const textareaBlockInset = width <= 768 ? 10 : composerInset;
+      const usesCompactComposer = width <= 768 || (width <= 932 && height <= 500 && width > height);
+      const composerInset = usesCompactComposer ? 4 : 8;
+      const textareaBlockInset = usesCompactComposer ? 10 : composerInset;
       expect(geometry.textarea?.paddingTop).toBe(textareaBlockInset);
       expect(geometry.textarea?.paddingRight).toBe(composerInset);
       expect(geometry.textarea?.paddingBottom).toBe(textareaBlockInset);
-      expect(geometry.textarea?.paddingLeft).toBe(composerInset - 4);
-      expect(geometry.footer?.paddingLeft).toBe(composerInset);
-      expect(geometry.footer?.paddingRight).toBe(composerInset);
+      expect(geometry.textarea?.paddingLeft).toBe(
+        usesCompactComposer ? composerInset : composerInset - 4,
+      );
+      expect(geometry.footer?.paddingLeft).toBe(8);
+      expect(geometry.footer?.paddingRight).toBe(8);
       // #105866 splits the block inset evenly around the footer so the
       // settings chip centers between the divider and the card edge.
       expect(geometry.footer?.paddingTop).toBe(composerInset / 2);

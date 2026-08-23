@@ -58,6 +58,7 @@ type SettingsSidebarProps = {
   onExit: () => void;
   onRetryConnect: () => void;
   onNavigate: (routeId: RouteId, options?: ApplicationNavigationOptions) => void;
+  onOpenApprovals?: () => void;
   onPreload?: (routeId: RouteId) => Promise<void> | void;
   onSearchQueryChange: (query: string) => void;
   preloadTimers: Map<EventTarget, ReturnType<typeof globalThis.setTimeout>>;
@@ -271,11 +272,15 @@ export function renderSettingsSidebar(props: SettingsSidebarProps) {
           @input=${(event: Event) =>
             props.onSearchQueryChange((event.currentTarget as HTMLInputElement).value)}
           @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== "Escape" || !props.searchQuery) {
+            if (event.key !== "Escape") {
               return;
             }
             event.preventDefault();
-            props.onSearchQueryChange("");
+            if (props.searchQuery) {
+              props.onSearchQueryChange("");
+              return;
+            }
+            props.onExit();
           }}
         />
         ${props.searchQuery
@@ -323,6 +328,10 @@ export function renderSettingsSidebar(props: SettingsSidebarProps) {
               `,
             )}
       </nav>
+      <openclaw-sidebar-attention
+        .onNavigate=${props.onNavigate}
+        .onOpenApprovals=${props.onOpenApprovals}
+      ></openclaw-sidebar-attention>
       <openclaw-sidebar-update-card
         .updateAvailable=${props.updateAvailable}
         .updateSchedule=${props.updateSchedule ?? null}
