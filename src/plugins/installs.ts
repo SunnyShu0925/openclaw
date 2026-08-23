@@ -101,7 +101,7 @@ export function buildNpmResolutionInstallFields(
   return buildNpmResolutionFields(resolution);
 }
 
-function isExactRegistryNpmSpec(spec: string | undefined): spec is string {
+export function isExactRegistryNpmSpec(spec: string | undefined): spec is string {
   const parsed = spec ? parseRegistryNpmSpec(spec) : null;
   return parsed?.selectorKind === "exact-version";
 }

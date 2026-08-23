@@ -33,6 +33,7 @@ import { isUnavailableNpmTarget } from "../../../plugins/install-types.js";
 import { installPluginFromNpmSpec } from "../../../plugins/install.js";
 import {
   buildNpmResolutionInstallFields,
+  isExactRegistryNpmSpec,
   resolveNpmInstallRecordSpec,
 } from "../../../plugins/installs.js";
 import { ManagedPluginLifecycleError } from "../../../plugins/management-lifecycle-error.js";
@@ -174,6 +175,12 @@ async function installCandidatePackage(
   // A channel fallback changes which artifact the operator gets, so it must stay
   // visible on the success path instead of being dropped with the attempt log.
   const channelNotices: string[] = [];
+  // A stale version-bound runtime repair must preserve an operator's exact npm
+  // pin: persisting the floating catalog spec would downgrade it and trigger
+  // `installs_unpinned_npm_specs` in the deep security audit.
+  const pinResolvedSpecForStaleRepair =
+    params.repairReason === "stale-version-bound-runtime" &&
+    isExactRegistryNpmSpec(params.records[candidate.pluginId]?.spec);
   const clawhubSpecs = candidate.clawhubSpec
     ? resolveClawHubInstallSpecsForUpdateChannel({
         spec: candidate.clawhubSpec,
@@ -235,7 +242,7 @@ async function installCandidatePackage(
       records: params.records,
       npmInstallSpec,
       npmRecordSpec: npmSpecs?.recordSpec ?? npmInstallSpec,
-      pinResolvedRegistrySpec: false,
+      pinResolvedRegistrySpec: pinResolvedSpecForStaleRepair,
       packagePath: existingNpmPackagePath,
       version: existingNpmPackageVersion,
     });
@@ -394,7 +401,7 @@ async function installCandidatePackage(
         spec: resolveNpmInstallRecordSpec({
           requestedSpec: npmSpecs?.recordSpec ?? npmInstallSpec,
           resolution: result.npmResolution,
-          pinResolvedRegistrySpec: false,
+          pinResolvedRegistrySpec: pinResolvedSpecForStaleRepair,
         }),
         installPath: result.targetDir,
         version: result.version,
