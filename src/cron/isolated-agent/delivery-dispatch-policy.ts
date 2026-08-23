@@ -103,18 +103,12 @@ const deliverySubagentRegistryRuntimeLoader = createLazyImportLoader(
   () => import("./delivery-subagent-registry.runtime.js"),
 );
 
-export async function loadDeliverySubagentRegistryRuntime(): Promise<
-  typeof import("./delivery-subagent-registry.runtime.js")
-> {
-  return await deliverySubagentRegistryRuntimeLoader.load();
-}
-
 const subagentFollowupRuntimeLoader = createLazyImportLoader(
   () => import("./subagent-followup.runtime.js"),
 );
 
 /** Descendant-run outcome that decides which text cron delivery finalizes. */
-export type DescendantSubagentFollowup = {
+type DescendantSubagentFollowup = {
   /** Descendant reply that replaces the interim cron text; undefined keeps the original. */
   finalReply: string | undefined;
   activeSubagentRuns: number;
@@ -131,7 +125,7 @@ export async function resolveDescendantSubagentFollowup(params: {
   initialSynthesizedText: string;
 }): Promise<DescendantSubagentFollowup> {
   const expectedFollowup = expectsSubagentFollowup(params.initialSynthesizedText);
-  const subagentRegistryRuntime = await loadDeliverySubagentRegistryRuntime();
+  const subagentRegistryRuntime = await deliverySubagentRegistryRuntimeLoader.load();
   let activeSubagentRuns = subagentRegistryRuntime.countActiveDescendantRuns(params.sessionKey);
   const shouldCheckCompletedDescendants =
     activeSubagentRuns === 0 &&
