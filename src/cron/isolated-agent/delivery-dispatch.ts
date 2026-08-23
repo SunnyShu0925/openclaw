@@ -38,7 +38,6 @@ import {
   DIRECT_CRON_DELIVERY_COMPLETION_RETENTION,
   isCompletedDirectCronDelivery,
   isStaleCronDelivery,
-  loadDeliverySubagentRegistryRuntime,
   logCronDeliveryError,
   logCronDeliveryErrorDeferred,
   logCronDeliveryWarn,
@@ -46,6 +45,7 @@ import {
   normalizeSilentReplyText,
   resolveCronDeliveryBestEffort,
   resolveCronDeliveryScheduledAtMs,
+  resolveDescendantSubagentFollowup,
   resolveCronDeliveryStartDelayMs,
   retryTransientDirectCronDelivery,
   waitForCompletedDirectCronDelivery,
@@ -62,13 +62,10 @@ import {
   cleanupCronRunSessionAfterRun,
   type CronRunSessionCleanupOutcome,
 } from "./session-cleanup.js";
-import { expectsSubagentFollowup, isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
+import { isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
 const deliveryOutboundRuntimeLoader = createLazyImportLoader(
   () => import("./delivery-outbound.runtime.js"),
-);
-const subagentFollowupRuntimeLoader = createLazyImportLoader(
-  () => import("./subagent-followup.runtime.js"),
 );
 export { queueCronMessageToolDeliveryAwareness, resolveCronDeliveryBestEffort };
 /** Dispatches cron run output through verified message-tool or direct delivery paths. */
@@ -609,64 +606,20 @@ export async function dispatchCronDelivery(
     }
     const initialSynthesizedText = synthesizedText?.trim() ?? "";
     const spawnOnlyHandoff = params.spawnOnlyHandoff;
-    const expectedSubagentFollowup = expectsSubagentFollowup(initialSynthesizedText);
-    const subagentRegistryRuntime = await loadDeliverySubagentRegistryRuntime();
-    const subagentFollowupSessionKey = params.runSessionKey;
-    let activeSubagentRuns = subagentRegistryRuntime.countActiveDescendantRuns(
-      subagentFollowupSessionKey,
-    );
-    const shouldCheckCompletedDescendants =
-      activeSubagentRuns === 0 &&
-      (spawnOnlyHandoff || isLikelyInterimCronMessage(initialSynthesizedText));
-    const needsSubagentFollowupRuntime =
-      shouldCheckCompletedDescendants || activeSubagentRuns > 0 || expectedSubagentFollowup;
-    const subagentFollowupRuntime = needsSubagentFollowupRuntime
-      ? await subagentFollowupRuntimeLoader.load()
-      : undefined;
-    // Also check for already-completed descendants. If the subagent finished
-    // before delivery-dispatch runs, activeSubagentRuns is 0 and
-    // expectedSubagentFollowup may be false (e.g. cron said "on it" which
-    // doesn't match the narrow hint list). We still need to use the
-    // descendant's output instead of the interim cron text.
-    const completedDescendantReply = shouldCheckCompletedDescendants
-      ? await subagentFollowupRuntime?.readDescendantSubagentFallbackReply({
-          sessionKey: subagentFollowupSessionKey,
-          runStartedAt: params.runStartedAt,
-        })
-      : undefined;
-    const hadDescendants = activeSubagentRuns > 0 || Boolean(completedDescendantReply);
-    if (
-      (!params.deliveryBestEffort || spawnOnlyHandoff) &&
-      (activeSubagentRuns > 0 || expectedSubagentFollowup)
-    ) {
-      let finalReply = await subagentFollowupRuntime?.waitForDescendantSubagentSummary({
-        sessionKey: subagentFollowupSessionKey,
-        initialReply: initialSynthesizedText,
+    const { finalReply, activeSubagentRuns, hadDescendants } =
+      await resolveDescendantSubagentFollowup({
+        sessionKey: params.runSessionKey,
+        runStartedAt: params.runStartedAt,
         timeoutMs: params.timeoutMs,
-        observedActiveDescendants: activeSubagentRuns > 0 || expectedSubagentFollowup,
+        deliveryBestEffort: params.deliveryBestEffort,
+        spawnOnlyHandoff,
+        initialSynthesizedText,
       });
-      activeSubagentRuns = subagentRegistryRuntime.countActiveDescendantRuns(
-        subagentFollowupSessionKey,
-      );
-      if (!finalReply && activeSubagentRuns === 0) {
-        finalReply = await subagentFollowupRuntime?.readDescendantSubagentFallbackReply({
-          sessionKey: subagentFollowupSessionKey,
-          runStartedAt: params.runStartedAt,
-        });
-      }
-      if (finalReply && activeSubagentRuns === 0) {
-        outputText = finalReply;
-        summary = pickSummaryFromOutput(finalReply) ?? summary;
-        synthesizedText = finalReply;
-        deliveryPayloads = [{ text: finalReply }];
-      }
-    } else if (completedDescendantReply) {
-      // Descendants already finished before we got here. Use their output
-      // directly instead of the cron agent's interim text.
-      outputText = completedDescendantReply;
-      summary = pickSummaryFromOutput(completedDescendantReply) ?? summary;
-      synthesizedText = completedDescendantReply;
-      deliveryPayloads = [{ text: completedDescendantReply }];
+    if (finalReply) {
+      outputText = finalReply;
+      summary = pickSummaryFromOutput(finalReply) ?? summary;
+      synthesizedText = finalReply;
+      deliveryPayloads = [{ text: finalReply }];
     }
     if (spawnOnlyHandoff && !synthesizedText?.trim()) {
       // An accepted spawn is the turn's only completion; retiring it without
