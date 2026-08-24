@@ -355,7 +355,7 @@ describe("buildTelegramMessageContext prompt context", () => {
     ]);
   });
 
-  it("omits cached group context before the latest bot reply", async () => {
+  it("keeps an explicit reply target while omitting cached context before the latest bot reply", async () => {
     const historyKey = "-1001234567890";
     const previousUserMessage = {
       messageId: "10",
@@ -400,13 +400,33 @@ describe("buildTelegramMessageContext prompt context", () => {
                 timestamp_ms: previousBotReply.timestamp,
                 body: previousBotReply.body,
               },
+              {
+                message_id: "9",
+                sender: "OpenClaw (you)",
+                timestamp_ms: 1_699_999_999_000,
+                body: "explicit reply target",
+                is_reply_target: true,
+              },
             ],
           },
         },
       ],
     });
 
-    expect(ctx?.ctxPayload.ChannelStructuredContext).toBeUndefined();
+    expect(ctx?.ctxPayload.ChannelStructuredContext).toEqual([
+      expect.objectContaining({
+        type: "chat_window",
+        payload: expect.objectContaining({
+          messages: [
+            expect.objectContaining({
+              message_id: "9",
+              body: "explicit reply target",
+              is_reply_target: true,
+            }),
+          ],
+        }),
+      }),
+    ]);
   });
 
   it("excludes ambient transcript rows from the group history window", async () => {
