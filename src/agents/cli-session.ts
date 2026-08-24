@@ -19,12 +19,12 @@ export {
 
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 
-/** Failover reasons that truly invalidate a CLI session on disk. */
-const SESSION_INVALIDATING_FAILOVER_REASONS: ReadonlySet<FailoverReason> = new Set([
-  "session_expired",
-  "auth",
-  "auth_permanent",
-]);
+/** Whether a failover proves the provider-side conversation can no longer be resumed. */
+export function isCliSessionInvalidatingFailoverReason(reason: FailoverReason): boolean {
+  // Auth identity changes are handled by the reuse fingerprint's auth epoch.
+  // Other execution failures say nothing about the persisted transcript.
+  return reason === "session_expired";
+}
 
 /** Hash CLI session-sensitive text so reuse checks can compare stable fingerprints. */
 export function hashCliSessionText(value: string | undefined): string | undefined {
@@ -134,7 +134,7 @@ export function shouldClearFailedCliSessionBinding(params: {
     return false;
   }
   if (isFailoverError(params.error)) {
-    return SESSION_INVALIDATING_FAILOVER_REASONS.has(params.error.reason);
+    return isCliSessionInvalidatingFailoverReason(params.error.reason);
   }
   // A pre-successor fork abort keeps its one-shot marker for the next turn.
   return params.binding?.forkNextResume !== true && readErrorName(params.error) === "AbortError";

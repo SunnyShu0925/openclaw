@@ -13,6 +13,7 @@ import {
   clearCliSession,
   getCliSessionBinding,
   hashCliSessionText,
+  isCliSessionInvalidatingFailoverReason,
   resolveCliSessionClearReason,
   resolveCliSessionReuse,
   setCliSessionBinding,
@@ -20,6 +21,7 @@ import {
   shouldClearFailedCliSessionBinding,
 } from "./cli-session.js";
 import { FailoverError } from "./failover-error.js";
+import { FAILOVER_REASONS } from "./failover/signal.js";
 
 describe("cli-session helpers", () => {
   it("persists binding metadata alongside legacy session ids", () => {
@@ -653,33 +655,14 @@ describe("cli-session helpers", () => {
     expect(shouldClearFailedCliSessionBinding({ error: abort })).toBe(false);
   });
 
-  it.each([["session_expired"], ["auth"], ["auth_permanent"]] as const)(
-    "clears binding for session-invalidating reason: %s",
-    (reason) => {
-      const error = new FailoverError("failover", { reason, provider: "claude-cli" });
-      expect(shouldClearFailedCliSessionBinding({ error, binding: { sessionId: "reused" } })).toBe(
-        true,
-      );
-    },
-  );
-
-  it.each([
-    ["format"],
-    ["timeout"],
-    ["empty_response"],
-    ["rate_limit"],
-    ["overloaded"],
-    ["billing"],
-    ["server_error"],
-    ["context_overflow"],
-    ["model_not_found"],
-    ["no_error_details"],
-    ["unclassified"],
-    ["unknown"],
-  ] as const)("preserves binding for non-session-invalidating reason: %s", (reason) => {
+  it.each(FAILOVER_REASONS)("only clears binding for a provider-expired session: %s", (reason) => {
     const error = new FailoverError("failover", { reason, provider: "claude-cli" });
+    const invalidatesSession = reason === "session_expired";
+
+    expect(FAILOVER_REASONS).toHaveLength(16);
+    expect(isCliSessionInvalidatingFailoverReason(reason)).toBe(invalidatesSession);
     expect(shouldClearFailedCliSessionBinding({ error, binding: { sessionId: "reused" } })).toBe(
-      false,
+      invalidatesSession,
     );
   });
 });

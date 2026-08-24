@@ -973,6 +973,58 @@ describe("CLI attempt execution", () => {
     expect(persisted[sessionKey]?.claudeCliSessionId).toBeUndefined();
   });
 
+  it("preserves a valid Claude CLI binding through a format fresh retry", async () => {
+    const sessionKey = "agent:main:subagent:cli-format";
+    const cliSessionId = "format-retry-session";
+    await writeClaudeCliAssistantTranscript(cliSessionId);
+    const sessionEntry = makeClaudeCliSessionEntry("session-cli-format", cliSessionId);
+    const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
+    await writeSessionStoreSeed(sessionStore);
+
+    runCliAgentMock.mockImplementationOnce(async (args: unknown) => {
+      const retry = requireRecord(args, "run CLI agent argument").onBeforeFreshCliSessionRetry;
+      expect(retry).toBeTypeOf("function");
+      await expect(
+        (
+          retry as (params: {
+            provider: string;
+            reason: "format";
+            sessionId: string;
+          }) => Promise<boolean>
+        )({
+          provider: "claude-cli",
+          reason: "format",
+          sessionId: cliSessionId,
+        }),
+      ).resolves.toBe(true);
+
+      expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+        cliSessionId,
+      );
+      expect(readSessionStore()[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+        cliSessionId,
+      );
+      return makeCliResult("hello after format retry");
+    });
+
+    await runClaudeCliAttempt({
+      sessionEntry,
+      sessionKey,
+      sessionStore,
+      body: "retry this malformed turn",
+      runId: "run-cli-format",
+    });
+
+    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    expect(firstRunCliAgentArg().cliSessionId).toBe(cliSessionId);
+    expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+      cliSessionId,
+    );
+    expect(readSessionStore()[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+      cliSessionId,
+    );
+  });
+
   it("clears reused Claude CLI session IDs after AbortError without retrying", async () => {
     const sessionKey = "agent:main:direct:cli-abort";
     const cliSessionId = "abort-poisoned-session";
@@ -1134,7 +1186,7 @@ describe("CLI attempt execution", () => {
     );
   });
 
-  it("clears a persisted fork successor before transcript fallback", async () => {
+  it("preserves a persisted fork successor before a non-invalidating fresh retry", async () => {
     const sessionKey = "agent:main:direct:cli-fork-timeout";
     const cliSessionId = "timeout-parent-session";
     const forkedCliSessionId = "timeout-stalled-fork";
@@ -1175,9 +1227,13 @@ describe("CLI attempt execution", () => {
       runId: "run-cli-fork-timeout",
     });
 
-    expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]).toBeUndefined();
+    expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+      forkedCliSessionId,
+    );
     const persisted = readSessionStore();
-    expect(persisted[sessionKey]?.cliSessionBindings?.["claude-cli"]).toBeUndefined();
+    expect(persisted[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+      forkedCliSessionId,
+    );
   });
 
   it("clears a persisted fork successor when recovery fails after rebinding", async () => {
@@ -1357,8 +1413,8 @@ describe("CLI attempt execution", () => {
     expect(firstRunCliAgentArg().onBeforeFreshCliSessionRetry).toBeUndefined();
   });
 
-  it.each(["auth"] as const)(
-    "clears reused Claude CLI session IDs after %s failover without retrying",
+  it.each(["auth", "auth_permanent"] as const)(
+    "preserves reused Claude CLI session IDs after %s failover without retrying",
     async (reason) => {
       const sessionKey = `agent:main:direct:cli-${reason}`;
       const cliSessionId = `${reason}-poisoned-session`;
@@ -1386,13 +1442,22 @@ describe("CLI attempt execution", () => {
 
       expect(runCliAgentMock).toHaveBeenCalledTimes(1);
       expect(firstRunCliAgentArg().cliSessionId).toBe(cliSessionId);
-      expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]).toBeUndefined();
-      expect(sessionStore[sessionKey]?.cliSessionIds?.["claude-cli"]).toBeUndefined();
-      expect(sessionStore[sessionKey]?.claudeCliSessionId).toBeUndefined();
+      expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+        cliSessionId,
+      );
+      expect(sessionStore[sessionKey]?.cliSessionIds?.["claude-cli"]).toBe(cliSessionId);
+      expect(sessionStore[sessionKey]?.claudeCliSessionId).toBe(cliSessionId);
+
+      const persisted = readSessionStore();
+      expect(persisted[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
+        cliSessionId,
+      );
+      expect(persisted[sessionKey]?.cliSessionIds?.["claude-cli"]).toBe(cliSessionId);
+      expect(persisted[sessionKey]?.claudeCliSessionId).toBe(cliSessionId);
     },
   );
 
-  it.each(["billing", "rate_limit", "format"] as const)(
+  it.each(["billing", "rate_limit"] as const)(
     "preserves reused Claude CLI session IDs after %s failover without retrying",
     async (reason) => {
       const sessionKey = `agent:main:direct:cli-${reason}`;
