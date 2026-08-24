@@ -77,6 +77,12 @@ function createAcpCommandSessionBindingService() {
   return {
     bind: (input: unknown) => hoisted.sessionBindingBindMock(input),
     getCapabilities: forward((params: unknown) => hoisted.sessionBindingCapabilitiesMock(params)),
+    inspectByConversation: (
+      ref: unknown,
+    ): { status: "available"; binding: SessionBindingRecord | null } => ({
+      status: "available",
+      binding: hoisted.sessionBindingResolveByConversationMock(ref),
+    }),
     listBySession: (targetSessionKey: string) =>
       hoisted.sessionBindingListBySessionMock(targetSessionKey),
     resolveByConversation: (ref: unknown) => hoisted.sessionBindingResolveByConversationMock(ref),
@@ -1424,8 +1430,7 @@ describe("/acp command", () => {
     );
     const { createTestAdmittedRunContext } =
       await import("../../agents/admitted-run-context.test-support.js");
-    const { closeOpenClawAgentDatabasesForTest } = await import("../../state/openclaw-agent-db.js");
-    const { closeOpenClawStateDatabaseForTest } = await import("../../state/openclaw-state-db.js");
+    const { closeOpenClawStateDatabaseByPath } = await import("../../state/openclaw-state-db.js");
 
     hoisted.upsertAcpSessionMetaMock.mockImplementation((input) =>
       sessionMeta.upsertAcpSessionMeta({ ...input, cfg, databasePath, now: () => 1 }),
@@ -1467,8 +1472,7 @@ describe("/acp command", () => {
       expect(hoisted.runTurnMock).toHaveBeenCalledTimes(1);
     } finally {
       acpManagerTesting.resetAcpSessionManagerForTests();
-      closeOpenClawAgentDatabasesForTest();
-      closeOpenClawStateDatabaseForTest();
+      expect(closeOpenClawStateDatabaseByPath(databasePath)).toBe(true);
       await fs.rm(directory, { recursive: true, force: true });
     }
   });

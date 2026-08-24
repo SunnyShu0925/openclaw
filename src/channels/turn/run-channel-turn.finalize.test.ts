@@ -23,7 +23,7 @@ import {
 import { runPreparedChannelTurn } from "./execution.js";
 import { dispatchAssembledChannelTurn } from "./lifecycle.js";
 import { runChannelTurn } from "./run-channel-turn.js";
-import type { ChannelTurnResult } from "./types.js";
+import type { ChannelTurnHistoryFinalizeOptions, ChannelTurnResult } from "./types.js";
 
 const deliverOutboundPayloads = vi.hoisted(() => vi.fn());
 const resolveOutboundDurableFinalDeliverySupport = vi.hoisted(() => vi.fn());
@@ -107,9 +107,23 @@ function createCtx(overrides: Partial<FinalizedMsgContext> = {}): FinalizedMsgCo
 }
 
 function createRecordInboundSession(events: string[] = []): RecordInboundSession {
-  return vi.fn(async () => {
+  return vi.fn<RecordInboundSession>(async () => {
     events.push("record");
-  }) as unknown as RecordInboundSession;
+  });
+}
+
+function createPendingGroupHistory() {
+  const historyKey = "group-room-1";
+  const historyMap = new Map<string, HistoryEntry[]>([
+    [historyKey, [{ sender: "Alice", body: "earlier group message", timestamp: 1 }]],
+  ]);
+  const history = {
+    isGroup: true,
+    historyKey,
+    historyMap,
+    limit: 50,
+  } satisfies ChannelTurnHistoryFinalizeOptions;
+  return { history, historyMap };
 }
 
 function createDispatch(
@@ -416,7 +430,7 @@ describe("channel turn finalize", () => {
   });
 
   it("clears pending group history after a successful prepared turn", async () => {
-    const historyMap = new Map([["room-1", [{ sender: "User", body: "queued before reply" }]]]);
+    const { history, historyMap } = createPendingGroupHistory();
 
     await runPreparedChannelTurn({
       channel: "test",
@@ -428,25 +442,67 @@ describe("channel turn finalize", () => {
         queuedFinal: false,
         counts: { tool: 0, block: 0, final: 0 },
       })),
-      history: {
-        isGroup: true,
-        historyKey: "room-1",
-        historyMap,
-        limit: 50,
-      },
+      history,
     });
 
-    expect(historyMap.get("room-1")).toStrictEqual([]);
+    expect(historyMap.get(history.historyKey)).toStrictEqual([]);
+  });
+
+  it("clears pending group history when the explicit record session key is invalid", async () => {
+    const { history, historyMap } = createPendingGroupHistory();
+    const runDispatch = vi.fn();
+
+    await expect(
+      runPreparedChannelTurn({
+        channel: "test",
+        routeSessionKey: "agent:main:test:peer",
+        storePath: "/tmp/sessions.json",
+        ctxPayload: createCtx(),
+        recordInboundSession: createRecordInboundSession(),
+        runDispatch,
+        record: { sessionKey: "  " },
+        history,
+      }),
+    ).rejects.toThrow("Channel turn record.sessionKey must be non-empty.");
+
+    expect(runDispatch).not.toHaveBeenCalled();
+    expect(historyMap.get(history.historyKey)).toStrictEqual([]);
+  });
+
+  it("clears pending group history when transcript-context merge fails", async () => {
+    const { history, historyMap } = createPendingGroupHistory();
+    const transcriptError = new Error("transcript read failed");
+    const recordInboundSession = createRecordInboundSession();
+    readRecentUserAssistantTextForSession.mockRejectedValueOnce(transcriptError);
+
+    await expect(
+      runPreparedChannelTurn({
+        channel: "test",
+        routeSessionKey: "agent:main:test:peer",
+        storePath: "/tmp/sessions.json",
+        ctxPayload: createCtx({
+          AgentId: "main",
+          SessionTranscriptContext: { historyLimit: 1 },
+        }),
+        recordInboundSession,
+        runDispatch: vi.fn(),
+        history,
+      }),
+    ).rejects.toThrow(transcriptError);
+
+    expect(recordInboundSession).not.toHaveBeenCalled();
+    expect(historyMap.get(history.historyKey)).toStrictEqual([]);
   });
 
   it("cleans up pre-created dispatchers when session recording fails", async () => {
+    const { history, historyMap } = createPendingGroupHistory();
     const events: string[] = [];
     const recordError = new Error("session store failed");
     const log = vi.fn();
-    const recordInboundSession = vi.fn(async () => {
+    const recordInboundSession = vi.fn<RecordInboundSession>(async () => {
       events.push("record");
       throw recordError;
-    }) as unknown as RecordInboundSession;
+    });
     const runDispatch = vi.fn();
     const onPreDispatchFailure = vi.fn(async () => {
       events.push("cleanup");
@@ -465,85 +521,24 @@ describe("channel turn finalize", () => {
         record: {
           onRecordError: vi.fn(),
         },
+        history,
       }),
     ).rejects.toThrow(recordError);
 
     expect(events).toEqual(["record", "cleanup"]);
     expect(runDispatch).not.toHaveBeenCalled();
     expect(onPreDispatchFailure).toHaveBeenCalledWith(recordError);
+    expect(historyMap.get(history.historyKey)).toStrictEqual([]);
     expect(loggedEvents(log)).toEqual([
       { stage: "record", event: "start" },
       { stage: "record", event: "error" },
     ]);
   });
 
-  it("clears pending group history when the explicit record session key is invalid", async () => {
-    // resolveRecordSessionKey throws for blank or padded explicit record.sessionKey
-    // before recording or dispatch; a group turn must still finalize the caller-owned
-    // pending-history map so the next turn does not read stale entries.
-    const historyKey = "group-room-1";
-    const historyMap = new Map<string, HistoryEntry[]>([
-      [historyKey, [{ sender: "alice", body: "earlier group msg", timestamp: 1 }]],
-    ]);
-
-    await expect(
-      runPreparedChannelTurn({
-        channel: "test",
-        routeSessionKey: "agent:main:test:peer",
-        storePath: "/tmp/sessions.json",
-        ctxPayload: createCtx(),
-        recordInboundSession: createRecordInboundSession(),
-        runDispatch: vi.fn(),
-        record: { sessionKey: "  " },
-        history: { isGroup: true, historyKey, historyMap, limit: 50 },
-      }),
-    ).rejects.toThrow("Channel turn record.sessionKey must be non-empty.");
-
-    expect(historyMap.get(historyKey)).toStrictEqual([]);
-  });
-
-  it("clears pending group history when transcript-context merge fails before recording", async () => {
-    // The transcript-context merge runs before the record/dispatch try-catches; if it
-    // throws, the turn must still finalize the caller-owned pending-history map so the
-    // next group turn does not read stale entries. This is the pre-record terminal path
-    // that the per-catch cleanup did not cover.
-    const historyKey = "group-room-1";
-    const historyMap = new Map<string, HistoryEntry[]>([
-      [historyKey, [{ sender: "alice", body: "earlier group msg", timestamp: 1 }]],
-    ]);
-    const transcriptError = new Error("transcript read failed");
-    readRecentUserAssistantTextForSession.mockRejectedValueOnce(transcriptError);
-
-    await expect(
-      runPreparedChannelTurn({
-        channel: "test",
-        routeSessionKey: "agent:main:test:peer",
-        storePath: "/tmp/sessions.json",
-        ctxPayload: createCtx({
-          AgentId: "main",
-          SessionTranscriptContext: { historyLimit: 1 },
-        }),
-        recordInboundSession: createRecordInboundSession(),
-        runDispatch: vi.fn(),
-        history: { isGroup: true, historyKey, historyMap, limit: 50 },
-      }),
-    ).rejects.toThrow(transcriptError);
-
-    // Recording never ran because the merge threw first.
-    expect(historyMap.get(historyKey)).toStrictEqual([]);
-  });
-
-  it("clears pending group history when session recording fails", async () => {
-    // The caller-owned pending-history map is retained across turns; a failed turn
-    // must still finalize it so the next group turn does not read stale entries.
-    const historyKey = "group-room-1";
-    const historyMap = new Map<string, HistoryEntry[]>([
-      [historyKey, [{ sender: "alice", body: "earlier group msg", timestamp: 1 }]],
-    ]);
-    const recordError = new Error("session store failed");
-    const recordInboundSession = vi.fn<RecordInboundSession>(async () => {
-      throw recordError;
-    });
+  it("clears pending group history when dispatch fails", async () => {
+    const { history, historyMap } = createPendingGroupHistory();
+    const dispatchError = new Error("dispatch failed");
+    const recordInboundSession = createRecordInboundSession();
 
     await expect(
       runPreparedChannelTurn({
@@ -552,13 +547,15 @@ describe("channel turn finalize", () => {
         storePath: "/tmp/sessions.json",
         ctxPayload: createCtx(),
         recordInboundSession,
-        runDispatch: vi.fn(),
-        record: { onRecordError: vi.fn() },
-        history: { isGroup: true, historyKey, historyMap, limit: 50 },
+        runDispatch: vi.fn(async () => {
+          throw dispatchError;
+        }),
+        history,
       }),
-    ).rejects.toThrow(recordError);
+    ).rejects.toThrow(dispatchError);
 
-    expect(historyMap.get(historyKey)).toStrictEqual([]);
+    expect(recordInboundSession).toHaveBeenCalledOnce();
+    expect(historyMap.get(history.historyKey)).toStrictEqual([]);
   });
 
   it("runs afterRecord only after session recording succeeds and before dispatch", async () => {

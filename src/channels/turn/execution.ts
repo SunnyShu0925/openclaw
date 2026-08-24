@@ -1,3 +1,7 @@
+import {
+  withDispatchProcessedOutcomeSink,
+  type DispatchProcessedNote,
+} from "../../auto-reply/reply/dispatch-processed-outcome.js";
 import { clearChannelHistoryIfEnabled } from "../../auto-reply/reply/history.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import {
@@ -9,7 +13,7 @@ import { isRecentOutboundMessageIdentity } from "../message/outbound-echo.js";
 import { recordChannelBotPairLoopAndCheckSuppression } from "./bot-loop-protection.js";
 import {
   EMPTY_CHANNEL_TURN_DISPATCH_COUNTS,
-  hasVisibleChannelTurnDispatchFromReceipt as hasVisibleChannelTurnDispatch,
+  hasVisibleChannelTurnDispatch,
   type ChannelTurnDispatchResultLike,
   type ChannelTurnVisibleDeliverySignals,
 } from "./dispatch-result.js";
@@ -88,6 +92,7 @@ function maybeWarnZeroCountVisibleDispatch<TDispatchResult>(
     "admission" | "channel" | "ctxPayload" | "messageId" | "routeSessionKey"
   > & {
     dispatchResult: TDispatchResult;
+    processedOutcome?: DispatchProcessedNote;
     log?: (event: ChannelTurnLogEvent) => void;
   },
 ): void {
@@ -102,11 +107,19 @@ function maybeWarnZeroCountVisibleDispatch<TDispatchResult>(
   if (hasVisibleChannelTurnDispatch(dispatchResult, NO_ADDITIONAL_DELIVERY_SIGNALS)) {
     return;
   }
+  // The processed outcome names the dispatch branch that produced the silence,
+  // so operators can tell a benign duplicate or busy skip from a lost message.
+  // It stays in this core-owned log line; the channel log event is a plugin
+  // contract and must not widen.
+  const processed = params.processedOutcome;
+  const cause = processed
+    ? `${processed.outcome}${processed.reason ? `:${processed.reason}` : ""}`
+    : undefined;
   log.warn(
     `visible channel turn dispatched with no queued reply payloads: channel=${params.channel} ` +
       `messageId=${params.messageId ?? "unknown"} sessionKey=${
         params.ctxPayload.SessionKey ?? params.routeSessionKey
-      }`,
+      } cause=${cause ?? "unknown"}`,
   );
   emit({
     ...params,
@@ -240,11 +253,8 @@ async function runPreparedChannelTurnCoreInTrace<
   }
   // Native commands can execute in an isolated command session while updating the
   // provider-routed target session. Keep that record target separate from dispatch.
-  // The pending-history map is caller-owned and retained across turns; a turn must
-  // finalize it on every terminal exit after this point so the next group turn does
-  // not replay stale context. Resolve the record session key inside this boundary so
-  // invalid explicit keys throw through the same cleanup, then wrap transcript merge,
-  // recording, and dispatch in one finally that covers all post-drop failure paths.
+  // The caller retains pending history across turns; finalize every admitted terminal
+  // path before the next group turn can replay stale context.
   try {
     const recordSessionKey = resolveRecordSessionKey(params);
     if (params.ctxPayload.SessionTranscriptContext) {
@@ -327,14 +337,21 @@ async function runPreparedChannelTurnCoreInTrace<
       } else if (admission.kind === "observeOnly") {
         await params.runDispatchLifecycle?.onDispatchSkipped("observeOnly");
       }
-      dispatchResult =
-        admission.kind === "observeOnly"
-          ? resolveObserveOnlyDispatchResult(params)
-          : await params.runDispatch();
+      let processedOutcome: DispatchProcessedNote | undefined;
+      if (admission.kind === "observeOnly") {
+        dispatchResult = resolveObserveOnlyDispatchResult(params);
+      } else {
+        // The sink carries the dispatch's terminal outcome to the warning below
+        // without widening the plugin-visible dispatch result contract.
+        ({ result: dispatchResult, processedOutcome } = await withDispatchProcessedOutcomeSink(() =>
+          params.runDispatch(),
+        ));
+      }
       maybeWarnZeroCountVisibleDispatch({
         ...params,
         admission,
         dispatchResult,
+        processedOutcome,
       });
     } catch (err) {
       emit({
