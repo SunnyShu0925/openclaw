@@ -626,6 +626,58 @@ describe("memory_search unavailable payloads", () => {
     });
   });
 
+  it("preserves stale warning when background sync clears lastSyncError during search", async () => {
+    setMemoryLastSyncError("embedding request timed out");
+    setMemorySearchImpl(async (opts) => {
+      // The manager captures freshness (lastSyncError set) after the background
+      // sync starts but before it completes. The nonblocking sync clears
+      // lastSyncError asynchronously — the snapshot must still reflect the
+      // in-flight state.
+      opts?.onFreshness?.({ lastSyncError: "embedding request timed out" });
+      setMemoryLastSyncError(undefined);
+      return [];
+    });
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+    });
+
+    const result = await tool.execute("race-sync", { query: "hidden codeword" });
+
+    expect(result.details).toMatchObject({
+      results: [],
+      stale: true,
+      warning:
+        "Memory index is stale: embedding request timed out. Search results may be incomplete.",
+    });
+  });
+
+  it("does not warn when synchronous bootstrap clears lastSyncError before search", async () => {
+    setMemoryLastSyncError("previous sync failed");
+    setMemorySearchImpl(async (opts) => {
+      // A fresh process boots with a stale lastSyncError. The synchronous
+      // sync in search() succeeds and clears lastSyncError. Freshness
+      // is captured after the sync completes, so the snapshot must show no error.
+      setMemoryLastSyncError(undefined);
+      opts?.onFreshness?.({ lastSyncError: undefined });
+      return [];
+    });
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+    });
+
+    const result = await tool.execute("fresh-bootstrap", { query: "hidden codeword" });
+
+    expect(result.details).toMatchObject({ results: [] });
+    expect(result.details).not.toHaveProperty("stale");
+    expect(result.details).not.toHaveProperty("warning");
+  });
+
   it("surfaces embedding bootstrap degradation when keyword search has no hits", async () => {
     let searchCalls = 0;
     setMemorySearchImpl(async (opts) => {

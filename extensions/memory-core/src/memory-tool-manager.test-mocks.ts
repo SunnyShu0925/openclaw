@@ -13,6 +13,7 @@ type SearchImpl = (opts?: {
   sessionKey?: string;
   activeProjectKeys?: string[];
   onDebug?: (debug: MemorySearchRuntimeDebug) => void;
+  onFreshness?: (snapshot: { custom?: Record<string, unknown>; lastSyncError?: string }) => void;
   signal?: AbortSignal;
   sources?: MemorySource[];
 }) => Promise<unknown[]>;
@@ -50,7 +51,12 @@ let readFileImpl: (params: MemoryReadParams) => Promise<MemoryReadResult> = asyn
 });
 
 const stubManager = {
-  search: vi.fn(async (_query: string, opts?: Parameters<SearchImpl>[0]) => await searchImpl(opts)),
+  search: vi.fn(async (_query: string, opts?: Parameters<SearchImpl>[0]) => {
+    // The search impl is responsible for calling opts.onFreshness at the point
+    // that mirrors the real manager's capture: after any synchronous dirty-index
+    // sync. This gives tests precise control over timing.
+    return await searchImpl(opts);
+  }),
   readFile: vi.fn(async (params: MemoryReadParams) => await readFileImpl(params)),
   status: () => ({
     backend: "builtin" as const,

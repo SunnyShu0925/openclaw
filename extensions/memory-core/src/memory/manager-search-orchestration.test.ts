@@ -899,4 +899,76 @@ describe("memory index", () => {
     await expect(manager.close?.()).resolves.toBeUndefined();
     expect(syncSpy).toHaveBeenCalledWith({ reason: "search" });
   });
+
+  it("returns existing-index results without waiting for nonblocking dirty sync", async () => {
+    providerFixture.forceNoProvider = true;
+    const manager = await getPersistentManager(
+      createCfg({ provider: "none", minScore: 0, onSearch: true, hybrid: { enabled: true } }),
+    );
+    await manager.sync({ reason: "test" });
+    await fs.writeFile(
+      path.join(fixture.paths.memory, "search-sync.md"),
+      "Current memory appears only after the dirty search sync.",
+    );
+    await vi.waitFor(() => expect(manager.status().dirty).toBe(true));
+
+    // Hold the background sync behind a gate so the search must complete before
+    // the new file is indexed. The spy wraps the real implementation so that
+    // releasing the gate runs the actual sync (indexing the new file).
+    let releaseGate = () => {};
+    const syncGate = new Promise<void>((resolve) => {
+      releaseGate = () => resolve();
+    });
+    const realSyncPublished = (
+      manager as unknown as {
+        syncPublishedIndexInBackground: (params: { reason: string }) => Promise<void>;
+      }
+    ).syncPublishedIndexInBackground.bind(manager);
+    let syncCalled = false;
+    let syncSettled = false;
+    const syncSpy = vi
+      .spyOn(
+        manager as unknown as {
+          syncPublishedIndexInBackground: (params: { reason: string }) => Promise<void>;
+        },
+        "syncPublishedIndexInBackground",
+      )
+      .mockImplementation(async (params) => {
+        syncCalled = true;
+        await syncGate;
+        await realSyncPublished(params);
+        syncSettled = true;
+      });
+
+    // nonblockingRefresh lets the search return results from the existing index
+    // without waiting for the dirty sync to settle.
+    try {
+      const results = await manager.search("current dirty search sync", {
+        maxResults: 5,
+        minScore: 0,
+        nonblockingRefresh: true,
+      });
+
+      // The sync was started but not awaited.
+      expect(syncCalled).toBe(true);
+      expect(syncSettled).toBe(false);
+      // The newly written file is not yet indexed, so it does not appear in results.
+      expect(results.some((entry) => entry.path === "memory/search-sync.md")).toBe(false);
+
+      // Release the gate so the real background sync runs and indexes the new file.
+      releaseGate();
+      await vi.waitFor(() => expect(syncSettled).toBe(true));
+
+      // The background sync itself indexed the new file — verify convergence
+      // without relying on a second search's own synchronous dirty sync.
+      const laterResults = await manager.search("current dirty search sync", {
+        maxResults: 5,
+        minScore: 0,
+      });
+      expect(laterResults.some((entry) => entry.path === "memory/search-sync.md")).toBe(true);
+    } finally {
+      releaseGate();
+      syncSpy.mockRestore();
+    }
+  });
 });

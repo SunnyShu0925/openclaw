@@ -3,10 +3,18 @@ export function startAsyncSearchSync(params: {
   enabled: boolean;
   dirty: boolean;
   sessionsDirty: boolean;
+  nonblocking?: boolean;
   sync: (params: { reason: string }) => Promise<void>;
   onError: (err: unknown) => void;
 }): Promise<void> | void {
   if (!params.enabled || (!params.dirty && !params.sessionsDirty)) {
+    return;
+  }
+  if (params.nonblocking) {
+    // A deadline-bounded caller (nonblocking) can enumerate and parse a large
+    // transcript corpus. Keep the existing sync admission/close ownership while
+    // letting indexed searches proceed.
+    void params.sync({ reason: "search" }).catch(params.onError);
     return;
   }
   try {

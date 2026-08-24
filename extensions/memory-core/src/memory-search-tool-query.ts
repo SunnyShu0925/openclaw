@@ -3,8 +3,10 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   resolveMemoryIndexIdentityReason,
   type MemorySearchManager,
+  type MemorySearchResult,
   type MemorySearchRuntimeDebug,
   type MemorySource,
+  type MemoryProviderStatus,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
@@ -26,6 +28,22 @@ export function buildPausedMemoryIndexUnavailableResult(reason: string) {
 
 type ManagerState = { manager: MemorySearchManager; managerMs?: number };
 
+type FreshnessSnapshot = Pick<MemoryProviderStatus, "custom" | "lastSyncError">;
+
+/**
+ * MemorySearchManager.search opts extended with the internal nonblockingRefresh
+ * scheduling flag. The builtin MemoryIndexManager accepts this option even though
+ * it is not part of the exported manager contract, so the gateway tool path can
+ * request a background dirty-index refresh without broadening the SDK surface.
+ */
+type ManagerSearchOptions = NonNullable<Parameters<MemorySearchManager["search"]>[1]> & {
+  nonblockingRefresh?: boolean;
+  onFreshness?: (snapshot: FreshnessSnapshot) => void;
+};
+type ManagerWithNonblockingRefresh = MemorySearchManager & {
+  search(query: string, opts?: ManagerSearchOptions): Promise<MemorySearchResult[]>;
+};
+
 type MemorySearchToolQuery = {
   text: string;
   resultLimit: number;
@@ -37,6 +55,7 @@ type MemorySearchToolQuery = {
   sessionKey?: string;
   activeProjectKeys?: readonly string[];
   conversationRecall?: OpenClawPluginToolContext["conversationRecall"];
+  nonblockingRefresh?: boolean;
 };
 
 type MemorySearchToolVisibility = {
@@ -80,6 +99,7 @@ export async function executeMemorySearchToolQuery(params: {
 
   const searchOnce = async () => {
     const allowedSources = searchSources ? new Set(searchSources) : undefined;
+    let freshnessAtSearch: FreshnessSnapshot = active.manager.status();
     const searchesSessions = searchSources?.includes("sessions") === true;
     const indexedCandidateCount = searchesSessions
       ? (active.manager.status().sourceCounts ?? [])
@@ -93,7 +113,8 @@ export async function executeMemorySearchToolQuery(params: {
     const searchWindow = searchesSessions
       ? Math.min(MEMORY_SEARCH_POST_FILTER_MAX_CANDIDATES, availableCandidates)
       : query.resultLimit;
-    const candidates = await active.manager.search(query.text, {
+    // SAFETY: active.manager is a MemoryIndexManager at runtime, whose search() accepts the internal nonblockingRefresh option (MemoryIndexSearchOptions). The cast passes the option without broadening the exported MemorySearchManager contract.
+    const candidates = await (active.manager as ManagerWithNonblockingRefresh).search(query.text, {
       maxResults: searchWindow,
       minScore: query.minScore,
       sessionKey: query.sessionKey,
@@ -101,8 +122,12 @@ export async function executeMemorySearchToolQuery(params: {
       signal,
       onDebug: (debug) => runtimeDebug.push(debug),
       ...(searchSources ? { sources: searchSources } : {}),
+      ...(query.nonblockingRefresh ? { nonblockingRefresh: true } : {}),
+      onFreshness: (snapshot: FreshnessSnapshot) => {
+        freshnessAtSearch = snapshot;
+      },
     });
-    return { candidates, searchWindow };
+    return { candidates, searchWindow, freshnessAtSearch };
   };
 
   let searched: Awaited<ReturnType<typeof searchOnce>>;
@@ -125,6 +150,7 @@ export async function executeMemorySearchToolQuery(params: {
   if (pausedIndexIdentityReason) {
     return {
       status,
+      searchedAtFreshness: searched.freshnessAtSearch,
       rawResults: [],
       pausedIndexIdentityReason,
       searchMode: undefined,
@@ -155,6 +181,7 @@ export async function executeMemorySearchToolQuery(params: {
   const latestDebug = runtimeDebug.at(-1);
   return {
     status,
+    searchedAtFreshness: searched.freshnessAtSearch,
     rawResults,
     pausedIndexIdentityReason: undefined,
     searchMode: latestDebug?.effectiveMode,
