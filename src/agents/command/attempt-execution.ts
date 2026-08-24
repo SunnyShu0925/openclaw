@@ -72,7 +72,6 @@ import { hasCliLiveSession } from "../cli-runner/cli-live-session-registry.js";
 import { resolveCliRuntimeToolsAllow } from "../cli-runner/tool-policy.js";
 import {
   getCliSessionBinding,
-  isCliSessionInvalidatingFailoverReason,
   resolveCliSessionClearReason,
   shouldClearFailedCliSessionBinding,
 } from "../cli-session.js";
@@ -1077,12 +1076,6 @@ export function runAgentAttempt(params: {
                         cliExecutionProvider,
                       )?.sessionId !== retry.sessionId
                     ) {
-                      return false;
-                    }
-
-                    if (!isCliSessionInvalidatingFailoverReason(retry.reason)) {
-                      // A retained binding must be resumed by the next normal turn.
-                      // Authorizing fresh recovery here would replace it with a new conversation.
                       return false;
                     }
 
