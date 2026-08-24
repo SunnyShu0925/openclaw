@@ -60,6 +60,7 @@ import {
   isTelegramChatWindowPromptContext,
   mergeTelegramGroupHistoryPromptContext,
   recordTelegramGroupHistoryEntry,
+  retainTelegramGroupHistoryPromptContext,
   selectTelegramGroupHistoryAfterLastSelf,
 } from "./group-history-window.js";
 import { TELEGRAM_REPLY_CHAIN_MAX_DEPTH, type TelegramReplyChainEntry } from "./message-cache.js";
@@ -572,8 +573,12 @@ export async function buildTelegramInboundContextPayload(params: {
     groupHistoryPromptEntries =
       inboundEventKind === "room_event" ? fullGroupHistoryEntries : watermarkedGroupHistoryEntries;
   }
-  const visiblePromptContext = mergeTelegramGroupHistoryPromptContext({
+  const retainedVisiblePromptContext = retainTelegramGroupHistoryPromptContext({
     promptContext: baseVisiblePromptContext,
+    entries: groupHistoryPromptEntries,
+  });
+  const visiblePromptContext = mergeTelegramGroupHistoryPromptContext({
+    promptContext: retainedVisiblePromptContext,
     entries: groupHistoryPromptEntries,
   });
 
