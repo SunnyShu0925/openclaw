@@ -573,10 +573,12 @@ export async function buildTelegramInboundContextPayload(params: {
     groupHistoryPromptEntries =
       inboundEventKind === "room_event" ? fullGroupHistoryEntries : watermarkedGroupHistoryEntries;
   }
-  const retainedVisiblePromptContext = retainTelegramGroupHistoryPromptContext({
-    promptContext: baseVisiblePromptContext,
-    entries: groupHistoryPromptEntries,
-  });
+  const retainedVisiblePromptContext = hasGroupHistoryContext
+    ? retainTelegramGroupHistoryPromptContext({
+        promptContext: baseVisiblePromptContext,
+        entries: groupHistoryPromptEntries,
+      })
+    : baseVisiblePromptContext;
   const visiblePromptContext = mergeTelegramGroupHistoryPromptContext({
     promptContext: retainedVisiblePromptContext,
     entries: groupHistoryPromptEntries,
