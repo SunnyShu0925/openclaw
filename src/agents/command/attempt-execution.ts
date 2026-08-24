@@ -1081,7 +1081,9 @@ export function runAgentAttempt(params: {
                     }
 
                     if (!isCliSessionInvalidatingFailoverReason(retry.reason)) {
-                      return true;
+                      // A retained binding must be resumed by the next normal turn.
+                      // Authorizing fresh recovery here would replace it with a new conversation.
+                      return false;
                     }
 
                     log.warn(

@@ -973,7 +973,7 @@ describe("CLI attempt execution", () => {
     expect(persisted[sessionKey]?.claudeCliSessionId).toBeUndefined();
   });
 
-  it("preserves a valid Claude CLI binding through a format fresh retry", async () => {
+  it("preserves and resumes a valid Claude CLI binding after format failover", async () => {
     const sessionKey = "agent:main:subagent:cli-format";
     const cliSessionId = "format-retry-session";
     await writeClaudeCliAssistantTranscript(cliSessionId);
@@ -996,7 +996,7 @@ describe("CLI attempt execution", () => {
           reason: "format",
           sessionId: cliSessionId,
         }),
-      ).resolves.toBe(true);
+      ).resolves.toBe(false);
 
       expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
         cliSessionId,
@@ -1004,19 +1004,38 @@ describe("CLI attempt execution", () => {
       expect(readSessionStore()[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
         cliSessionId,
       );
-      return makeCliResult("hello after format retry");
+      throw new FailoverError("Claude CLI returned an unusable result", {
+        reason: "format",
+        code: "cli_synthetic_no_response",
+        provider: "claude-cli",
+        model: "opus",
+      });
     });
+
+    await expect(
+      runClaudeCliAttempt({
+        sessionEntry,
+        sessionKey,
+        sessionStore,
+        body: "retry this malformed turn",
+        runId: "run-cli-format",
+      }),
+    ).rejects.toMatchObject({ name: "FailoverError", reason: "format" });
+
+    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
+    expect(firstRunCliAgentArg().cliSessionId).toBe(cliSessionId);
+    runCliAgentMock.mockResolvedValueOnce(makeCliResult("hello after retained resume"));
 
     await runClaudeCliAttempt({
       sessionEntry,
       sessionKey,
       sessionStore,
-      body: "retry this malformed turn",
-      runId: "run-cli-format",
+      body: "continue on the next turn",
+      runId: "run-cli-format-resume",
     });
 
-    expect(runCliAgentMock).toHaveBeenCalledTimes(1);
-    expect(firstRunCliAgentArg().cliSessionId).toBe(cliSessionId);
+    expect(runCliAgentMock).toHaveBeenCalledTimes(2);
+    expect(firstRunCliAgentArg(1).cliSessionId).toBe(cliSessionId);
     expect(sessionStore[sessionKey]?.cliSessionBindings?.["claude-cli"]?.sessionId).toBe(
       cliSessionId,
     );

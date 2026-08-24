@@ -2092,6 +2092,66 @@ describe("runCliAgent reliability", () => {
     expect(clearBeforeRetry).not.toHaveBeenCalled();
   });
 
+  it("does not start a fresh CLI attempt when format recovery retains the binding", async () => {
+    supervisorSpawnMock.mockClear();
+    supervisorSpawnMock.mockResolvedValueOnce(
+      makeManagedRun({
+        stdout: [
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              model: "<synthetic>",
+              content: [{ type: "text", text: "No response requested." }],
+            },
+          }),
+          JSON.stringify({ type: "result", subtype: "success", result: "" }),
+        ].join("\n"),
+      }),
+    );
+    const clearBeforeRetry = vi.fn(async () => false);
+    const { dir, sessionFile } = createSessionFile({
+      history: [{ role: "user", content: "earlier context" }],
+    });
+
+    try {
+      const context = makeClaudePreparedContext({
+        sessionKey: "agent:main:subagent:retained-format",
+        runId: "run-retained-format",
+        cliSessionId: "retained-cli-session",
+        openClawHistoryPrompt: CLI_RESEED_PROMPT,
+      });
+      context.preparedBackend.backend = {
+        ...context.preparedBackend.backend,
+        output: "jsonl",
+        input: "stdin",
+        jsonlDialect: "claude-stream-json",
+      };
+      context.backendResolved.config = context.preparedBackend.backend;
+
+      await expect(
+        runPreparedCliAgent({
+          ...context,
+          params: {
+            ...context.params,
+            agentId: "main",
+            sessionFile,
+            workspaceDir: dir,
+            onBeforeFreshCliSessionRetry: clearBeforeRetry,
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "format", code: "cli_synthetic_no_response" });
+
+      expect(supervisorSpawnMock).toHaveBeenCalledTimes(1);
+      expect(clearBeforeRetry).toHaveBeenCalledWith({
+        provider: "claude-cli",
+        reason: "format",
+        sessionId: "retained-cli-session",
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each(["timeout", "unknown", "context_overflow", "format"] as const)(
     "retries a fresh CLI session after recoverable %s failover without a failed agent_end",
     async (reason) => {
