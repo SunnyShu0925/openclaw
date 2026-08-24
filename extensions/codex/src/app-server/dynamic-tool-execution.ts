@@ -46,6 +46,16 @@ const CODEX_DYNAMIC_COMPUTER_GATEWAY_TIMEOUT_MS = 30_000;
 const CODEX_DYNAMIC_COMPUTER_COMPLETION_GRACE_MS = 30_000;
 /** Timeout for image-understanding style dynamic tool calls. */
 const CODEX_DYNAMIC_IMAGE_TOOL_TIMEOUT_MS = 60_000;
+/**
+ * Upper bound on effective sequential image-tool calls the outer watchdog must
+ * outlive: one primary request plus bounded image-model fallback attempts. The
+ * image tool may also process multiple images, but providers that support a
+ * batch `describeImages` call handle them in one request, so this bound covers
+ * the common multi-image + fallback chain without reserving the full 20-image
+ * worst case (which would yield an impractical budget). Configurations that
+ * genuinely exceed this bound should raise the configured per-request timeout.
+ */
+const CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS = 3;
 /** Timeout for message-delivery dynamic tool calls. */
 const CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS = 600_000;
 /** Outer default for collector waits: full swarm budget plus completion grace. */
@@ -255,7 +265,7 @@ export async function handleDynamicToolCallWithTimeout(params: {
     resolveAbort = resolve;
   });
   const timeoutPromise = new Promise<CodexDynamicToolRuntimeResponse>((resolve) => {
-    const timeoutMs = clampDynamicToolTimeoutMs(params.timeoutMs);
+    const timeoutMs = Math.max(1, Math.floor(params.timeoutMs));
     timeout = setTimeout(() => {
       timedOut = true;
       const timeoutDetails = formatDynamicToolTimeoutDetails({ call: params.call, timeoutMs });
@@ -522,12 +532,30 @@ export function resolveDynamicToolCallTimeoutMs(params: {
       readDynamicToolCallTimeoutMs(params.call.arguments) ??
       readConfiguredDynamicToolTimeoutMs(params.call.tool, params.config) ??
       CODEX_DYNAMIC_AGENTS_WAIT_TOOL_TIMEOUT_MS;
-    return Math.max(
-      1,
-      Math.min(
-        CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
-        Math.floor(requestedMs),
-      ),
+    return clampDynamicToolTimeoutWithGraceMs(requestedMs);
+  }
+  if (params.call.tool === "view_image") {
+    // The image tool can issue several sequential provider requests before
+    // returning: a primary call, image-model fallback candidates, and (when the
+    // provider lacks a batch `describeImages` call) one call per image. The
+    // outer watchdog must outlive the *complete* chain so the image layer can
+    // return its structured setup/request failure instead of being masked by a
+    // generic dynamic-tool timeout. We therefore budget for a bounded number of
+    // effective calls (one primary plus fallbacks) rather than a single request.
+    //
+    // All sources here are the per-request *net* budget (no grace). The
+    // call-parser's `timeoutSeconds` grace is added once at the end, after
+    // scaling, so the grace is not multiplied.
+    const args = isJsonObject(params.call.arguments) ? params.call.arguments : undefined;
+    const callTimeoutSecondsMs = readDynamicToolTimeoutSecondsAsMs(args?.timeoutSeconds);
+    const callTimeoutMs = readPositiveFiniteTimeoutMs(args?.timeoutMs);
+    const configuredTimeoutMs =
+      readConfiguredDynamicToolTimeoutMs(params.call.tool, params.config) ??
+      CODEX_DYNAMIC_IMAGE_TOOL_TIMEOUT_MS;
+    const perRequestMs = callTimeoutMs ?? callTimeoutSecondsMs ?? configuredTimeoutMs;
+    return clampDynamicToolTimeoutWithGraceMs(
+      perRequestMs * CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS +
+        CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
     );
   }
   return clampDynamicToolTimeoutMs(
@@ -635,4 +663,20 @@ function readPositiveFiniteTimeoutMs(value: unknown): number | undefined {
 
 function clampDynamicToolTimeoutMs(timeoutMs: number): number {
   return Math.max(1, Math.min(CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS, Math.floor(timeoutMs)));
+}
+
+/**
+ * Clamp a dynamic-tool timeout to the watchdog-grace cap (MAX + GRACE). Tools
+ * whose inner request can occupy the full per-call deadline (agents_wait,
+ * view_image) use this so the outer watchdog outlives the tool's own structured
+ * result instead of aborting it first.
+ */
+function clampDynamicToolTimeoutWithGraceMs(timeoutMs: number): number {
+  return Math.max(
+    1,
+    Math.min(
+      CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+      Math.floor(timeoutMs),
+    ),
+  );
 }

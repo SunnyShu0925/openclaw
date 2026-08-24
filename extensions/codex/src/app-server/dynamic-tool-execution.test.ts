@@ -13,13 +13,43 @@ import {
   toCodexDynamicToolProgressResponse,
   toCodexDynamicToolProtocolResponse,
 } from "./dynamic-tool-execution.js";
-import type { CodexDynamicToolCallResponse } from "./protocol.js";
+import type { JsonValue } from "./protocol-json.js";
+import type { CodexDynamicToolCallParams, CodexDynamicToolCallResponse } from "./protocol.js";
 
 const CODEX_DYNAMIC_TOOL_TIMEOUT_MS = 90_000;
 const CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS = 600_000;
 const CODEX_DYNAMIC_IMAGE_TOOL_TIMEOUT_MS = 60_000;
+const CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS = 30_000;
+const CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS = 3;
 const CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS = CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS;
 const CODEX_DYNAMIC_TOOL_SERVER_REQUEST_TIMEOUT_MS = 660_000;
+
+function makeTimeoutCall(
+  tool: string,
+  args: Record<string, unknown>,
+  callId: string,
+): CodexDynamicToolCallParams {
+  return {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    callId,
+    namespace: null,
+    tool,
+    arguments: args as JsonValue,
+  };
+}
+
+function resolveTimeout(
+  tool: string,
+  args: Record<string, unknown>,
+  config: unknown,
+  callId = `call-${tool}`,
+): number {
+  return resolveDynamicToolCallTimeoutMs({
+    call: makeTimeoutCall(tool, args, callId),
+    config: config as EmbeddedRunAttemptParams["config"],
+  });
+}
 
 describe("dynamic tool execution helpers", () => {
   afterEach(() => {
@@ -29,138 +59,71 @@ describe("dynamic tool execution helpers", () => {
 
   it("keeps explicit dynamic tool timeouts above the default bridge deadline", () => {
     const timeoutMs = CODEX_DYNAMIC_TOOL_TIMEOUT_MS + 1_000;
-
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-long",
-          namespace: null,
-          tool: "image_generate",
-          arguments: { prompt: "cat", timeoutMs },
-        },
-        config: undefined,
-      }),
+      resolveTimeout("image_generate", { prompt: "cat", timeoutMs }, undefined, "call-long"),
     ).toBe(timeoutMs);
   });
 
   it("ignores partial dynamic tool timeout strings", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-partial-timeout",
-          namespace: null,
-          tool: "session_status",
-          arguments: { timeoutMs: "1abc" },
-        },
-        config: undefined,
-      }),
+      resolveTimeout("session_status", { timeoutMs: "1abc" }, undefined, "call-partial-timeout"),
     ).toBe(CODEX_DYNAMIC_TOOL_TIMEOUT_MS);
   });
 
   it("honors timeoutSeconds when timeoutMs is absent", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-seconds",
-          namespace: null,
-          tool: "session_status",
-          arguments: { timeoutSeconds: 30 },
-        },
-        config: undefined,
-      }),
+      resolveTimeout("session_status", { timeoutSeconds: 30 }, undefined, "call-seconds"),
     ).toBe(60_000);
   });
 
   it("prefers timeoutMs over timeoutSeconds", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-both",
-          namespace: null,
-          tool: "session_status",
-          arguments: { timeoutMs: 5_000, timeoutSeconds: 30 },
-        },
-        config: undefined,
-      }),
+      resolveTimeout(
+        "session_status",
+        { timeoutMs: 5_000, timeoutSeconds: 30 },
+        undefined,
+        "call-both",
+      ),
     ).toBe(5_000);
   });
 
   it("ignores non-positive timeoutSeconds", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-bad-seconds",
-          namespace: null,
-          tool: "session_status",
-          arguments: { timeoutSeconds: -1 },
-        },
-        config: undefined,
-      }),
+      resolveTimeout("session_status", { timeoutSeconds: -1 }, undefined, "call-bad-seconds"),
     ).toBe(CODEX_DYNAMIC_TOOL_TIMEOUT_MS);
   });
 
   it("rejects fractional timeoutSeconds and falls back to the default", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-fractional-seconds",
-          namespace: null,
-          tool: "session_status",
-          arguments: { timeoutSeconds: 1.5 },
-        },
-        config: undefined,
-      }),
+      resolveTimeout(
+        "session_status",
+        { timeoutSeconds: 1.5 },
+        undefined,
+        "call-fractional-seconds",
+      ),
     ).toBe(CODEX_DYNAMIC_TOOL_TIMEOUT_MS);
   });
 
   it("uses configured image generation timeouts for Codex dynamic tool calls", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-image-generate-default",
-          namespace: null,
-          tool: "image_generate",
-          arguments: { prompt: "cat" },
-        },
-        config: {
+      resolveTimeout(
+        "image_generate",
+        { prompt: "cat" },
+        {
           agents: {
             defaults: {
-              mediaModels: {
-                image: {
-                  primary: "openai/gpt-image-1",
-                  timeoutMs: 180_000,
-                },
-              },
+              mediaModels: { image: { primary: "openai/gpt-image-1", timeoutMs: 180_000 } },
             },
           },
         },
-      }),
+        "call-image-generate-default",
+      ),
     ).toBe(180_000);
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-image-capability-default",
-          namespace: null,
-          tool: "view_image",
-          arguments: { prompt: "describe", paths: ["/tmp/one.jpg"] },
-        },
-        config: {
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"] },
+        {
           tools: {
             media: {
               models: [{ provider: "openai", model: "vision", capabilities: ["image"] }],
@@ -168,135 +131,90 @@ describe("dynamic tool execution helpers", () => {
             },
           },
         },
-      }),
-    ).toBe(180_000);
+        "call-image-capability-default",
+      ),
+    ).toBe(
+      180_000 * CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS +
+        CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    );
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-image-mixed-timeouts",
-          namespace: null,
-          tool: "view_image",
-          arguments: { prompt: "describe", paths: ["/tmp/one.jpg"] },
-        },
-        config: {
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"] },
+        {
           tools: {
             media: {
               models: [
                 { provider: "openai", model: "inherited", capabilities: ["image"] },
-                {
-                  provider: "openai",
-                  model: "short",
-                  capabilities: ["image"],
-                  timeoutSeconds: 60,
-                },
+                { provider: "openai", model: "short", capabilities: ["image"], timeoutSeconds: 60 },
               ],
               image: { timeoutSeconds: 180 },
             },
           },
         },
-      }),
-    ).toBe(180_000);
+        "call-image-mixed-timeouts",
+      ),
+    ).toBe(
+      180_000 * CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS +
+        CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    );
   });
 
   it("uses default media and message dynamic tool deadlines", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-computer-wait",
-          namespace: null,
-          tool: "computer",
-          arguments: { action: "wait", duration: 100 },
-        },
-        config: undefined,
-      }),
+      resolveTimeout(
+        "computer",
+        { action: "wait", duration: 100 },
+        undefined,
+        "call-computer-wait",
+      ),
     ).toBe(220_000);
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-computer-transport-timeout",
-          namespace: null,
-          tool: "computer",
-          arguments: { action: "left_click", coordinate: [1, 1], timeoutMs: 1_000 },
-        },
-        config: undefined,
-      }),
+      resolveTimeout(
+        "computer",
+        { action: "left_click", coordinate: [1, 1], timeoutMs: 1_000 },
+        undefined,
+        "call-computer-transport-timeout",
+      ),
     ).toBe(34_000);
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-image-generate-default",
-          namespace: null,
-          tool: "image_generate",
-          arguments: { prompt: "cat" },
-        },
-        config: undefined,
-      }),
+      resolveTimeout("image_generate", { prompt: "cat" }, undefined, "call-image-generate-default"),
     ).toBe(120_000);
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-image-default",
-          namespace: null,
-          tool: "view_image",
-          arguments: { prompt: "describe", paths: ["/tmp/one.jpg"] },
-        },
-        config: undefined,
-      }),
-    ).toBe(CODEX_DYNAMIC_IMAGE_TOOL_TIMEOUT_MS);
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"] },
+        undefined,
+        "call-image-default",
+      ),
+    ).toBe(
+      CODEX_DYNAMIC_IMAGE_TOOL_TIMEOUT_MS * CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS +
+        CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    );
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-message",
-          namespace: null,
-          tool: "message",
-          arguments: { action: "send", message: "long outbound update" },
-        },
-        config: undefined,
-      }),
+      resolveTimeout(
+        "message",
+        { action: "send", message: "long outbound update" },
+        undefined,
+        "call-message",
+      ),
     ).toBe(CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS);
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-message-transport-timeout",
-          namespace: null,
-          tool: "message",
-          arguments: {
-            action: "send",
-            message: "long outbound update",
-            timeoutMs: 30_000,
-          },
-        },
-        config: undefined,
-      }),
+      resolveTimeout(
+        "message",
+        { action: "send", message: "long outbound update", timeoutMs: 30_000 },
+        undefined,
+        "call-message-transport-timeout",
+      ),
     ).toBe(CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS);
   });
 
   it("uses media image config and caps excessive dynamic tool timeouts", () => {
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-image-default",
-          namespace: null,
-          tool: "view_image",
-          arguments: { prompt: "describe", paths: ["/tmp/one.jpg"] },
-        },
-        config: {
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"] },
+        {
           tools: {
             media: {
               models: [
@@ -307,24 +225,69 @@ describe("dynamic tool execution helpers", () => {
             },
           },
         },
-      }),
-    ).toBe(180_000);
+        "call-image-default",
+      ),
+    ).toBe(
+      180_000 * CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS +
+        CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    );
     expect(
-      resolveDynamicToolCallTimeoutMs({
-        call: {
-          threadId: "thread-1",
-          turnId: "turn-1",
-          callId: "call-too-long",
-          namespace: null,
-          tool: "image_generate",
-          arguments: {
-            prompt: "cat",
-            timeoutMs: CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + 1_000,
-          },
-        },
-        config: undefined,
-      }),
+      resolveTimeout(
+        "image_generate",
+        { prompt: "cat", timeoutMs: CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + 1_000 },
+        undefined,
+        "call-too-long",
+      ),
     ).toBe(CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS);
+  });
+
+  it("preserves outer watchdog headroom for view_image at the timeout cap", () => {
+    const cap = CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS;
+    expect(
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"] },
+        { tools: { media: { image: { timeoutSeconds: 600 } } } },
+        "call-image-capped",
+      ),
+    ).toBe(cap);
+    expect(
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"] },
+        { tools: { media: { image: { timeoutSeconds: 700 } } } },
+        "call-image-over-capped",
+      ),
+    ).toBe(cap);
+  });
+
+  it("scales view_image watchdog by effective calls and adds grace once", () => {
+    // The view_image branch budgets for a bounded number of effective sequential
+    // calls (primary + fallbacks) and adds the watchdog grace exactly once
+    // after scaling, so a 60-second per-request timeout yields a 210s outer
+    // watchdog (60*3 + 30), not 90s (single request) or 240s (grace multiplied).
+    expect(
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"], timeoutSeconds: 60 },
+        undefined,
+        "call-image-timeout-seconds",
+      ),
+    ).toBe(
+      60_000 * CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS +
+        CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    );
+    expect(
+      resolveTimeout(
+        "view_image",
+        { prompt: "describe", paths: ["/tmp/one.jpg"], timeoutSeconds: 120 },
+        undefined,
+        "call-image-timeout-seconds-120",
+      ),
+    ).toBe(
+      120_000 * CODEX_DYNAMIC_IMAGE_TOOL_MAX_EFFECTIVE_CALLS +
+        CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    );
   });
 
   it("uses a 90 second default for generic Codex dynamic tool calls", () => {
@@ -436,6 +399,37 @@ describe("dynamic tool execution helpers", () => {
       },
       isError: true,
     });
+  });
+
+  it("preserves watchdog grace above the max timeout cap for view_image", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    // resolveDynamicToolCallTimeoutMs returns MAX + GRACE (630_000) for a
+    // 600-second view_image request. The watchdog must not clamp that back
+    // to MAX (600_000), or the grace is lost and the outer timer can tie
+    // the inner image request.
+    void handleDynamicToolCallWithTimeout({
+      call: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-view-image-grace",
+        namespace: null,
+        tool: "view_image",
+        arguments: { timeoutSeconds: 600 },
+      },
+      toolBridge: {
+        handleToolCall: vi.fn(() => new Promise<never>(() => {})),
+      },
+      signal: new AbortController().signal,
+      timeoutMs: 630_000,
+      observeToolTerminal: () => ({ executionStarted: true, sideEffectEvidence: true }),
+    });
+    // Let the synchronous setup (including setTimeout) run.
+    await vi.advanceTimersByTimeAsync(0);
+    const delay = setTimeoutSpy.mock.calls[0]?.[1];
+    expect(delay).toBe(630_000);
+    setTimeoutSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   it("marks a timeout during pre-execution hooks as unstarted", async () => {
