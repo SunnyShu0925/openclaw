@@ -628,26 +628,20 @@ describe("cli-session helpers", () => {
   });
 
   it("shares failed reused-session cleanup policy across CLI entry points", () => {
-    const failover = new FailoverError("session expired", {
-      reason: "session_expired",
-      provider: "claude-cli",
-      model: "claude-opus-4-8",
-    });
     const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
 
     const binding = { sessionId: "reused" };
     const forkBinding = { sessionId: "fork-source", forkNextResume: true as const };
 
-    expect(shouldClearFailedCliSessionBinding({ error: failover, binding })).toBe(true);
-    expect(shouldClearFailedCliSessionBinding({ error: failover, binding: forkBinding })).toBe(
-      true,
-    );
-    expect(resolveCliSessionClearReason(failover)).toBe("session_expired");
     expect(shouldClearFailedCliSessionBinding({ error: abort, binding })).toBe(true);
     expect(shouldClearFailedCliSessionBinding({ error: abort, binding: forkBinding })).toBe(false);
     expect(
       shouldClearFailedCliSessionBinding({
-        error: failover,
+        error: new FailoverError("session expired", {
+          reason: "session_expired",
+          provider: "claude-cli",
+          model: "claude-opus-4-8",
+        }),
         binding,
         hasNewGeneratedMediaTask: true,
       }),
@@ -656,6 +650,36 @@ describe("cli-session helpers", () => {
     expect(
       shouldClearFailedCliSessionBinding({ error: new Error("provider failed"), binding }),
     ).toBe(false);
-    expect(shouldClearFailedCliSessionBinding({ error: failover })).toBe(false);
+    expect(shouldClearFailedCliSessionBinding({ error: abort })).toBe(false);
+  });
+
+  it.each([["session_expired"], ["auth"], ["auth_permanent"]] as const)(
+    "clears binding for session-invalidating reason: %s",
+    (reason) => {
+      const error = new FailoverError("failover", { reason, provider: "claude-cli" });
+      expect(shouldClearFailedCliSessionBinding({ error, binding: { sessionId: "reused" } })).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each([
+    ["format"],
+    ["timeout"],
+    ["empty_response"],
+    ["rate_limit"],
+    ["overloaded"],
+    ["billing"],
+    ["server_error"],
+    ["context_overflow"],
+    ["model_not_found"],
+    ["no_error_details"],
+    ["unclassified"],
+    ["unknown"],
+  ] as const)("preserves binding for non-session-invalidating reason: %s", (reason) => {
+    const error = new FailoverError("failover", { reason, provider: "claude-cli" });
+    expect(shouldClearFailedCliSessionBinding({ error, binding: { sessionId: "reused" } })).toBe(
+      false,
+    );
   });
 });

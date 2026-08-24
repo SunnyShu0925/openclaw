@@ -10,6 +10,7 @@ import type { CliSessionBinding, SessionEntry } from "../config/sessions.js";
 import { normalizeCliSessionReseedReceipt } from "../config/sessions/cli-session-binding.js";
 import { readErrorName } from "../infra/errors.js";
 import { isFailoverError } from "./failover-error.js";
+import type { FailoverReason } from "./failover/signal.js";
 export {
   clearAllCliSessions,
   getCliSessionBinding,
@@ -17,6 +18,13 @@ export {
 } from "../config/sessions/cli-session-binding.js";
 
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
+
+/** Failover reasons that truly invalidate a CLI session on disk. */
+const SESSION_INVALIDATING_FAILOVER_REASONS: ReadonlySet<FailoverReason> = new Set([
+  "session_expired",
+  "auth",
+  "auth_permanent",
+]);
 
 /** Hash CLI session-sensitive text so reuse checks can compare stable fingerprints. */
 export function hashCliSessionText(value: string | undefined): string | undefined {
@@ -126,7 +134,7 @@ export function shouldClearFailedCliSessionBinding(params: {
     return false;
   }
   if (isFailoverError(params.error)) {
-    return true;
+    return SESSION_INVALIDATING_FAILOVER_REASONS.has(params.error.reason);
   }
   // A pre-successor fork abort keeps its one-shot marker for the next turn.
   return params.binding?.forkNextResume !== true && readErrorName(params.error) === "AbortError";
