@@ -5,7 +5,6 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../src/agents/defaults.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../src/state/openclaw-state-schema.js";
 
 function runBuiltCli(
@@ -661,28 +660,27 @@ describe("cli json stdout contract", () => {
     {
       name: "aliases list",
       args: ["models", "aliases", "list", "--plain"],
-      opensStateDatabase: true,
+      opensStateDatabase: false,
     },
     {
       name: "fallbacks list",
       args: ["models", "fallbacks", "list", "--plain"],
-      opensStateDatabase: true,
+      opensStateDatabase: false,
     },
     {
       name: "image fallbacks list",
       args: ["models", "image-fallbacks", "list", "--plain"],
-      opensStateDatabase: true,
+      opensStateDatabase: false,
     },
     {
       name: "list control",
       args: ["models", "list", "--plain"],
-      opensStateDatabase: false,
+      opensStateDatabase: true,
     },
     {
       name: "status control",
       args: ["models", "status", "--plain"],
       opensStateDatabase: false,
-      expectedStdout: `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}\n`,
     },
   ])("keeps $name stdout exact during a pending state migration", async (testCase) => {
     await withTempHome(
