@@ -14,6 +14,10 @@ import {
 } from "../command-execution-startup.js";
 import { inheritOptionFromParent } from "../command-options.js";
 import { applyResolvedCommandOutputMode } from "../json-output-mode.js";
+// Plain machine-output commands (e.g. `models ... --plain`) own stdout like JSON
+// but must not activate the JSON failure envelope. Reuse the models resolver so
+// preaction keeps stderr routing for those without turning plain into JSON.
+import { isModelsPlainMachineOutput } from "../models-output-mode.js";
 import {
   resolvePluginInstallInvalidConfigPolicy,
   resolvePluginInstallPreactionRequest,
@@ -130,7 +134,12 @@ export function registerPreActionHooks(program: Command, programVersion: string)
       return;
     }
     const jsonOutputMode = isCommandJsonOutputMode(actionCommand, argv);
-    applyResolvedCommandOutputMode(jsonOutputMode);
+    // Plain machine-output commands own stdout but stay non-JSON; preserve the
+    // early stderr routing for them so startup diagnostics never reach stdout.
+    const plainMachineOutput = isModelsPlainMachineOutput(argv);
+    applyResolvedCommandOutputMode(jsonOutputMode, {
+      retainStderrRouting: plainMachineOutput,
+    });
     const { commandPath, startupPolicy } = resolveCliExecutionStartupContext({
       argv,
       commandPath: getCommanderCommandPath(actionCommand),

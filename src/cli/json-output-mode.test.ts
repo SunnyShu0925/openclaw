@@ -87,4 +87,34 @@ describe("json output mode", () => {
       },
     );
   });
+
+  it("retains stderr routing through preaction for plain machine output", async () => {
+    // `models ... --plain` owns stdout like JSON but must not activate the JSON
+    // failure envelope. Early routing is enabled by the descriptor; Commander
+    // preaction then resolves JSON mode as false. Without `retainStderrRouting`,
+    // that false would restore stdout before state bootstrap emits diagnostics.
+    await withConsoleLogsRoutedToStderrForJson(
+      ["node", "openclaw", "models", "aliases", "list", "--plain"],
+      async () => {
+        expect(loggingState.forceConsoleToStderr).toBe(true);
+        applyResolvedCommandOutputMode(false, { retainStderrRouting: true });
+        expect(loggingState.forceConsoleToStderr).toBe(true);
+        expect(
+          isJsonOutputModeActive(["node", "openclaw", "models", "aliases", "list", "--plain"]),
+        ).toBe(false);
+      },
+      { machineOutput: true },
+    );
+  });
+
+  it("still restores stdout when preaction resolves neither JSON nor plain machine output", async () => {
+    await withConsoleLogsRoutedToStderrForJson(
+      ["node", "openclaw", "models", "aliases", "list", "--plain"],
+      async () => {
+        applyResolvedCommandOutputMode(false);
+        expect(loggingState.forceConsoleToStderr).toBe(false);
+      },
+      { machineOutput: true },
+    );
+  });
 });

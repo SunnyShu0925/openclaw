@@ -60,11 +60,26 @@ export async function withConsoleLogsRoutedToStderrForJson<T>(
   }
 }
 
-/** Let resolved command metadata override conservative early literal-flag routing. */
-export function applyResolvedCommandOutputMode(machineOutput: boolean): void {
+/**
+ * Let resolved command metadata override conservative early literal-flag routing.
+ *
+ * `machineOutput` controls the JSON failure envelope: when true, structured
+ * errors are emitted as a single JSON document. Separately, a command may own
+ * stdout as a plain machine-readable stream (e.g. `models ... --plain`) that
+ * must keep startup diagnostics on stderr without activating the JSON envelope.
+ * Pass `retainStderrRouting` for those so the early stderr routing established
+ * by `withConsoleLogsRoutedToStderrForJson` is preserved instead of restored.
+ */
+export function applyResolvedCommandOutputMode(
+  machineOutput: boolean,
+  options: { retainStderrRouting?: boolean } = {},
+): void {
   resolvedJsonOutputMode = machineOutput;
+  if (machineOutput || options.retainStderrRouting) {
+    return;
+  }
   const restore = loggingState.earlyConsoleRoutingRestore;
-  if (!machineOutput && restore !== null) {
+  if (restore !== null) {
     loggingState.forceConsoleToStderr = restore;
   }
 }
