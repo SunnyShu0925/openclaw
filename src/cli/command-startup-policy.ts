@@ -25,11 +25,13 @@ export function resolveCliStartupPolicy(params: {
   argv?: string[];
   commandPath: string[];
   jsonOutputMode: boolean;
+  machineOutputMode?: boolean;
   env?: NodeJS.ProcessEnv;
 }) {
   const commandPolicy = resolveCliCommandPathPolicy(params.commandPath);
+  const machineOutputMode = params.jsonOutputMode || params.machineOutputMode === true;
   // Protocol commands own stdout from process startup, before their action installs later routing.
-  const suppressDoctorStdout = params.jsonOutputMode || commandPolicy.ownsProtocolStdout;
+  const suppressDoctorStdout = machineOutputMode || commandPolicy.ownsProtocolStdout;
   const configGuard =
     typeof commandPolicy.configGuard === "function"
       ? commandPolicy.configGuard({ argv: params.argv ?? [], commandPath: params.commandPath })
@@ -37,7 +39,8 @@ export function resolveCliStartupPolicy(params: {
   const env = params.env ?? process.env;
   return {
     suppressDoctorStdout,
-    hideBanner: isTruthyEnvValue(env.OPENCLAW_HIDE_BANNER) || commandPolicy.hideBanner,
+    hideBanner:
+      machineOutputMode || isTruthyEnvValue(env.OPENCLAW_HIDE_BANNER) || commandPolicy.hideBanner,
     skipConfigGuard:
       configGuard === "skip" || (configGuard === "when-suppressed" && suppressDoctorStdout),
     ...(configGuard === "validate" ? { validateConfigOnly: true } : {}),

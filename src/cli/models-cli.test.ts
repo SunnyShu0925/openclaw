@@ -201,6 +201,10 @@ describe("models cli", () => {
     ["status --json", ["models", "status", "--json"]],
     ["parent --status-json", ["models", "--status-json"]],
     ["aliases list", ["models", "aliases", "list"]],
+    ["logs --plain", ["logs", "--plain"]],
+    ["secrets store list --plain", ["secrets", "store", "list", "--plain"]],
+    ["secrets store get --plain", ["secrets", "store", "get", "EXAMPLE", "--plain"]],
+    ["plain after argv terminator", ["models", "list", "--", "--plain"]],
   ])("does not declare %s as plain machine output", (_label, args) => {
     const argv = ["node", "openclaw", ...args];
     expect(isModelsPlainMachineOutput(argv)).toBe(false);
