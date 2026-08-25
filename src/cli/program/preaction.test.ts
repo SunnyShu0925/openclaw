@@ -224,12 +224,8 @@ describe("registerPreActionHooks", () => {
       .action(() => {});
     programLocal.command("completion").action(() => {});
     programLocal.command("secrets").action(() => {});
-    programLocal
-      .command("models")
-      .command("aliases")
-      .command("list")
-      .option("--plain")
-      .action(() => {});
+    const modelList = programLocal.command("models").command("aliases").command("list");
+    modelList.option("--plain").action(() => {});
     const skills = programLocal.command("skills");
     skills.option("--json").action(() => {});
     for (const skillCommand of ["list", "check"]) {
