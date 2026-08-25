@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
+import { OPENCLAW_STATE_SCHEMA_SQL } from "../src/state/openclaw-state-schema.js";
 
 function runBuiltCli(
   tempHome: string,
@@ -55,6 +56,18 @@ async function seedTrajectorySession(tempHome: string, sessionKey: string) {
   closeOpenClawAgentDatabaseByPath(
     path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite"),
   );
+}
+
+async function seedPendingStateMigration(stateDir: string) {
+  const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
+  await fs.mkdir(path.dirname(databasePath), { recursive: true });
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(OPENCLAW_STATE_SCHEMA_SQL);
+    database.exec("PRAGMA user_version = 0;");
+  } finally {
+    database.close();
+  }
 }
 
 describe("cli json stdout contract", () => {
@@ -640,6 +653,55 @@ describe("cli json stdout contract", () => {
         }
       },
       { prefix: "openclaw-models-refresh-json-failure-e2e-" },
+    );
+  });
+
+  it.each([
+    {
+      name: "aliases list",
+      args: ["models", "aliases", "list", "--plain"],
+      opensStateDatabase: true,
+    },
+    {
+      name: "fallbacks list",
+      args: ["models", "fallbacks", "list", "--plain"],
+      opensStateDatabase: true,
+    },
+    {
+      name: "list control",
+      args: ["models", "list", "--plain"],
+      opensStateDatabase: false,
+    },
+    {
+      name: "status control",
+      args: ["models", "status", "--plain"],
+      opensStateDatabase: false,
+    },
+  ])("keeps $name stdout exact during a pending state migration", async (testCase) => {
+    await withTempHome(
+      async (tempHome) => {
+        const stateDir = path.join(tempHome, "isolated-state");
+        const migrationDiagnostic = "state database schema migration pending";
+        await seedPendingStateMigration(stateDir);
+
+        const result = runBuiltCli(
+          tempHome,
+          testCase.args,
+          {
+            CI: "1",
+            NO_COLOR: "1",
+            OPENCLAW_CONFIG_PATH: path.join(tempHome, "missing-openclaw.json"),
+            OPENCLAW_STATE_DIR: stateDir,
+          },
+          { inheritEnvironment: false },
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe("");
+        expect(result.stdout).not.toContain(migrationDiagnostic);
+        expect(result.stderr.includes(migrationDiagnostic)).toBe(testCase.opensStateDatabase);
+      },
+      { prefix: "openclaw-models-plain-stdout-e2e-" },
     );
   });
 
