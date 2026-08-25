@@ -680,7 +680,7 @@ describe("cli json stdout contract", () => {
     {
       name: "status control",
       args: ["models", "status", "--plain"],
-      opensStateDatabase: false,
+      opensStateDatabase: true,
     },
   ])("keeps $name stdout exact during a pending state migration", async (testCase) => {
     await withTempHome(
