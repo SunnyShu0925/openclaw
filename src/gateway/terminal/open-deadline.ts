@@ -9,10 +9,20 @@ export class TerminalOpenDeadlineError extends Error {
   }
 }
 
-type TerminalOpenDeadline = {
+export type TerminalOpenDeadline = {
   expiresAtMs: number;
   controller: AbortController;
 };
+
+/** Milliseconds remaining before the deadline expires (clamped at 0). */
+export function remainingTerminalOpenDeadlineMs(deadline: TerminalOpenDeadline): number {
+  return Math.max(0, deadline.expiresAtMs - Date.now());
+}
+
+/** Aborts the deadline if expired; returns true when already expired or aborted. */
+export function isTerminalOpenDeadlineExpired(deadline: TerminalOpenDeadline): boolean {
+  return deadline.controller.signal.aborted || Date.now() >= deadline.expiresAtMs;
+}
 
 export function createTerminalOpenDeadline(): TerminalOpenDeadline {
   return {

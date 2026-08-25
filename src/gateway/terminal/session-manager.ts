@@ -37,6 +37,7 @@ import type {
   TerminalOpenRequest,
   TerminalPendingOpen,
   TerminalSession,
+  TerminalShellReadinessOutcome,
   TerminalSessionManagerOptions,
   TerminalOwner,
 } from "./session-manager.types.js";
@@ -46,6 +47,7 @@ import {
   terminalSessionSummary,
 } from "./session-projection.js";
 import type { TerminalAttachSummary, TerminalSessionSummary } from "./session-types.js";
+import { forwardReadinessProbeChunk, runAgentShellReadiness } from "./shell-readiness.js";
 export { DEFAULT_TERMINAL_DETACH_SECONDS } from "./session-limits.js";
 
 const log = createSubsystemLogger("gateway/terminal");
@@ -292,7 +294,7 @@ export class TerminalSessionManager {
     backend.onData((chunk) => {
       if (!session.closed) {
         session.lastActivityAtMs = Date.now();
-        session.output.push(chunk);
+        forwardReadinessProbeChunk(session.readinessProbe, chunk, (d) => session.output.push(d));
       }
     });
     backend.onExit((event) => {
@@ -343,6 +345,17 @@ export class TerminalSessionManager {
       return { ok: false, code: "session_unavailable" };
     }
     return this.writeSession(session, data) ? { ok: true } : { ok: false, code: "backend_failed" };
+  }
+
+  async awaitShellReady(
+    owner: AgentTerminalOwner,
+    sessionId: string,
+    args: string[],
+    signal: AbortSignal,
+  ): Promise<TerminalShellReadinessOutcome> {
+    return runAgentShellReadiness(this.agentOwnedSession(owner, sessionId), args, signal, (c) =>
+      this.writeSession(this.agentOwnedSession(owner, sessionId)!, c),
+    );
   }
 
   private writeSession(session: TerminalSession, data: string): boolean {
@@ -801,6 +814,7 @@ export class TerminalSessionManager {
     const recipients = terminalSessionRecipientIds(session);
     session.output.dispose({ flush: !opts?.silent && recipients.length > 0 });
     session.closed = true;
+    session.readinessProbe?.abort();
     if (session.reaper) {
       clearTimeout(session.reaper);
       session.reaper = null;

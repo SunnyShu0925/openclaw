@@ -4,6 +4,7 @@ import { renderTerminalBufferText } from "../../gateway/terminal/buffer-text.js"
 import { buildTerminalEnv, resolveTerminalSpawnPlan } from "../../gateway/terminal/launch.js";
 import {
   createTerminalOpenDeadline,
+  isTerminalOpenDeadlineExpired,
   TerminalOpenDeadlineError,
   waitForTerminalOpenDeadline,
 } from "../../gateway/terminal/open-deadline.js";
@@ -262,64 +263,120 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
         let openingTerminal: ReturnType<typeof openManager.open> | undefined;
         let outcome: Awaited<ReturnType<typeof openManager.open>>;
         try {
-          outcome = await waitForTerminalOpenDeadline(() => {
-            openingTerminal = openManager.open({
-              owner: terminalOwner,
-              agentId: spawnPlan.agentId,
-              cwd: spawnPlan.cwd,
-              shell: spawnPlan.shell,
-              args: spawnPlan.args,
-              cols,
-              rows,
-              env: buildTerminalEnv(process.env),
-              signal: deadline.controller.signal,
-            });
-            return openingTerminal;
-          }, deadline);
-        } catch (error) {
-          if (openingTerminal) {
-            void openingTerminal.then(
-              (lateOutcome) => {
-                if (lateOutcome.ok) {
-                  openManager.closeAgent(owner, lateOutcome.sessionId);
-                }
-              },
-              () => undefined,
+          try {
+            outcome = await waitForTerminalOpenDeadline(() => {
+              openingTerminal = openManager.open({
+                owner: terminalOwner,
+                agentId: spawnPlan.agentId,
+                cwd: spawnPlan.cwd,
+                shell: spawnPlan.shell,
+                args: spawnPlan.args,
+                cols,
+                rows,
+                env: buildTerminalEnv(process.env),
+                signal: deadline.controller.signal,
+              });
+              return openingTerminal;
+            }, deadline);
+          } catch (error) {
+            if (openingTerminal) {
+              void openingTerminal.then(
+                (lateOutcome) => {
+                  if (lateOutcome.ok) {
+                    openManager.closeAgent(owner, lateOutcome.sessionId);
+                  }
+                },
+                () => undefined,
+              );
+            }
+            if (error instanceof TerminalOpenDeadlineError) {
+              throw new ToolInputError(error.message);
+            }
+            throw error;
+          }
+          if (!outcome.ok) {
+            throw new ToolInputError(outcome.message);
+          }
+          if (admittedResolver) {
+            try {
+              const liveManager = resolveTerminalOpenTarget({
+                agentId,
+                context: admittedResolver(),
+                cwd,
+              }).manager;
+              if (liveManager !== openManager) {
+                throw new ToolInputError("terminal unavailable");
+              }
+            } catch (error) {
+              openManager.closeAgent(owner, outcome.sessionId);
+              throw error;
+            }
+          }
+          if (command !== undefined) {
+            // Keep the open deadline active through the readiness wait and the
+            // initial command write so a late spawn cannot extend the bounded
+            // open past its advertised limit (#128696).
+            const deadlineTimer = setTimeout(
+              () => deadline.controller.abort(new TerminalOpenDeadlineError()),
+              Math.max(0, deadline.expiresAtMs - Date.now()),
             );
+            try {
+              const ready = await openManager.awaitShellReady(
+                owner,
+                outcome.sessionId,
+                spawnPlan.args,
+                deadline.controller.signal,
+              );
+              if (!ready.ok || isTerminalOpenDeadlineExpired(deadline)) {
+                openManager.closeAgent(owner, outcome.sessionId);
+                return terminalActionResult("initial command", {
+                  ok: false,
+                  code: ready.ok
+                    ? "session_unavailable"
+                    : ready.code === "backend_failed"
+                      ? "backend_failed"
+                      : "session_unavailable",
+                });
+              }
+              if (admittedResolver) {
+                try {
+                  const postReadyManager = resolveTerminalOpenTarget({
+                    agentId,
+                    context: admittedResolver(),
+                    cwd,
+                  }).manager;
+                  if (postReadyManager !== openManager) {
+                    throw new ToolInputError("terminal unavailable");
+                  }
+                } catch (error) {
+                  openManager.closeAgent(owner, outcome.sessionId);
+                  throw error;
+                }
+              }
+              if (isTerminalOpenDeadlineExpired(deadline)) {
+                openManager.closeAgent(owner, outcome.sessionId);
+                return terminalActionResult("initial command", {
+                  ok: false,
+                  code: "session_unavailable",
+                });
+              }
+              const commandOutcome = openManager.writeAgent(
+                owner,
+                outcome.sessionId,
+                `${command}\r`,
+              );
+              if (!commandOutcome.ok) {
+                openManager.closeAgent(owner, outcome.sessionId);
+                return terminalActionResult("initial command", commandOutcome);
+              }
+            } finally {
+              clearTimeout(deadlineTimer);
+            }
           }
-          if (error instanceof TerminalOpenDeadlineError) {
-            throw new ToolInputError(error.message);
-          }
-          throw error;
+          return jsonResult(outcome);
         } finally {
           signal?.removeEventListener("abort", cancelOpen);
         }
-        if (!outcome.ok) {
-          throw new ToolInputError(outcome.message);
-        }
-        if (admittedResolver) {
-          try {
-            const liveManager = resolveTerminalOpenTarget({
-              agentId,
-              context: admittedResolver(),
-              cwd,
-            }).manager;
-            if (liveManager !== openManager) {
-              throw new ToolInputError("terminal unavailable");
-            }
-          } catch (error) {
-            openManager.closeAgent(owner, outcome.sessionId);
-            throw error;
-          }
-        }
-        if (command !== undefined) {
-          const commandOutcome = openManager.writeAgent(owner, outcome.sessionId, `${command}\r`);
-          if (!commandOutcome.ok) {
-            openManager.closeAgent(owner, outcome.sessionId);
-            terminalActionResult("initial command", commandOutcome);
-          }
-        }
-        return jsonResult(outcome);
       }
 
       const sessionId = requireSessionId(params);

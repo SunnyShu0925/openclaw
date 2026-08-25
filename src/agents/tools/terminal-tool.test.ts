@@ -40,7 +40,20 @@ function makeBackend() {
     writes: [],
     resizes: [],
     killed: false,
-    write: (data) => backend.writes.push(data),
+    write: (data) => {
+      backend.writes.push(data);
+      // Simulate a real login shell: echo the raw input line (which contains
+      // the marker as a substring but NOT at line start), then emit the
+      // standalone marker line printf produces after executing. The probe must
+      // only resolve on the standalone line, not the input echo (#128696).
+      const match = data.match(/^printf '%s\\n' '(__OC_SHELL_READY__:[0-9a-f]+)'\r$/);
+      if (match) {
+        queueMicrotask(() => {
+          onData?.(data.replace(/\r$/, "\r\n"));
+          onData?.(`${match[1]}\n`);
+        });
+      }
+    },
     resize: (cols, rows) => backend.resizes.push([cols, rows]),
     pause: vi.fn(),
     resume: vi.fn(),
@@ -76,8 +89,8 @@ function makeContext(manager: TerminalSessionManager) {
       plan: {
         agentId: "main",
         cwd: "/tmp",
-        shell: "/bin/sh",
-        args: [],
+        shell: "/bin/bash",
+        args: ["-l"],
       },
     }),
   };
@@ -295,7 +308,9 @@ describe("terminal tool", () => {
     const opened = await tool.execute("open", { action: "open", command: "echo ready" });
     expect(Value.Check(tool.outputSchema!, opened.details)).toBe(true);
     const sessionId = (opened.details as { sessionId: string }).sessionId;
-    expect(backend.writes).toEqual(["echo ready\r"]);
+    // The readiness probe is written first, then the real initial command.
+    expect(backend.writes[0]).toMatch(/^printf '%s\\n' '__OC_SHELL_READY__:[0-9a-f]+'\r$/);
+    expect(backend.writes[backend.writes.length - 1]).toBe("echo ready\r");
     expect(callInProcessGatewayTool).not.toHaveBeenCalled();
 
     backend.emitData("\u001b[31mready\u001b[0m\r\n");
@@ -306,7 +321,12 @@ describe("terminal tool", () => {
     const input = await tool.execute("input", { action: "input", sessionId, data: "yes\r" });
     expect(input.details).toEqual({ ok: true });
     expect(Value.Check(tool.outputSchema!, input.details)).toBe(true);
-    expect(backend.writes).toEqual(["echo ready\r", "yes\r"]);
+    // Probe + initial command + later input. The sentinel echo (both the raw
+    // input line and the standalone marker line) was stripped by the probe.
+    expect(backend.writes).toHaveLength(3);
+    expect(backend.writes[0]).toMatch(/^printf '%s\\n' '__OC_SHELL_READY__:[0-9a-f]+'\r$/);
+    expect(backend.writes[1]).toBe("echo ready\r");
+    expect(backend.writes[2]).toBe("yes\r");
     const resize = await tool.execute("resize", {
       action: "resize",
       sessionId,
@@ -331,6 +351,82 @@ describe("terminal tool", () => {
     expect(closed.details).toEqual({ ok: true });
     expect(Value.Check(tool.outputSchema!, closed.details)).toBe(true);
     expect(backend.killed).toBe(true);
+  });
+
+  it("closes the session when the readiness probe times out", async () => {
+    vi.useFakeTimers();
+    try {
+      // Backend accepts writes but never echoes a standalone marker line, so
+      // the probe times out and the session is closed without sending the command.
+      const backend = makeBackend();
+      backend.write = (data) => backend.writes.push(data);
+      const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+      const tool = createTerminalTool({
+        agentId: "main",
+        agentSessionKey: "agent:main:main",
+        sessionId: "main-session-id",
+        getGatewayContext: () => makeContext(manager),
+      });
+
+      const openPromise = tool.execute("open", { action: "open", command: "echo late" });
+      // Attach the rejection handler early so the promise rejection is not
+      // reported as an unhandled rejection under fake timers.
+      const openResult = openPromise.then(
+        () => "resolved",
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(6_000);
+      await expect(openResult).resolves.toBeInstanceOf(Error);
+
+      // Probe was attempted, then the session was closed without the command.
+      expect(backend.writes[0]).toMatch(/^printf '%s\\n' '__OC_SHELL_READY__:[0-9a-f]+'\r$/);
+      expect(backend.writes).not.toContain("echo late\r");
+      expect(backend.killed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not treat the PTY input echo as readiness", async () => {
+    // The shell echoes the raw input line (which contains the marker as a
+    // substring) but never emits the standalone marker line. The probe must
+    // time out and close the session rather than resolving on the input echo.
+    vi.useFakeTimers();
+    try {
+      const backend = makeBackend();
+      backend.write = (data) => {
+        backend.writes.push(data);
+        const match = data.match(/^printf '%s\\n' '(__OC_SHELL_READY__:[0-9a-f]+)'\r$/);
+        if (match) {
+          // Echo only the input line; do NOT emit the standalone marker line.
+          queueMicrotask(() => backend.emitData(data.replace(/\r$/, "\r\n")));
+        }
+      };
+      const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+      const tool = createTerminalTool({
+        agentId: "main",
+        agentSessionKey: "agent:main:main",
+        sessionId: "main-session-id",
+        getGatewayContext: () => makeContext(manager),
+      });
+
+      const openPromise = tool.execute("open", { action: "open", command: "echo ok" });
+      // Attach the rejection handler early so the promise rejection is not
+      // reported as an unhandled rejection under fake timers.
+      const openResult = openPromise.then(
+        () => "resolved",
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(6_000);
+      await expect(openResult).resolves.toBeInstanceOf(Error);
+
+      // The input echo contained the marker but the probe did not resolve on
+      // it; the session was closed without sending the command.
+      expect(backend.writes).not.toContain("echo ok\r");
+      expect(backend.killed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("binds the exact run when two active tasks share one child session", async () => {
@@ -722,4 +818,137 @@ describe("terminal tool", () => {
       expect(manager.size).toBe(0);
     },
   );
+});
+
+it("does not write the initial command when cancelled during readiness wait", async () => {
+  vi.useFakeTimers();
+  try {
+    const backend = makeBackend();
+    backend.write = (data) => backend.writes.push(data);
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    const controller = new AbortController();
+    const openPromise = tool.execute(
+      "open",
+      { action: "open", command: "echo cancelled" },
+      controller.signal,
+    );
+    // Attach the rejection handler early so the promise rejection is not
+    // reported as an unhandled rejection under fake timers.
+    const openResult = openPromise.then(
+      () => "resolved",
+      (error: unknown) => error,
+    );
+    // Advance past the open; the probe is now waiting for the marker.
+    await vi.advanceTimersByTimeAsync(100);
+    // Cancel the run while the readiness probe is still pending.
+    controller.abort(new Error("run cancelled"));
+    await vi.advanceTimersByTimeAsync(6_000);
+    const result = await openResult;
+    expect(result).toBeInstanceOf(Error);
+
+    // The probe was written, but the initial command was NOT written after abort.
+    expect(backend.writes[0]).toMatch(/^printf '%s\\n' '__OC_SHELL_READY__:[0-9a-f]+'\r$/);
+    expect(backend.writes).not.toContain("echo cancelled\r");
+    expect(backend.killed).toBe(true);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("does not write the initial command when cancelled after marker arrives", async () => {
+  vi.useFakeTimers();
+  try {
+    const backend = makeBackend();
+    const controller = new AbortController();
+    // Override write so that emitting the marker line also aborts the run,
+    // simulating a cancellation that arrives just after the probe settles.
+    const originalWrite = backend.write.bind(backend);
+    backend.write = (data) => {
+      originalWrite(data);
+      const match = data.match(/^printf '%s\\n' '(__OC_SHELL_READY__:[0-9a-f]+)'\r$/);
+      if (match) {
+        queueMicrotask(() => {
+          backend.emitData(`${match[1]}\n`);
+          controller.abort(new Error("run cancelled after ready"));
+        });
+      }
+    };
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    const openResult = tool
+      .execute("open", { action: "open", command: "echo post-ready" }, controller.signal)
+      .then(
+        () => "resolved",
+        (error: unknown) => error,
+      );
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await openResult;
+
+    // The readiness probe resolved, but the command was NOT written because
+    // the run was cancelled after the marker arrived.
+    expect(backend.writes[0]).toMatch(/^printf '%s\\n' '__OC_SHELL_READY__:[0-9a-f]+'\r$/);
+    expect(backend.writes).not.toContain("echo post-ready\r");
+    expect(backend.killed).toBe(true);
+    // The tool returns a structured error, not a thrown exception, because
+    // the session was closed gracefully after readiness succeeded.
+    expect(result).not.toBe("resolved");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("does not send the initial command when the deadline expires during readiness", async () => {
+  vi.useFakeTimers();
+  try {
+    // Spawn completes near the 30-second deadline, leaving little time for the
+    // readiness handshake. The 5-second readiness timeout must be clamped to
+    // the remaining deadline so the total open does not exceed it.
+    const spawned = deferred<ReturnType<typeof makeBackend>>();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: () => spawned.promise });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      sessionId: "main-session-id",
+      getGatewayContext: () => makeContext(manager),
+    });
+
+    const openResult = tool.execute("open", { action: "open", command: "echo late" }).then(
+      () => "resolved",
+      (error: unknown) => error,
+    );
+
+    // Advance to just before the deadline and resolve the spawn.
+    await vi.advanceTimersByTimeAsync(TERMINAL_OPEN_DEADLINE_MS - 100);
+    const backend = makeBackend();
+    backend.write = (data) => backend.writes.push(data);
+    spawned.resolve(backend);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The probe was written but the marker never arrives. Advance past the
+    // remaining deadline (100ms, not the full 5s) to trigger readiness timeout.
+    await vi.advanceTimersByTimeAsync(200);
+    const result = await openResult;
+
+    // The readiness wait was bounded by the deadline, not the full 5 seconds.
+    expect(result).not.toBe("resolved");
+    expect(backend.writes[0]).toMatch(/^printf '%s\\n' '__OC_SHELL_READY__:[0-9a-f]+'\r$/);
+    expect(backend.writes).not.toContain("echo late\r");
+    expect(backend.killed).toBe(true);
+    expect(manager.size).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

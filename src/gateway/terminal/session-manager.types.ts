@@ -2,6 +2,7 @@ import type { TerminalUploadFile, TerminalUploadResult } from "../../infra/termi
 import type { LocalTerminalBackendSpawner, TerminalBackend } from "./backend.js";
 import type { TerminalOutputController } from "./output-flow-control.js";
 import type { TerminalOutputRing } from "./output-ring.js";
+import type { ShellReadinessResult, TerminalShellReadinessProbe } from "./shell-readiness.js";
 
 export type TerminalEventSink = (connId: string, event: string, payload: unknown) => void;
 
@@ -46,6 +47,12 @@ export type TerminalSession = {
   lastActivityAtMs: number;
   /** Claimed by an in-flight open; killed only after its replacement spawns. */
   evictionClaimed?: boolean;
+  /**
+   * Active login-shell readiness probe while `awaitShellReady` waits for the
+   * sentinel echo. The onData handler strips the sentinel so it never reaches
+   * `terminal.read` or viewers.
+   */
+  readinessProbe?: TerminalShellReadinessProbe;
 };
 
 export type TerminalSessionManagerOptions = {
@@ -84,6 +91,7 @@ export type TerminalOpenOutcome =
 export type TerminalAgentActionOutcome =
   | { ok: true }
   | { ok: false; code: "session_unavailable" | "backend_failed" };
+export type TerminalShellReadinessOutcome = ShellReadinessResult;
 
 /** Abort state shared between a pending open and lifecycle/policy teardown. */
 export type TerminalPendingOpen = {
