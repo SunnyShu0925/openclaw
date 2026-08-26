@@ -108,7 +108,7 @@ export function rejectExcessiveConfigDepth(value: unknown, depth = 0): void {
   if (typeof value !== "object" || value === null) {
     return;
   }
-  if (depth > MAX_CONFIG_VALUE_DEPTH) {
+  if (depth >= MAX_CONFIG_VALUE_DEPTH) {
     throw new Error(`Config value nesting depth exceeds limit (${MAX_CONFIG_VALUE_DEPTH}).`);
   }
   if (Array.isArray(value)) {

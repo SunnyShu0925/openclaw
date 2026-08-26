@@ -3413,7 +3413,7 @@ describe("config cli", () => {
     it("accepts config value at exactly the depth limit with a scalar leaf", async () => {
       const { rejectExcessiveConfigDepth } = await import("../config/io.read-helpers.js");
       let nested: Record<string, unknown> = { value: 1 };
-      for (let i = 0; i < 100; i += 1) {
+      for (let i = 0; i < 99; i += 1) {
         nested = { a: nested };
       }
       expect(() => rejectExcessiveConfigDepth(nested)).not.toThrow();
@@ -3432,7 +3432,7 @@ describe("config cli", () => {
       const { rejectExcessiveConfigDepth } = await import("../config/io.read-helpers.js");
       for (const leaf of ["text", true, null] as unknown[]) {
         let nested: Record<string, unknown> = { value: leaf };
-        for (let i = 0; i < 100; i += 1) {
+        for (let i = 0; i < 99; i += 1) {
           nested = { a: nested };
         }
         expect(() => rejectExcessiveConfigDepth(nested)).not.toThrow();
