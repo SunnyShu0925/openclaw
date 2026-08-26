@@ -3397,7 +3397,7 @@ describe("config cli", () => {
       setSnapshot(resolved, resolved);
 
       let nested: Record<string, unknown> = { value: 1 };
-      for (let i = 0; i < 101; i += 1) {
+      for (let i = 0; i < 100; i += 1) {
         nested = { a: nested };
       }
       const pathname = writeTempJson5File("openclaw-config-patch-depth-threshold", nested);
@@ -3422,7 +3422,7 @@ describe("config cli", () => {
     it("rejects config value one level past the depth limit", async () => {
       const { rejectExcessiveConfigDepth } = await import("../config/io.read-helpers.js");
       let nested: Record<string, unknown> = { value: 1 };
-      for (let i = 0; i < 101; i += 1) {
+      for (let i = 0; i < 100; i += 1) {
         nested = { a: nested };
       }
       expect(() => rejectExcessiveConfigDepth(nested)).toThrow("nesting depth exceeds limit");
