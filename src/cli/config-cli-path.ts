@@ -1,6 +1,9 @@
 import { isRecord as isPlainRecord } from "@openclaw/normalization-core/record-coerce";
 import JSON5 from "json5";
-import { rejectConfigNonFiniteNumbers } from "../config/io.read-helpers.js";
+import {
+  rejectConfigNonFiniteNumbers,
+  rejectExcessiveConfigDepth,
+} from "../config/io.read-helpers.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import {
   formatConcreteConfigPath,
@@ -57,6 +60,7 @@ export function parseConfigSetValue(raw: string, strictJson: boolean): unknown {
     } catch (err) {
       throw new Error(formatStrictJsonParseFailure({ value: raw, cause: err }), { cause: err });
     }
+    rejectExcessiveConfigDepth(parsed);
     rejectConfigNonFiniteNumbers(parsed);
     return parsed;
   }
@@ -66,6 +70,7 @@ export function parseConfigSetValue(raw: string, strictJson: boolean): unknown {
   } catch {
     return raw;
   }
+  rejectExcessiveConfigDepth(parsed);
   rejectConfigNonFiniteNumbers(parsed);
   return parsed;
 }

@@ -3374,6 +3374,93 @@ describe("config cli", () => {
       });
     });
 
+    it("rejects deeply nested config patch without crashing", async () => {
+      const resolved = {} as unknown as OpenClawConfig;
+      setSnapshot(resolved, resolved);
+
+      let nested: Record<string, unknown> = { value: 1 };
+      for (let i = 0; i < 200; i += 1) {
+        nested = { a: nested };
+      }
+      const pathname = writeTempJson5File("openclaw-config-patch-deep-nesting", nested);
+      try {
+        await expect(
+          runConfigCommand(["config", "patch", "--file", pathname, "--dry-run"]),
+        ).rejects.toThrow("nesting depth exceeds limit");
+      } finally {
+        fs.rmSync(pathname, { force: true });
+      }
+    });
+
+    it("rejects config patch at exactly one level past the depth limit", async () => {
+      const resolved = {} as unknown as OpenClawConfig;
+      setSnapshot(resolved, resolved);
+
+      let nested: Record<string, unknown> = { value: 1 };
+      for (let i = 0; i < 101; i += 1) {
+        nested = { a: nested };
+      }
+      const pathname = writeTempJson5File("openclaw-config-patch-depth-threshold", nested);
+      try {
+        await expect(
+          runConfigCommand(["config", "patch", "--file", pathname, "--dry-run"]),
+        ).rejects.toThrow("nesting depth exceeds limit");
+      } finally {
+        fs.rmSync(pathname, { force: true });
+      }
+    });
+
+    it("accepts config value at exactly the depth limit with a scalar leaf", async () => {
+      const { rejectExcessiveConfigDepth } = await import("../config/io.read-helpers.js");
+      let nested: Record<string, unknown> = { value: 1 };
+      for (let i = 0; i < 100; i += 1) {
+        nested = { a: nested };
+      }
+      expect(() => rejectExcessiveConfigDepth(nested)).not.toThrow();
+    });
+
+    it("rejects config value one level past the depth limit", async () => {
+      const { rejectExcessiveConfigDepth } = await import("../config/io.read-helpers.js");
+      let nested: Record<string, unknown> = { value: 1 };
+      for (let i = 0; i < 101; i += 1) {
+        nested = { a: nested };
+      }
+      expect(() => rejectExcessiveConfigDepth(nested)).toThrow("nesting depth exceeds limit");
+    });
+
+    it("accepts config value at the depth limit with non-numeric scalar leaves", async () => {
+      const { rejectExcessiveConfigDepth } = await import("../config/io.read-helpers.js");
+      for (const leaf of ["text", true, null] as unknown[]) {
+        let nested: Record<string, unknown> = { value: leaf };
+        for (let i = 0; i < 100; i += 1) {
+          nested = { a: nested };
+        }
+        expect(() => rejectExcessiveConfigDepth(nested)).not.toThrow();
+      }
+    });
+
+    it("still applies normal-depth nested config patches", async () => {
+      const resolved = {
+        channels: {
+          discord: { enabled: false },
+        },
+      } as unknown as OpenClawConfig;
+      setSnapshot(resolved, resolved);
+
+      const pathname = writeTempJson5File("openclaw-config-patch-normal-nesting", {
+        channels: {
+          discord: {
+            enabled: true,
+          },
+        },
+      });
+      try {
+        await runConfigCommand(["config", "patch", "--file", pathname, "--dry-run"]);
+      } finally {
+        fs.rmSync(pathname, { force: true });
+      }
+    });
+
     it("dry-runs config patch and resolves changed SecretRefs", async () => {
       const resolved = {
         secrets: {

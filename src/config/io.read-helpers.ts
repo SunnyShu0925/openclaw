@@ -82,6 +82,8 @@ export function resolveGatewayMode(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+const MAX_CONFIG_VALUE_DEPTH = 100;
+
 export function rejectConfigNonFiniteNumbers(value: unknown): void {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
@@ -98,6 +100,26 @@ export function rejectConfigNonFiniteNumbers(value: unknown): void {
   if (isRecord(value)) {
     for (const entry of Object.values(value)) {
       rejectConfigNonFiniteNumbers(entry);
+    }
+  }
+}
+
+export function rejectExcessiveConfigDepth(value: unknown, depth = 0): void {
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+  if (depth > MAX_CONFIG_VALUE_DEPTH) {
+    throw new Error(`Config value nesting depth exceeds limit (${MAX_CONFIG_VALUE_DEPTH}).`);
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      rejectExcessiveConfigDepth(entry, depth + 1);
+    }
+    return;
+  }
+  if (isRecord(value)) {
+    for (const entry of Object.values(value)) {
+      rejectExcessiveConfigDepth(entry, depth + 1);
     }
   }
 }
