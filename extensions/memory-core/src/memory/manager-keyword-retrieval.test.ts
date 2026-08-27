@@ -472,130 +472,51 @@ describe("memory index", () => {
     }
   });
 
-  it("preserves LIKE fallback body lexical ordering through manager normalization", async () => {
-    // LIKE fallback body hits carry textScore = 0 (no BM25, recall only) but
-    // boost mode still derives a lexical score. The manager's path-only
-    // sentinel (textScore === 0) must not erase that boost-derived score
-    // during normalization, or every fallback body hit ties at zero. See #120603.
-    const cfg = createCfg({
-      minScore: 0,
-      hybrid: { enabled: true, vectorWeight: 0, textWeight: 1 },
-    });
-    const manager = await getPersistentManager(cfg);
-    type FallbackKeywordHit = {
-      id: string;
-      path: string;
-      startLine: number;
-      endLine: number;
-      score: number;
-      snippet: string;
-      source: "memory";
-      textScore: number;
-      pathScore: number;
-      exactPathSpecificity: 0;
-      likeFallbackBody?: boolean;
-    };
-    const internal = manager as unknown as {
-      mergeKeywordSearchHits: (
-        resultSets: FallbackKeywordHit[][],
-        exactPathQuery?: string,
-      ) => Array<FallbackKeywordHit>;
-    };
-
-    const merged = internal.mergeKeywordSearchHits(
-      [
-        [
-          {
-            id: "strong",
-            path: "memory/strong.md",
-            startLine: 1,
-            endLine: 2,
-            score: 0.69,
-            snippet: "strong fallback body",
-            source: "memory",
-            textScore: 0,
-            pathScore: 0,
-            exactPathSpecificity: 0,
-            likeFallbackBody: true,
-          },
-          {
-            id: "weak",
-            path: "memory/weak.md",
-            startLine: 1,
-            endLine: 2,
-            score: 0.35,
-            snippet: "weak fallback body",
-            source: "memory",
-            textScore: 0,
-            pathScore: 0,
-            exactPathSpecificity: 0,
-            likeFallbackBody: true,
-          },
-        ],
-      ],
-      "fallback query",
+  it("ranks substring-only recall without reporting perfect confidence", async () => {
+    providerFixture.forceNoProvider = true;
+    const manager = await getPersistentManager(
+      createCfg({
+        provider: "none",
+        ftsTokenizer: "trigram",
+        minScore: 0,
+        hybrid: { enabled: true },
+      }),
     );
+    if (!manager.status().fts?.available) {
+      return;
+    }
+    await fs.writeFile(path.join(fixture.paths.memory, "a-weak.md"), "记忆 alpha beta gamma");
+    await fs.writeFile(path.join(fixture.paths.memory, "z-strong.md"), "记忆");
+    await manager.sync({ reason: "test" });
 
-    expect(merged).toHaveLength(2);
-    const byId = new Map(merged.map((entry) => [entry.id, entry]));
-    // textScore stays 0 (fallback contributes no BM25 to hybrid contentScore).
-    expect(byId.get("strong")?.textScore).toBe(0);
-    expect(byId.get("weak")?.textScore).toBe(0);
-    // The flag survives normalization so the path-only sentinel excludes them.
-    expect(byId.get("strong")?.likeFallbackBody).toBe(true);
-    expect(byId.get("weak")?.likeFallbackBody).toBe(true);
-    // Boost-derived scores survive normalization (not reset to pathScore = 0).
-    expect(byId.get("strong")?.score).toBeCloseTo(0.69);
-    expect(byId.get("weak")?.score).toBeCloseTo(0.35);
-    expect(byId.get("strong")?.score).toBeGreaterThan(byId.get("weak")?.score ?? 0);
+    const results = await manager.search("记忆", { maxResults: 2, minScore: 0 });
+
+    expect(results.map((entry) => entry.path)).toEqual(["memory/z-strong.md", "memory/a-weak.md"]);
+    expect(results.every((entry) => entry.score > 0 && entry.score < 1)).toBe(true);
+    expect(results.every((entry) => !("hasBodyMatch" in entry))).toBe(true);
   });
 
-  it("does not leak the likeFallbackBody marker into public search results", async () => {
-    // likeFallbackBody is manager-internal state; it must be stripped at the
-    // public conversion boundary (toMemorySearchResults) so memory tool and
-    // CLI JSON output never serialize an undocumented field. See #120603.
-    const cfg = createCfg({
-      minScore: 0,
-      hybrid: { enabled: true, vectorWeight: 0, textWeight: 1 },
-    });
-    const manager = await getPersistentManager(cfg);
-    type InternalKeywordHit = {
-      id: string;
-      path: string;
-      startLine: number;
-      endLine: number;
-      score: number;
-      snippet: string;
-      source: "memory";
-      textScore: number;
-      pathScore: number;
-      exactPathSpecificity: 0;
-      likeFallbackBody?: boolean;
-    };
-    const internal = manager as unknown as {
-      toMemorySearchResults: (results: InternalKeywordHit[]) => Array<Record<string, unknown>>;
-    };
+  it("keeps substring-only body ranking within an exact hybrid tier", async () => {
+    const manager = await getPersistentManager(
+      createCfg({
+        ftsTokenizer: "trigram",
+        minScore: 0,
+        hybrid: { enabled: true, vectorWeight: 0, textWeight: 1 },
+      }),
+    );
+    if (!manager.status().fts?.available) {
+      return;
+    }
+    const weakDir = path.join(fixture.paths.memory, "a");
+    const strongDir = path.join(fixture.paths.memory, "z");
+    await fs.mkdir(weakDir, { recursive: true });
+    await fs.mkdir(strongDir, { recursive: true });
+    await fs.writeFile(path.join(weakDir, "记忆.md"), "记忆 alpha beta gamma");
+    await fs.writeFile(path.join(strongDir, "记忆.md"), "记忆");
+    await manager.sync({ reason: "test" });
 
-    const publicResults = internal.toMemorySearchResults([
-      {
-        id: "strong",
-        path: "memory/strong.md",
-        startLine: 1,
-        endLine: 2,
-        score: 0.69,
-        snippet: "strong fallback body",
-        source: "memory",
-        textScore: 0,
-        pathScore: 0,
-        exactPathSpecificity: 0,
-        likeFallbackBody: true,
-      },
-    ]);
+    const results = await manager.search("记忆", { maxResults: 2, minScore: 0 });
 
-    expect(publicResults).toHaveLength(1);
-    expect(publicResults[0]).not.toHaveProperty("likeFallbackBody");
-    // Other internal ranking fields stay stripped too.
-    expect(publicResults[0]).not.toHaveProperty("pathScore");
-    expect(publicResults[0]).not.toHaveProperty("exactPathSpecificity");
+    expect(results.map((entry) => entry.path)).toEqual(["memory/z/记忆.md", "memory/a/记忆.md"]);
   });
 });

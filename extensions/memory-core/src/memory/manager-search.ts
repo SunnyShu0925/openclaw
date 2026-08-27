@@ -106,6 +106,7 @@ type PathKeywordSearchResult = SearchRowResult & {
   textScore: 0;
   pathScore: number;
   exactPathSpecificity: ExactPathSpecificity;
+  hasBodyMatch: false;
 };
 
 function comparePathKeywordSearchResults(
@@ -662,7 +663,7 @@ export async function searchKeyword(params: {
   bm25RankToScore: (rank: number) => number;
   boostFallbackRanking?: boolean;
   rankingQuery?: string;
-}): Promise<Array<SearchRowResult & { textScore: number; likeFallbackBody?: boolean }>> {
+}): Promise<Array<SearchRowResult & { textScore: number; hasBodyMatch: true }>> {
   if (params.limit <= 0) {
     return [];
   }
@@ -767,11 +768,9 @@ export async function searchKeyword(params: {
         endLine: row.end_line,
         score,
         textScore,
+        hasBodyMatch: true as const,
         snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
         source: row.source,
-        // Mark LIKE fallback body hits so the manager's path-only sentinel
-        // (textScore === 0) does not erase the boost-derived lexical score.
-        ...(usedMatch ? {} : { likeFallbackBody: true }),
       },
       readChunkProvenance(params.db, row.id),
     );
@@ -899,6 +898,7 @@ export async function searchPathKeyword(params: {
       textScore: 0,
       pathScore: 0,
       exactPathSpecificity: row.exact_path_specificity,
+      hasBodyMatch: false,
       snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
       source: row.source,
     };
@@ -1039,6 +1039,7 @@ export async function searchPathKeyword(params: {
         textScore: 0,
         pathScore,
         exactPathSpecificity,
+        hasBodyMatch: false,
         snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
         source: row.source,
       };
