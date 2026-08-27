@@ -96,6 +96,7 @@ import {
   trimTranscriptForManualCompact,
 } from "./session-accessor.sqlite-transcript-write.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
+import { serializeJsonlLines } from "./transcript-jsonl.js";
 import {
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWrites,
@@ -4871,7 +4872,9 @@ describe("session accessor seam", () => {
     expect(replaced).toMatchObject({
       eventCount: 2,
       lastMutationAtMs: expect.any(Number),
-      sizeBytes: Buffer.byteLength(events.map((event) => JSON.stringify(event)).join("\n")),
+      sizeBytes: Buffer.byteLength(
+        serializeJsonlLines(events.map((event) => JSON.stringify(event))),
+      ),
     });
     expect(replaced.lastMutationAtMs).toBeGreaterThanOrEqual(1_700_000_000_000);
 
