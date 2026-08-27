@@ -437,9 +437,6 @@ async function consumeChatStream(
     return candidates;
   };
 
-  const intersectCandidates = (left: Set<number>, right: Set<number>): Set<number> =>
-    new Set([...left].filter((contentIndex) => right.has(contentIndex)));
-
   const requireSingleCandidate = (candidates: Set<number>): number | undefined => {
     if (candidates.size > 1) {
       throw new Error(
@@ -447,16 +444,6 @@ async function consumeChatStream(
       );
     }
     return candidates.values().next().value;
-  };
-
-  const requireExistingCandidate = (candidates: Set<number>): number => {
-    const candidate = requireSingleCandidate(candidates);
-    if (candidate === undefined) {
-      throw new Error(
-        "Mistral streamed tool-call identities conflict; refusing to merge arguments",
-      );
-    }
-    return candidate;
   };
 
   const resolveToolBlockIndex = (params: {
@@ -489,11 +476,15 @@ async function consumeChatStream(
           );
 
     if (idCandidates.size > 0) {
-      let candidates = idCandidates;
-      if (nameCandidates.size > 0) {
-        candidates = intersectCandidates(candidates, nameCandidates);
-      }
-      return requireExistingCandidate(candidates);
+      // A stable explicit id is the strongest continuation identity. A
+      // continuation fragment may legitimately carry a function name that is
+      // already the complete recorded name of a different parallel call
+      // (e.g. call A continues with "weather" while call B already completed
+      // as "weather"). Intersecting with name candidates there would veto the
+      // explicit id and fail the whole tool turn, so the explicit-id candidate
+      // is authoritative. requireSingleCandidate still rejects the genuinely
+      // ambiguous case of one explicit id matching multiple open blocks.
+      return requireSingleCandidate(idCandidates);
     }
 
     if (nameCandidates.size > 0) {
@@ -757,13 +748,28 @@ async function consumeChatStream(
         identity.explicitIds.add(providedCallId);
       }
       if (functionName) {
-        if (identity.functionNames.size > 0 && !identity.functionNames.has(functionName)) {
-          throw new Error(
-            "Mistral streamed tool-call continuation changed function name; refusing to merge arguments",
-          );
+        if (existingIndex !== undefined && block.name !== functionName) {
+          // Continuation of an existing block. Append only a genuinely new
+          // fragment (get_ + weather => get_weather). A name that already equals
+          // the accumulated name is a repeated whole name
+          // (get_weather + get_weather => get_weather) or a late-id adoption onto
+          // a name-matched block — both must be idempotent, never concatenated
+          // into a name no registered tool will match. This also keeps the
+          // explicit-id and idless arms aligned: a repeat is treated as a repeat
+          // regardless of how the block was resolved.
+          block.name += functionName;
         }
-        block.name = functionName;
-        identity.functionNames.add(functionName);
+        // New blocks already set block.name at creation; a continuation whose
+        // incoming name equals the accumulated name leaves it unchanged.
+        if (!(existingIndex !== undefined && providedCallId)) {
+          // Record durable name identity only for a block's opening name and for
+          // idless continuations (which resolve by name). An explicit-id
+          // continuation fragment (e.g. "weather" on a "get_" block) must NOT
+          // become a name-match candidate, or a later idless "weather" call with
+          // the SDK's defaulted index zero could resolve to this block, overwrite
+          // its name, and merge both argument buffers.
+          identity.functionNames.add(functionName);
+        }
       }
       if (toolCallIndex !== undefined) {
         identity.indexes.add(toolCallIndex);

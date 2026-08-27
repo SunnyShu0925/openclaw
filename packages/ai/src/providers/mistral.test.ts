@@ -668,6 +668,197 @@ describe("Mistral provider", () => {
     expect(new Set(toolCalls.map((toolCall) => toolCall.id)).size).toBe(2);
   });
 
+  it("concatenates fragmented streamed function names on a stable-id continuation", async () => {
+    const { toolCalls } = await runMistralToolFixture("response-fragmented-name", [
+      [
+        {
+          id: "call_name",
+          index: 0,
+          function: { name: "get_", arguments: '{"city":' },
+        },
+      ],
+      [
+        {
+          id: "call_name",
+          index: 0,
+          function: { name: "weather", arguments: '"Paris"}' },
+        },
+      ],
+    ]);
+
+    expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
+
+  it("concatenates fragmented streamed function names on a stable-id continuation without a wire index", async () => {
+    // The SDK default-fills an omitted wire `index` to 0, which cannot be
+    // distinguished from an explicit index 0 after parsing. Continuation by
+    // index alone is therefore unsafe; a stable explicit id must carry the
+    // fragment. See `keeps idless differently-named omitted-index calls distinct`.
+    const { toolCalls } = await runMistralToolFixture("response-fragmented-name-id", [
+      [
+        {
+          id: "call_name",
+          function: { name: "get_", arguments: '{"city":' },
+        },
+      ],
+      [
+        {
+          id: "call_name",
+          function: { name: "weather", arguments: '"Paris"}' },
+        },
+      ],
+    ]);
+
+    expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
+
+  it("keeps idless differently-named omitted-index calls distinct", async () => {
+    // Regression for the omitted-index sibling separation: when the wire omits
+    // `index`, the SDK default-fills 0. Two such calls with different names must
+    // stay distinct rather than collapsing the second into the first index-0
+    // block (which would concatenate names and malformed the arguments).
+    const { result, toolCalls } = await runMistralToolFixture(
+      "response-idless-omitted-index-siblings",
+      [
+        [{ function: { name: "first_tool", arguments: '{"value":1}' } }],
+        [{ function: { name: "second_tool", arguments: '{"value":2}' } }],
+      ],
+    );
+
+    expect(result.stopReason).not.toBe("error");
+    expect(toolCalls).toHaveLength(2);
+    expect(toolCalls.map((toolCall) => toolCall.name).toSorted()).toEqual([
+      "first_tool",
+      "second_tool",
+    ]);
+  });
+
+  it("preserves one-shot function names without duplication", async () => {
+    const { toolCalls } = await runMistralToolFixture("response-one-shot-name", [
+      [
+        {
+          id: "call_name",
+          index: 0,
+          function: { name: "get_weather", arguments: '{"city":"Paris"}' },
+        },
+      ],
+    ]);
+
+    expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
+
+  it("does not alter the accumulated name when a continuation fragment is empty", async () => {
+    const { toolCalls } = await runMistralToolFixture("response-empty-fragment", [
+      [
+        {
+          id: "call_name",
+          index: 0,
+          function: { name: "get_weather", arguments: '{"city":' },
+        },
+      ],
+      [
+        {
+          id: "call_name",
+          index: 0,
+          function: { name: "", arguments: '"Paris"}' },
+        },
+      ],
+    ]);
+
+    expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
+
+  it("keeps independently identified parallel fragmented names distinct", async () => {
+    // Parallel fragmented names must be carried by stable explicit ids, since
+    // an omitted wire index defaults to 0 and cannot safely distinguish siblings.
+    const { toolCalls } = await runMistralToolFixture("response-parallel-fragmented", [
+      [
+        { id: "call_a", index: 0, function: { name: "get_", arguments: '{"a":' } },
+        { id: "call_b", index: 1, function: { name: "set_", arguments: '{"b":' } },
+      ],
+      [
+        { id: "call_a", index: 0, function: { name: "weather", arguments: "1}" } },
+        { id: "call_b", index: 1, function: { name: "status", arguments: "2}" } },
+      ],
+    ]);
+
+    expect(toolCalls).toMatchObject([
+      { name: "get_weather", arguments: { a: 1 } },
+      { name: "set_status", arguments: { b: 2 } },
+    ]);
+  });
+
+  it("honors an explicit id when a continuation fragment equals another call's full name", async () => {
+    // Call A fragments its name (get_ + weather) while call B already completed
+    // with the full name "weather". A's continuation fragment "weather" is a
+    // recorded name on block B, but the explicit id still selects block A. The
+    // name-candidate intersection must not veto the authoritative explicit id.
+    const { toolCalls } = await runMistralToolFixture("response-explicit-id-name-collision", [
+      [
+        { id: "call_a", index: 0, function: { name: "get_", arguments: '{"a":' } },
+        { id: "call_b", index: 1, function: { name: "weather", arguments: '{"b":2}' } },
+      ],
+      [{ id: "call_a", index: 0, function: { name: "weather", arguments: "1}" } }],
+    ]);
+
+    expect(toolCalls).toMatchObject([
+      { id: "call_a", name: "get_weather", arguments: { a: 1 } },
+      { id: "call_b", name: "weather", arguments: { b: 2 } },
+    ]);
+  });
+
+  it("treats a repeated stable-id whole name as idempotent, not concatenated", async () => {
+    // A repeated whole name on the same explicit id (foo + foo) is idempotent
+    // (=> foo), never concatenated into "foofoo" — a name no registered tool
+    // will match. This mirrors main's pre-existing assignment contract for
+    // same-name continuations and keeps the explicit-id arm aligned with the
+    // idless arm. Genuine fragmentation uses distinct fragments
+    // (get_ + weather), which still concatenates to "get_weather".
+    const { toolCalls } = await runMistralToolFixture("response-repeated-fragment-name", [
+      [{ id: "call_name", index: 0, function: { name: "foo", arguments: '{"x":' } }],
+      [{ id: "call_name", index: 0, function: { name: "foo", arguments: "1}" } }],
+    ]);
+
+    expect(toolCalls).toMatchObject([{ name: "foo", arguments: { x: 1 } }]);
+  });
+
+  it("keeps an explicit-id name fragment from capturing a later idless same-name call", async () => {
+    // An explicit-id call fragments get_ + weather. The "weather" fragment must
+    // NOT become a durable name candidate, or a later idless "weather" call
+    // (SDK-defaulted index zero, in a separate delta so it is not excluded by
+    // the per-delta used-block set) could resolve to the explicit-id block,
+    // overwrite its name, and merge both argument buffers. The idless call must
+    // start its own block instead.
+    const { toolCalls } = await runMistralToolFixture("response-fragment-alias-no-capture", [
+      [{ id: "call_a", index: 0, function: { name: "get_", arguments: '{"city":' } }],
+      [{ id: "call_a", index: 0, function: { name: "weather", arguments: '"Paris"}' } }],
+      [{ index: 0, function: { name: "weather", arguments: '{"city":2}' } }],
+    ]);
+
+    expect(toolCalls).toMatchObject([
+      { id: "call_a", name: "get_weather", arguments: { city: "Paris" } },
+      { name: "weather", arguments: { city: 2 } },
+    ]);
+  });
+
+  it("does not concatenate when a late id adopts a name-matched block", async () => {
+    // openclaw deliberately supports id-less Mistral-compatible endpoints. When
+    // an idless opening fragment resolves by name and the explicit id arrives
+    // on a later frame, the name-match branch can only be reached when the
+    // incoming name already equals the block's recorded name — so appending
+    // there could only duplicate it (get_weather + get_weather => get_weatherget_weather).
+    // The idempotency guard (block.name !== functionName) must skip the append,
+    // settling on the original name rather than synthesizing an unmatched one.
+    const { toolCalls } = await runMistralToolFixture("response-late-id-adoption", [
+      [{ index: 0, function: { name: "get_weather", arguments: '{"city":' } }],
+      [{ id: "call_late", index: 0, function: { name: "get_weather", arguments: '"Paris"}' } }],
+    ]);
+
+    expect(toolCalls).toMatchObject([
+      { id: "call_late", name: "get_weather", arguments: { city: "Paris" } },
+    ]);
+  });
+
   it("fails locally when a pinned Mistral tool choice is skipped", async () => {
     const result = await runMistralFixture(
       {
