@@ -61,10 +61,7 @@ export function prepareControlledSubagentAbort(params: {
         });
 }
 
-const SESSION_LIFECYCLE_ABORT_REQUESTER: ChatAbortRequester = {
-  isAdmin: true,
-  hasWriteScope: true,
-};
+const SESSION_LIFECYCLE_ABORT_REQUESTER: ChatAbortRequester = { isAdmin: true };
 
 type AbortedPartialSnapshot = {
   runId: string;

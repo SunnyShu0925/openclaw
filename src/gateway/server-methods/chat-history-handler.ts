@@ -8,16 +8,13 @@ import {
 import { CHAT_HISTORY_MAX_ENTRIES } from "../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import {
-  getActiveEmbeddedRunSnapshot,
-  resolveActiveEmbeddedAgentRunId,
-  resolveActiveEmbeddedAgentRunStartMs,
+  resolveActiveEmbeddedRunOwner,
   resolveActiveEmbeddedRunHandleSessionId,
 } from "../../agents/embedded-agent-runner/runs.js";
 import {
   isSessionTranscriptProjectionUnavailableError,
   resolveTranscriptSessionKeyBySessionId,
 } from "../../config/sessions/session-accessor.js";
-import type { AgentEventPayload } from "../../infra/agent-events.js";
 import {
   measureDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,
@@ -26,10 +23,12 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId, scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
 import {
   boundInFlightRunSnapshotForChatHistory,
+  projectInFlightRunSnapshot,
   resolveInFlightRunSnapshot,
 } from "../chat-abort.js";
 import { resolveEffectiveChatHistoryMaxChars } from "../chat-display-projection.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
+import type { ChatRunState } from "../server-chat-state.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
@@ -85,28 +84,12 @@ function respondChatHistoryUnavailable(
   );
 }
 
-/**
- * Recovers an in-flight snapshot for an active embedded run that the visible
- * chat-abort controllers do not expose. Channel-originated runs register in the
- * embedded registry rather than as chat-send controllers, so the shared
- * startup/history path must bridge their identity and timing or a client sees an
- * active session with nothing to resume. Session scoping keeps hidden
- * subagent/internal runs owned by other sessions out of the projection.
- */
 function resolveEmbeddedAgentRunRecoverySnapshot(params: {
+  chatRunState: Pick<ChatRunState, "resolveBuffer" | "runs">;
   requestedSessionKey: string;
   canonicalSessionKey: string;
   sessionId?: string;
-}):
-  | {
-      runId: string;
-      text: string;
-      startedAt?: number;
-      sessionAbortable?: boolean;
-      events?: AgentEventPayload[];
-      plan?: import("../../gateway/server-chat-state.js").ChatRunPlanSnapshot;
-    }
-  | undefined {
+}) {
   const sessionId =
     params.sessionId ??
     resolveActiveEmbeddedRunHandleSessionId(params.canonicalSessionKey) ??
@@ -114,30 +97,16 @@ function resolveEmbeddedAgentRunRecoverySnapshot(params: {
   if (!sessionId) {
     return undefined;
   }
-  const runId = resolveActiveEmbeddedAgentRunId(sessionId);
-  if (!runId) {
+  const owner = resolveActiveEmbeddedRunOwner(sessionId);
+  if (!owner) {
     return undefined;
   }
-  const startedAt = resolveActiveEmbeddedAgentRunStartMs(sessionId);
-  const embeddedSnapshot = getActiveEmbeddedRunSnapshot(sessionId);
-  const events = embeddedSnapshot?.events?.length ? embeddedSnapshot.events : undefined;
-  const plan = embeddedSnapshot?.plan;
-  return {
-    runId,
-    // The embedded snapshot's only text field (inFlightPrompt) is the user's
-    // submitted prompt (input.transcriptPrompt), not streamed assistant output.
-    // Control UI renders inFlightRun.text as the assistant stream, so replaying
-    // it would render the user's own request as assistant output after reload.
-    // Embedded runs do not yet own an assistant-stream snapshot, so publish
-    // empty text while preserving the recoverable run identity and timing.
-    text: "",
-    // Embedded runs are cancelled through the session-owned abort path, never
-    // run-specific chat.abort (which has no embedded-registry fallback).
+  return projectInFlightRunSnapshot({
+    chatRunState: params.chatRunState,
+    runId: owner.runId,
+    startedAtMs: owner.startedAtMs,
     sessionAbortable: true,
-    ...(startedAt === undefined ? {} : { startedAt }),
-    ...(events ? { events } : {}),
-    ...(plan ? { plan } : {}),
-  };
+  });
 }
 
 async function handleChatMetadataRequest({
@@ -491,6 +460,7 @@ async function handleChatHistoryRequest({
   // gates such as suggestion send-now rely on it being a complete set); the
   // scoped inFlightRun snapshot below drives UI adoption instead.
   const embeddedRecovery = resolveEmbeddedAgentRunRecoverySnapshot({
+    chatRunState: context.chatRunState,
     requestedSessionKey: sessionKey,
     canonicalSessionKey: canonicalKey,
     sessionId,

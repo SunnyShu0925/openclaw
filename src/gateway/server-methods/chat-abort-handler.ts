@@ -4,10 +4,6 @@ import {
   errorShape,
   validateChatAbortParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import {
-  abortEmbeddedAgentRunByRunId,
-  resolveActiveEmbeddedRunSessionKeyByRunId,
-} from "../../agents/embedded-agent-runner/runs.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { abortChatRunById, type ChatAbortControllerEntry } from "../chat-abort.js";
@@ -16,7 +12,6 @@ import { chatRunBelongsToAgent } from "../chat-run-owner.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import {
   resolveRequestedSessionAgentId,
-  resolveSessionKeyAgentId,
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
 import { loadSessionEntry, resolveSessionStoreKey } from "../session-utils.js";
@@ -301,44 +296,6 @@ export async function handleChatAbortRequestWithLifecycle(
         allowSessionMismatch: true,
       });
       respondWithWorkerRuns(queuedRes.aborted ? [runId] : []);
-      return;
-    }
-    // Exact embedded-run stop: the run is owned by the embedded registry, not
-    // a visible chat-abort controller. Keep the abort bound to this exact run
-    // so a delayed Stop cannot cancel a replacement run in the same session.
-    const embeddedRunSessionKey = resolveActiveEmbeddedRunSessionKeyByRunId(runId);
-    if (embeddedRunSessionKey) {
-      if (
-        embeddedRunSessionKey !== canonicalAbortSessionKey &&
-        embeddedRunSessionKey !== rawSessionKey
-      ) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, "runId does not match session"),
-        );
-        return;
-      }
-      // The embedded run's owning agent must match the requested agent so a
-      // global session cannot be used to cross-abort another agent's run.
-      const embeddedRunOwnerAgentId = resolveSessionKeyAgentId(embeddedRunSessionKey, abortCfg);
-      if (!embeddedRunOwnerAgentId || embeddedRunOwnerAgentId !== normalizeAgentId(abortAgentId)) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, "runId does not match agent"),
-        );
-        return;
-      }
-      // Embedded channel runs have no browser connection owner; any
-      // write-scoped operator (Control UI) may stop them after exact run,
-      // session, and agent validation.
-      if (!requester.hasWriteScope) {
-        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));
-        return;
-      }
-      const aborted = abortEmbeddedAgentRunByRunId(runId);
-      respond(true, { ok: true, aborted, runIds: aborted ? [runId] : [] });
       return;
     }
     const workerSessionId = abortSessionEntry?.sessionId;

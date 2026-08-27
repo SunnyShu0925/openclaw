@@ -3,7 +3,7 @@ import { uniqueStrings } from "@openclaw/normalization-core/string-normalization
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { chatRunBelongsToAgent, resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
-import { ADMIN_SCOPE, WRITE_SCOPE } from "../method-scopes.js";
+import { ADMIN_SCOPE } from "../method-scopes.js";
 import { createChatAbortMarker } from "../server-chat-state.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import {
@@ -16,7 +16,6 @@ export type ChatAbortRequester = {
   connId?: string;
   deviceId?: string;
   isAdmin: boolean;
-  hasWriteScope: boolean;
 };
 
 type PreRegisteredAgentDedupePayload = {
@@ -62,7 +61,6 @@ export function resolveChatAbortRequester(
     connId: normalizeOptionalText(client?.connId),
     deviceId: normalizeOptionalText(client?.connect?.device?.id),
     isAdmin: scopes.includes(ADMIN_SCOPE),
-    hasWriteScope: scopes.includes(WRITE_SCOPE) || scopes.includes(ADMIN_SCOPE),
   };
 }
 

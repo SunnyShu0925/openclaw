@@ -17,7 +17,7 @@ export function registerCopilotActiveRun(params: {
   abortActiveSession: () => void;
   bridge: ReturnType<typeof attachEventBridge> | undefined;
   canAcceptSteering: () => boolean;
-  startedAtMs: number;
+  startedAtMs?: number;
   input: AttemptParamsLike;
   isAborted: () => boolean;
   isSettled: () => boolean;

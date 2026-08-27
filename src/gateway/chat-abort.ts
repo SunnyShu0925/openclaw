@@ -103,7 +103,7 @@ export type RestartRecoveryCandidate = {
   observedAt?: number;
 };
 
-type InFlightRunSnapshot = {
+export type InFlightRunSnapshot = {
   runId: string;
   text: string;
   startedAt?: number;
@@ -117,6 +117,29 @@ type InFlightRunSnapshot = {
   plan?: ChatRunPlanSnapshot;
   events?: AgentEventPayload[];
 };
+
+export function projectInFlightRunSnapshot(params: {
+  chatRunState: Pick<ChatRunState, "resolveBuffer" | "runs">;
+  runId: string;
+  startedAtMs?: number;
+  sessionAbortable?: boolean;
+}): InFlightRunSnapshot {
+  const run = params.chatRunState.runs.get(params.runId);
+  const projected = projectLiveAssistantBufferedText(
+    params.chatRunState.resolveBuffer(params.runId).text,
+    { suppressLeadFragments: true },
+  );
+  const plan = run?.planSnapshot;
+  const events = run?.progressSnapshot?.events;
+  return {
+    runId: params.runId,
+    text: projected.suppress ? "" : projected.text,
+    ...(params.startedAtMs === undefined ? {} : { startedAt: params.startedAtMs }),
+    ...(params.sessionAbortable ? { sessionAbortable: true } : {}),
+    ...(plan ? { plan } : {}),
+    ...(events?.length ? { events } : {}),
+  };
+}
 
 type RegisteredChatAbortController = {
   controller: AbortController;
@@ -427,20 +450,11 @@ export function resolveInFlightRunSnapshot(params: {
   // only at completion — so there is nothing to show mid-run, but the client
   // should still adopt the run and show a `streaming` status (not idle) and
   // render the result cleanly when it lands.
-  const run = params.chatRunState.runs.get(best.runId);
-  const projected = projectLiveAssistantBufferedText(
-    params.chatRunState.resolveBuffer(best.runId).text,
-    { suppressLeadFragments: true },
-  );
-  const plan = run?.planSnapshot;
-  const events = run?.progressSnapshot?.events;
-  return {
+  return projectInFlightRunSnapshot({
+    chatRunState: params.chatRunState,
     runId: best.runId,
-    text: projected.suppress ? "" : projected.text,
-    startedAt: best.startedAtMs,
-    ...(plan ? { plan } : {}),
-    ...(events?.length ? { events } : {}),
-  };
+    startedAtMs: best.startedAtMs,
+  });
 }
 
 export function boundInFlightRunSnapshotForChatHistory(params: {

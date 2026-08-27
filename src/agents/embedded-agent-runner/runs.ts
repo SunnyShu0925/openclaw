@@ -23,7 +23,6 @@ import {
   waitForReplyOperationOwnerSettlement,
   waitForReplyRunEndBySessionId,
 } from "../../auto-reply/reply/reply-run-registry.js";
-import { normalizeAgentPlanSteps } from "../../channels/streaming.js";
 import { getRuntimeConfig } from "../../config/io.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { loadSessionEntry, updateSessionEntry } from "../../config/sessions/session-accessor.js";
@@ -31,10 +30,8 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
-  onAgentEvent,
 } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import {
   getDiagnosticSessionActivitySnapshot,
   isDiagnosticEmbeddedRunOwnerClosed,
@@ -49,10 +46,10 @@ import { resolveSessionPlacementForcedTerminalSettlement } from "../session-plac
 import {
   ACTIVE_EMBEDDED_RUNS,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
+  ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS,
-  EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID,
   ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID,
   ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
@@ -790,18 +787,7 @@ export function resolveEmbeddedAgentRunProgressState(
     replyPhase !== "completed" &&
     replyPhase !== "failed" &&
     replyPhase !== "aborted";
-  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
-  let handleInProgress = handle !== undefined;
-  if (handle?.isAborted) {
-    try {
-      if (handle.isAborted()) {
-        handleInProgress = false;
-      }
-    } catch {
-      // A failed optional status probe cannot prove that live work has ended.
-      handleInProgress = true;
-    }
-  }
+  const handleInProgress = isEmbeddedRunHandleInProgress(ACTIVE_EMBEDDED_RUNS.get(sessionId));
   // Reply operations and embedded handles are independent lifecycle owners.
   // A retained terminal owner must not hide a newer live owner for the session.
   if (
@@ -856,123 +842,100 @@ export function resolveActiveEmbeddedRunHandleSessionId(sessionKey: string): str
   return ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.get(normalizedSessionKey);
 }
 
-/** Resolves the active embedded-run id for a session. Returns undefined for sessions with no handle or a retained aborted handle (terminal handles must not surface as recoverable). */
-export function resolveActiveEmbeddedAgentRunId(sessionId: string): string | undefined {
-  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+function isEmbeddedRunHandleInProgress(
+  handle: EmbeddedAgentQueueHandle | undefined,
+): handle is EmbeddedAgentQueueHandle {
   if (!handle) {
-    return undefined;
-  }
-  // Retained aborted handles are not exposed as recoverable; a failed probe falls through conservatively.
-  if (handle.isAborted) {
-    try {
-      if (handle.isAborted()) {
-        return undefined;
-      }
-    } catch {
-      // Keep the handle recoverable when the abort probe itself fails.
-    }
-  }
-  if (handle.runId) {
-    return handle.runId;
-  }
-  for (const [runId, candidate] of ACTIVE_EMBEDDED_RUNS_BY_RUN_ID) {
-    if (candidate === handle) {
-      return runId;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Resolves the authoritative start time of the active embedded-run handle owned
- * by a session, when one is recoverable.
- *
- * Recovery must project the current run's own start timestamp (captured by the
- * embedded-run orchestrator at run start) rather than SessionEntry.startedAt,
- * which documents the stable first-run time of subagent sessions and is absent
- * or unrelated for a current channel/main run. Mirrors the aborted-handle guard
- * of resolveActiveEmbeddedAgentRunId so a retained terminal handle is not
- * exposed alongside a recoverable run id.
- */
-export function resolveActiveEmbeddedAgentRunStartMs(sessionId: string): number | undefined {
-  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
-  if (!handle) {
-    return undefined;
+    return false;
   }
   if (handle.isAborted) {
     try {
       if (handle.isAborted()) {
-        return undefined;
+        return false;
       }
     } catch {
-      // Keep the handle recoverable when the abort probe itself fails.
+      // A failed optional status probe cannot prove that live work has ended.
     }
   }
-  return handle.startedAtMs;
+  return true;
 }
 
-/**
- * Resolves the session id that owns an active embedded run, by exact run id.
- * Used by the session-owned abort path so a recovered run's Stop stays bound to
- * that exact run instead of aborting whichever handle currently owns the key.
- */
-function resolveActiveEmbeddedRunSessionIdByRunId(runId: string): string | undefined {
-  const normalizedRunId = runId.trim();
-  if (!normalizedRunId) {
+export type ActiveEmbeddedRunOwner = {
+  runId: string;
+  sessionId: string;
+  sessionKey?: string;
+  startedAtMs?: number;
+  abort: () => boolean;
+};
+
+function projectActiveEmbeddedRunOwner(
+  registration: { sessionId: string; sessionKey?: string },
+  handle: EmbeddedAgentQueueHandle,
+): ActiveEmbeddedRunOwner | undefined {
+  const runId = handle.runId;
+  if (!runId || !isEmbeddedRunHandleInProgress(handle)) {
     return undefined;
   }
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId);
+  return {
+    runId,
+    ...registration,
+    ...(handle.startedAtMs === undefined ? {} : { startedAtMs: handle.startedAtMs }),
+    // A recovered run ID is correlation only. Recheck the captured owner before
+    // Stop so a stale UI action cannot abort replacement work in the session.
+    abort: () => {
+      if (
+        ACTIVE_EMBEDDED_RUNS.get(registration.sessionId) !== handle ||
+        ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) !== handle ||
+        !isEmbeddedRunHandleAbortable(runId, handle)
+      ) {
+        return false;
+      }
+      try {
+        if (handle.cancel) {
+          handle.cancel("user_abort");
+        } else {
+          handle.abort();
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+export function resolveActiveEmbeddedRunOwner(
+  sessionId: string,
+): ActiveEmbeddedRunOwner | undefined {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+  return handle && registration ? projectActiveEmbeddedRunOwner(registration, handle) : undefined;
+}
+
+export function resolveActiveEmbeddedRunOwnerByRunId(
+  runId: string,
+): ActiveEmbeddedRunOwner | undefined {
+  const normalizedRunId = runId.trim();
+  const handle = normalizedRunId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId) : undefined;
   if (!handle) {
     return undefined;
   }
-  for (const [sessionId, candidate] of ACTIVE_EMBEDDED_RUNS) {
-    if (candidate === handle) {
-      return sessionId;
-    }
-  }
-  return undefined;
+  const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  return registration && ACTIVE_EMBEDDED_RUNS.get(registration.sessionId) === handle
+    ? projectActiveEmbeddedRunOwner(registration, handle)
+    : undefined;
 }
 
-/** Resolves the session key that owns an active embedded run, by exact run id. */
-export function resolveActiveEmbeddedRunSessionKeyByRunId(runId: string): string | undefined {
-  const sessionId = resolveActiveEmbeddedRunSessionIdByRunId(runId);
-  if (!sessionId) {
-    return undefined;
-  }
-  for (const [sessionKey, activeSessionId] of ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY) {
-    if (activeSessionId === sessionId) {
-      return sessionKey;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Aborts the exact active embedded run by run id (user-stop semantics). Returns
- * false when the run id has no active embedded handle or is not abortable.
- */
-export function abortEmbeddedAgentRunByRunId(runId: string): boolean {
+export function isActiveEmbeddedRunId(runId: string): boolean {
   const normalizedRunId = runId.trim();
-  if (!normalizedRunId) {
-    return false;
-  }
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId);
-  if (!handle) {
-    return false;
-  }
-  if (!isEmbeddedRunHandleAbortable(normalizedRunId, handle)) {
-    return false;
-  }
-  try {
-    if (handle.cancel) {
-      handle.cancel("user_abort");
-    } else {
-      handle.abort();
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  const handle = normalizedRunId ? ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId) : undefined;
+  const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
+  return Boolean(
+    handle &&
+    registration &&
+    ACTIVE_EMBEDDED_RUNS.get(registration.sessionId) === handle &&
+    isEmbeddedRunHandleInProgress(handle),
+  );
 }
 
 export function resolveActiveEmbeddedRunHandleSessionIdBySessionFile(
@@ -1309,36 +1272,16 @@ export function setActiveEmbeddedRun(
   }
   clearEmbeddedRunAbandonment({ sessionId, sessionKey, sessionFile });
   ACTIVE_EMBEDDED_RUNS.set(sessionId, handle);
+  ACTIVE_EMBEDDED_RUN_REGISTRATIONS.set(handle, {
+    sessionId,
+    ...(sessionKey ? { sessionKey } : {}),
+  });
   const forcedTerminalSettlement = resolveSessionPlacementForcedTerminalSettlement();
   if (forcedTerminalSettlement) {
     EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.set(handle, forcedTerminalSettlement);
   }
   if (handle.runId) {
     ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.set(handle.runId, handle);
-  }
-  // A displaced handle must not keep recording events into the new run's
-  // replay snapshot: retire its subscription and fence the session snapshot so
-  // stale events cannot evict the current run's bounded 200-event buffer.
-  if (previousHandle?.runId && previousHandle.runId !== handle.runId) {
-    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(previousHandle.runId)?.();
-    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.delete(previousHandle.runId);
-    ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
-  }
-  if (handle.runId) {
-    // Record bounded tool events for this run while it is recoverable, so
-    // Control UI can replay recent tool activity after reload. Events are
-    // filtered by the exact run id and the subscription is released when the
-    // handle clears.
-    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(handle.runId)?.();
-    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.set(
-      handle.runId,
-      onAgentEvent((event) => {
-        if (event.runId !== handle.runId) {
-          return;
-        }
-        recordActiveEmbeddedRunEvent(sessionId, event);
-      }),
-    );
   }
   clearActiveRunSessionKeys(sessionId);
   setActiveRunSessionKey(sessionKey, sessionId);
@@ -1369,111 +1312,7 @@ export function updateActiveEmbeddedRunSnapshot(
   if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
     return;
   }
-  const existing = ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
-  ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, {
-    ...(existing ?? { transcriptLeafId: null }),
-    ...snapshot,
-    ...(snapshot.events === undefined && existing?.events ? { events: existing.events } : {}),
-    // byteLength is owned by the replay recorder; a non-replay snapshot update
-    // must not reset it to undefined and lose the byte budget accounting.
-    ...(snapshot.byteLength === undefined && existing?.byteLength !== undefined
-      ? { byteLength: existing.byteLength }
-      : {}),
-  });
-}
-
-const MAX_EMBEDDED_RUN_REPLAY_EVENTS = 200;
-const MAX_EMBEDDED_RUN_REPLAY_EVENT_BYTES = 64 * 1024;
-const MAX_EMBEDDED_RUN_REPLAY_BYTES = 128 * 1024;
-
-/**
- * Projects a client-safe event for Control UI replay after reload. Tool events
- * retain phase/name/toolCallId (args and output dropped). Item events are kept
- * only for preamble progress, which handleAgentEvent renders in the recovery
- * path. All other streams are dropped.
- */
-function projectEmbeddedRunReplayEvent(
-  event: import("../../infra/agent-events.js").AgentEventPayload,
-): import("../../infra/agent-events.js").AgentEventPayload | undefined {
-  if (event.stream === "tool") {
-    const { phase, name, toolCallId } = event.data;
-    const data: Record<string, unknown> = {};
-    if (typeof phase === "string") {
-      data.phase = phase;
-    }
-    if (typeof name === "string") {
-      data.name = name;
-    }
-    if (typeof toolCallId === "string") {
-      data.toolCallId = toolCallId;
-    }
-    return { runId: event.runId, seq: event.seq, stream: "tool", ts: event.ts, data };
-  }
-  if (event.stream === "item" && event.data?.kind === "preamble") {
-    const data: Record<string, unknown> = { kind: "preamble" };
-    const itemId = event.data.itemId ?? event.data.id;
-    if (typeof itemId === "string") {
-      data.itemId = itemId;
-    }
-    if (typeof event.data.progressText === "string") {
-      data.progressText = event.data.progressText;
-    }
-    return { runId: event.runId, seq: event.seq, stream: "item", ts: event.ts, data };
-  }
-  return undefined;
-}
-
-function recordActiveEmbeddedRunEvent(
-  sessionId: string,
-  event: import("../../infra/agent-events.js").AgentEventPayload,
-) {
-  if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
-    return;
-  }
-  // Plan updates are stored as a snapshot (not replay events) so Control UI
-  // recovers the plan through the inFlightRun.plan field, mirroring the
-  // chat-send controller path. The UI does not consume plan events via
-  // handleAgentEvent, so recording them in the events buffer is not useful.
-  if (event.stream === "plan" && event.data?.phase === "update") {
-    const steps = normalizeAgentPlanSteps(event.data.steps) ?? [];
-    const explanation =
-      typeof event.data.explanation === "string" ? event.data.explanation.trim() : "";
-    const existing = ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
-    ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, {
-      ...(existing ?? { transcriptLeafId: null }),
-      plan: {
-        steps,
-        ...(explanation ? { explanation } : {}),
-      },
-    });
-    return;
-  }
-  const projected = projectEmbeddedRunReplayEvent(event);
-  if (!projected) {
-    return;
-  }
-  const eventBytes = jsonUtf8Bytes(projected);
-  if (eventBytes > MAX_EMBEDDED_RUN_REPLAY_EVENT_BYTES) {
-    return;
-  }
-  const existing = ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
-  const events = [...(existing?.events ?? []), projected];
-  let byteLength = (existing?.byteLength ?? 0) + eventBytes;
-  while (
-    events.length > MAX_EMBEDDED_RUN_REPLAY_EVENTS ||
-    byteLength > MAX_EMBEDDED_RUN_REPLAY_BYTES
-  ) {
-    const removed = events.shift();
-    if (!removed) {
-      break;
-    }
-    byteLength -= jsonUtf8Bytes(removed);
-  }
-  ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, {
-    ...(existing ?? { transcriptLeafId: null }),
-    events,
-    byteLength,
-  });
+  ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, snapshot);
 }
 
 export function clearActiveEmbeddedRun(
@@ -1483,10 +1322,6 @@ export function clearActiveEmbeddedRun(
   sessionFile?: string,
   reason = "run_completed",
 ) {
-  if (handle.runId) {
-    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(handle.runId)?.();
-    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.delete(handle.runId);
-  }
   const activeHandle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (activeHandle === handle) {
     handle.closeDiagnostics?.();
@@ -1529,10 +1364,6 @@ async function forceClearEmbeddedAgentRun(
   if (handle && handle === expectedHandle) {
     forcedTerminalSettlement = EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.get(handle);
     EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.delete(handle);
-    if (handle.runId) {
-      EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.get(handle.runId)?.();
-      EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.delete(handle.runId);
-    }
     handle.closeDiagnostics?.();
     ACTIVE_EMBEDDED_RUNS.delete(sessionId);
     clearEmbeddedRunAbortability(handle);
@@ -1574,10 +1405,6 @@ const testing = {
     EMBEDDED_RUN_WAITERS.clear();
     ACTIVE_EMBEDDED_RUNS.clear();
     ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.clear();
-    for (const unsubscribe of EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.values()) {
-      unsubscribe();
-    }
-    EMBEDDED_RUN_EVENT_SUBSCRIPTIONS_BY_RUN_ID.clear();
     RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.clear();
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.clear();
     ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.clear();

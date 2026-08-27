@@ -38,17 +38,14 @@ export const ChatHistoryParamsSchema = closedObject({
  * Bounded forward catch-up response. Clients replay `messages` as `session.message`
  * payloads. There is no continuation loop: more than 200 raw events or the byte
  * budget returns `reset`, and the client fetches a fresh tail page.
- *
- * `inFlightRun` carries the same bounded recovery snapshot as the full response
- * when an embedded run is still live, so cached-cursor reloads can adopt it.
  */
 export const ChatHistoryDeltaResultSchema = closedObject({
   kind: Type.Literal("delta"),
   messages: Type.Array(Type.Unknown()),
   deltaCursor: Type.String(),
   sessionInfo: Type.Unknown(),
-  inFlightRun: Type.Optional(Type.Unknown()),
   agentsList: Type.Optional(Type.Unknown()),
+  inFlightRun: Type.Optional(Type.Unknown()),
   metadata: Type.Optional(Type.Unknown()),
 });
 

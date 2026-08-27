@@ -318,7 +318,6 @@ export type ControlUiMockGatewayScenario = {
     runId: string;
     text?: string;
     startedAt?: number;
-    sessionAbortable?: boolean;
     events?: unknown[];
     plan?: unknown;
   } | null;
