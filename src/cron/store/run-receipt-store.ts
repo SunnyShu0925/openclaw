@@ -25,7 +25,7 @@ import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js"
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import type { CronJob } from "../types.js";
 import { cronStoreKey } from "./key.js";
-import { loadedCronStoreFromRows, loadCronRows } from "./row-codec.js";
+import { loadedCronStoreFromRows, loadCronRowsByIds } from "./row-codec.js";
 
 /**
  * Receipt/lease lifecycle (the SQLite status is `running` for the first three rows):
@@ -276,8 +276,11 @@ function receiptFromRow(row: CronRunReceiptRow): CronRunReceipt {
 }
 
 function currentJob(database: DatabaseSync, storeKey: string, jobId: string): CronJob | undefined {
-  const rows = loadCronRows(database, storeKey, new Set([jobId]));
-  return loadedCronStoreFromRows(rows).store.jobs[0];
+  const rows = loadCronRowsByIds(database, storeKey, [jobId]);
+  if (rows.length === 0) {
+    return undefined;
+  }
+  return loadedCronStoreFromRows(rows).store.jobs.find((job) => job.id === jobId);
 }
 
 function sameOwner(left: CronRunReceiptRow, right: CronRunReceiptOwnerObservation): boolean {
