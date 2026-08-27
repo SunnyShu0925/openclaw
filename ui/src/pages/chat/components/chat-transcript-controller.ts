@@ -1,4 +1,5 @@
 // Session-owned virtualizer lifecycle for chat transcripts.
+/* oxlint-disable max-lines -- at limit; scroll-stop row replay adds 7 lines */
 import { VirtualizerController } from "@tanstack/lit-virtual";
 import {
   measureElement as measureVirtualElement,
@@ -82,6 +83,7 @@ class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatTranscri
   private observedWidth: number | null = null;
   private observedHeight: number | null = null;
   private contentReady = false;
+  private wasScrolling = false; // Replay skipped row measurements when scrolling ends
   private implicitEndAnchorPending: boolean;
   private pendingScrollOffset: {
     offset: number;
@@ -283,6 +285,11 @@ class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatTranscri
         extractTranscriptRange(range, this.rowIndexesByKey, this.focusedRowKey),
       scrollEndThreshold: CHAT_TRANSCRIPT_END_THRESHOLD_PX,
       overscan: CHAT_TRANSCRIPT_OVERSCAN,
+      onChange: (instance) => {
+        const stopped = this.wasScrolling && !instance.isScrolling;
+        this.wasScrolling = instance.isScrolling;
+        if (stopped) { this.queueConnectedRowMeasure(); }
+      },
     });
     if (initialOffset !== null) {
       this.pendingScrollOffset = {
@@ -319,6 +326,7 @@ class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatTranscri
       return;
     }
     this.connected = true;
+    this.wasScrolling = false;
     if (this.host instanceof HTMLElement) {
       this.host.addEventListener(SIDEBAR_GEOMETRY_COMMIT_EVENT, this.handleGeometryCommit);
     }
