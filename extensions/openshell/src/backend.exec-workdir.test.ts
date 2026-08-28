@@ -380,7 +380,7 @@ describe("openshell backend exec workdir validation", () => {
       workspace: "/sandbox/primary",
       agent: "/sandbox",
       target: "/sandbox/primary/host-only",
-      exists: false,
+      exists: true,
     },
     {
       workspace: "/sandbox",
@@ -645,5 +645,76 @@ describe("openshell backend exec workdir validation", () => {
         token: secondExec.finalizeToken,
       });
     }
+  });
+
+  it.each([
+    {
+      label: "agent root is parent of workspace root (nested)",
+      remoteWorkspaceDir: "/sandbox/agent/project",
+      remoteAgentWorkspaceDir: "/sandbox/agent",
+      expectedClearOrder: ["/sandbox/agent", "/sandbox/agent/project"],
+    },
+    {
+      label: "disjoint roots are unaffected by sort",
+      remoteWorkspaceDir: "/sandbox",
+      remoteAgentWorkspaceDir: "/agent",
+      expectedClearOrder: ["/agent", "/sandbox"],
+    },
+  ])("clears upload roots by ascending path length: $label", async (scenario) => {
+    vi.stubEnv("OPENAI_API_KEY", "fixture");
+    vi.stubEnv("ANTHROPIC_API_KEY", "fixture");
+    vi.stubEnv("LANG", "en_US.UTF-8");
+    vi.stubEnv("NODE_ENV", "test");
+    const workspace = await tempWorkspace({
+      rootDir: resolvePreferredOpenClawTmpDir(),
+      prefix: "openclaw-openshell-overlap-",
+    });
+    tempWorkspaces.push(workspace);
+    const agentWorkspace = await tempWorkspace({
+      rootDir: resolvePreferredOpenClawTmpDir(),
+      prefix: "openclaw-openshell-overlap-agent-",
+    });
+    tempWorkspaces.push(agentWorkspace);
+
+    const backend = await createOpenShellBackendFixture({
+      scopeKey: `agent:overlap:${scenario.label}`,
+      workspaceDir: workspace.dir,
+      agentWorkspaceDir: agentWorkspace.dir,
+      workspaceAccess: "ro",
+      remoteWorkspaceDir: scenario.remoteWorkspaceDir,
+      remoteAgentWorkspaceDir: scenario.remoteAgentWorkspaceDir,
+    });
+
+    const execSpec = await backend.buildExecSpec({
+      command: "pwd",
+      workdir: scenario.remoteWorkspaceDir,
+      env: {},
+      usePty: false,
+    });
+
+    // The clear calls go through runSshSandboxCommand with a shell-escaped
+    // remoteCommand containing "rm -rf" and the root path in single quotes.
+    const clearCalls = sdkMocks.runSshSandboxCommand.mock.calls
+      .map(([params]) => String(params.remoteCommand))
+      .filter((cmd) => cmd.includes("rm -rf"));
+
+    const clearedRoots = clearCalls.map((cmd) => {
+      for (const expected of scenario.expectedClearOrder) {
+        if (cmd.includes(`'${expected}'`)) {
+          return expected;
+        }
+      }
+      return null;
+    });
+
+    expect(clearedRoots).toHaveLength(scenario.expectedClearOrder.length);
+    expect(clearedRoots).toEqual(scenario.expectedClearOrder);
+
+    await backend.finalizeExec?.({
+      status: "completed",
+      exitCode: 0,
+      timedOut: false,
+      token: execSpec.finalizeToken,
+    });
   });
 });

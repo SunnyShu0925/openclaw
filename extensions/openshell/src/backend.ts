@@ -540,8 +540,10 @@ class OpenShellSandboxBackendImpl {
     }
     // Later uploads replace overlapping roots. Their ancestors are created by mkdirp,
     // while descendants must be real directories in the symlink-free upload source.
+    // Iterate in reverse of syncWorkspaceToRemote's ascending upload order so the
+    // last-uploaded (most specific) root is checked first.
     let createdAncestor = false;
-    for (const root of roots.toReversed()) {
+    for (const root of roots.toSorted((a, b) => a.remote.length - b.remote.length).toReversed()) {
       if (!isRemotePathInside(root.remote, normalized)) {
         createdAncestor ||= isRemotePathInside(normalized, root.remote);
         continue;
@@ -963,7 +965,11 @@ class OpenShellSandboxBackendImpl {
   }
 
   private async syncWorkspaceToRemote(): Promise<void> {
-    for (const root of this.workspaceUploadRoots()) {
+    // Sort by remote path length ascending so that a parent (shorter) root is
+    // cleared and uploaded before any nested child (longer) root, preventing
+    // the parent clear from deleting a child workspace that was just uploaded.
+    const roots = this.workspaceUploadRoots().toSorted((a, b) => a.remote.length - b.remote.length);
+    for (const root of roots) {
       await this.runRemoteShellScriptInternal({
         script: 'mkdir -p -- "$1" && find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
         args: [root.remote],
