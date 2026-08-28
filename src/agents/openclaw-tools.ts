@@ -257,6 +257,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
         sameChannelThreadRequired: options?.sameChannelThreadRequired,
         sandboxRoot: options?.sandboxRoot,
         sandboxContainerWorkdir: options?.sandboxContainerWorkdir,
+        sandboxFsBridge: options?.sandboxFsBridge,
         requireExplicitTarget: options?.requireExplicitMessageTarget,
         sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,
         sourceReplyOnly: options?.sourceReplyOnly,

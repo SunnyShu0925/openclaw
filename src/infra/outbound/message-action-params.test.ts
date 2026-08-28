@@ -120,6 +120,77 @@ describe("message action media helpers", () => {
     });
   });
 
+  it("forwards the sandbox bridge reader into the sandbox media policy", () => {
+    const sandboxReadFile = (async () =>
+      Buffer.alloc(0)) as unknown as import("../../media/load-options.js").OutboundMediaReadFile;
+    expect(
+      resolveAttachmentMediaPolicy({
+        sandboxRoot: "/tmp/workspace",
+        sandboxContainerWorkdir: "/sandbox",
+        sandboxReadFile,
+      }),
+    ).toEqual({
+      mode: "sandbox",
+      sandboxRoot: "/tmp/workspace",
+      containerWorkdir: "/sandbox",
+      sandboxReadFile,
+    });
+    const withoutBridge = resolveAttachmentMediaPolicy({
+      sandboxRoot: "/tmp/workspace",
+      sandboxContainerWorkdir: "/sandbox",
+    });
+    expect(withoutBridge.mode).toBe("sandbox");
+    if (withoutBridge.mode === "sandbox") {
+      expect(withoutBridge.sandboxReadFile).toBeUndefined();
+    }
+  });
+
+  it("hydrates a remote-only sandbox attachment through the bridge reader", async () => {
+    const remoteBytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    let readFileCalls = 0;
+    const bridge = {
+      resolvePath: ({ filePath }: { filePath: string }) => ({
+        containerPath: filePath,
+        hostPath: undefined,
+      }),
+      readFile: async ({ filePath }: { filePath: string }) => {
+        readFileCalls += 1;
+        expect(filePath).toBe("/sandbox/chart.png");
+        return remoteBytes;
+      },
+      writeFile: async () => undefined,
+      mkdirp: async () => undefined,
+      remove: async () => undefined,
+      rename: async () => undefined,
+      stat: async () => ({ type: "file" as const, size: remoteBytes.length, mtimeMs: 0 }),
+    } as unknown as import("../../agents/sandbox/fs-bridge.types.js").SandboxFsBridge;
+    const { createSandboxBridgeReadFile } = await import("../../agents/sandbox-media-paths.js");
+    const emptyMirror = await fs.mkdtemp(path.join(os.tmpdir(), "msg-params-bridge-"));
+    try {
+      const args: Record<string, unknown> = { media: "/sandbox/chart.png" };
+      await hydrateAttachmentParamsForAction({
+        cfg,
+        channel: "telegram",
+        args,
+        action: "sendAttachment",
+        mediaPolicy: resolveAttachmentMediaPolicy({
+          sandboxRoot: emptyMirror,
+          sandboxContainerWorkdir: "/sandbox",
+          sandboxReadFile: createSandboxBridgeReadFile({
+            sandbox: { root: emptyMirror, bridge },
+          }),
+        }),
+      });
+      expect(args.buffer).toBe(remoteBytes.toString("base64"));
+      expect(readFileCalls).toBeGreaterThanOrEqual(1);
+    } finally {
+      await fs.rm(emptyMirror, { recursive: true, force: true });
+    }
+  });
+
   it("preserves explicit any local roots for host read opt-ins", () => {
     const mediaReadFile = async () => Buffer.from("x");
     expect(

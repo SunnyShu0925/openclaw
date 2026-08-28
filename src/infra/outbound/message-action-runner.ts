@@ -6,6 +6,7 @@ import {
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { AgentToolResult } from "../../agents/runtime/index.js";
+import { createSandboxBridgeReadFile } from "../../agents/sandbox-media-paths.js";
 import { readStringArrayParam, readToolStringParam } from "../../agents/tools/common.js";
 import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
@@ -229,6 +230,7 @@ async function handleInternalSourceReplySendAction(
     mediaPolicy: resolveAttachmentMediaPolicy({
       sandboxRoot: input.sandboxRoot,
       sandboxContainerWorkdir: input.sandboxContainerWorkdir,
+      sandboxReadFile: resolveSandboxAttachmentReadFile(input),
       mediaAccess: input.mediaAccess,
       mediaLocalRoots: getAgentScopedMediaLocalRoots(input.cfg, agentId),
     }),
@@ -387,6 +389,16 @@ function buildInternalSourceReplyToolResult(payload: {
   };
 }
 
+/** Builds a sandbox bridge reader for remote-only attachment hydration, or undefined for host-root fallback. */
+function resolveSandboxAttachmentReadFile(
+  input: MessageActionInput,
+): ReturnType<typeof createSandboxBridgeReadFile> | undefined {
+  const sandboxRoot = input.sandboxRoot?.trim();
+  return sandboxRoot && input.sandboxFsBridge
+    ? createSandboxBridgeReadFile({ sandbox: { root: sandboxRoot, bridge: input.sandboxFsBridge } })
+    : undefined;
+}
+
 export async function runMessageAction(input: MessageActionInput): Promise<MessageActionResult> {
   const cfg = input.cfg;
   let params = { ...input.params };
@@ -426,6 +438,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
   const normalizationPolicy = resolveAttachmentMediaPolicy({
     sandboxRoot: input.sandboxRoot,
     sandboxContainerWorkdir: input.sandboxContainerWorkdir,
+    sandboxReadFile: resolveSandboxAttachmentReadFile(input),
     mediaLocalRoots: getAgentScopedMediaLocalRoots(cfg, resolvedAgentId),
   });
   const extraActionMediaSourceParamKeys = resolveExtraActionMediaSourceParamKeys({
@@ -468,6 +481,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
   const mediaPolicy = resolveAttachmentMediaPolicy({
     sandboxRoot: input.sandboxRoot,
     sandboxContainerWorkdir: input.sandboxContainerWorkdir,
+    sandboxReadFile: resolveSandboxAttachmentReadFile(input),
     mediaAccess,
   });
   const gateway = input.gateway;
