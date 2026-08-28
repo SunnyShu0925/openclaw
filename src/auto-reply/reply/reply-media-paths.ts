@@ -19,8 +19,8 @@ import { logVerbose } from "../../globals.js";
 import { sanitizeUntrustedFileName } from "../../infra/fs-safe-advanced.js";
 import { FsSafeError } from "../../infra/fs-safe.js";
 import { resolveOutboundMediaMaxBytes } from "../../media/configured-max-bytes.js";
-import { HostReadMediaTypeError, LocalMediaAccessError } from "../../media/local-media-access.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
+import { HostReadMediaTypeError, LocalMediaAccessError } from "../../media/local-media-access.js";
 import { resolveOutboundAttachmentFromUrl } from "../../media/outbound-attachment.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import {

@@ -2,7 +2,7 @@
 // source-reply sink and embedded-run payload projection.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { buildReplyPayloads } from "../../auto-reply/reply/agent-runner-payloads.js";
 import { mirrorDeliveredReplyToTranscript } from "../../auto-reply/reply/dispatch-from-config.transcript.js";
@@ -30,6 +30,7 @@ function createCurrentSourceMessageTool(
     workspaceDir?: string;
     sandboxFsBridge?: SandboxFsBridge;
     sandboxContainerWorkdir?: string;
+    sandboxWorkspaceMediaReadAllowed?: boolean;
   } = {},
 ) {
   return createMessageTool({
@@ -42,6 +43,7 @@ function createCurrentSourceMessageTool(
     sandboxRoot: params.sandboxFsBridge ? params.workspaceDir : undefined,
     sandboxContainerWorkdir: params.sandboxContainerWorkdir,
     sandboxFsBridge: params.sandboxFsBridge,
+    sandboxWorkspaceMediaReadAllowed: params.sandboxWorkspaceMediaReadAllowed,
     getScopedChannelsCommandSecretTargets: () => ({ targetIds: new Set<string>() }),
     resolveCommandSecretRefsViaGateway: async ({ config }) => ({
       resolvedConfig: config,
@@ -146,7 +148,7 @@ describe("WebChat message tool internal source reply", () => {
     );
   });
 
-  it("stages remote-only workspace media before acknowledging the current-source send", async () => {
+  it("uses policy-scoped bridge access for remote-only current-source media", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "message-tool-source-remote-media-" },
       async (state) => {
@@ -170,10 +172,12 @@ describe("WebChat message tool internal source reply", () => {
             runRemoteShellScript: createLocalRemoteShellScriptRunner(),
           },
         });
+        const bridgeReadFile = vi.spyOn(sandboxFsBridge, "readFile");
         const tool = createCurrentSourceMessageTool({
           workspaceDir: state.workspaceDir,
           sandboxContainerWorkdir: "/sandbox",
           sandboxFsBridge,
+          sandboxWorkspaceMediaReadAllowed: true,
         });
 
         const toolResult = await tool.execute("message-remote-media-call", {
@@ -187,6 +191,22 @@ describe("WebChat message tool internal source reply", () => {
         await expect(fs.readFile(sourceReply?.mediaUrls?.[0] as string, "utf8")).resolves.toBe(
           "remote proof",
         );
+
+        bridgeReadFile.mockClear();
+        const deniedTool = createCurrentSourceMessageTool({
+          workspaceDir: state.workspaceDir,
+          sandboxContainerWorkdir: "/sandbox",
+          sandboxFsBridge,
+          sandboxWorkspaceMediaReadAllowed: false,
+        });
+        await expect(
+          deniedTool.execute("message-remote-media-denied", {
+            action: "send",
+            message: "Attached proof.",
+            media: "/sandbox/proof.txt",
+          }),
+        ).rejects.toThrow(/could not be staged|outside workspace root/i);
+        expect(bridgeReadFile).not.toHaveBeenCalled();
       },
     );
   });

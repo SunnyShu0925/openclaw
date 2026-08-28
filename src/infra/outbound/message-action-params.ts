@@ -421,7 +421,7 @@ export function resolveAttachmentMediaPolicy(params: {
       ...(params.sandboxContainerWorkdir
         ? { containerWorkdir: params.sandboxContainerWorkdir }
         : {}),
-      ...(params.mediaAccess?.readFile ? { mediaReadFile: params.mediaAccess.readFile } : {}),
+      ...(params.mediaReadFile ? { mediaReadFile: params.mediaReadFile } : {}),
     };
   }
   const explicitLocalRoots = resolveOutboundMediaLocalRoots(params.mediaLocalRoots);

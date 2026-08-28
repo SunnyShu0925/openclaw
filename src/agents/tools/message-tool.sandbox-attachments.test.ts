@@ -48,6 +48,29 @@ function createRemoteBridge(params: {
   });
 }
 
+function registerSandboxMediaPlugin(
+  sendMedia: NonNullable<ChannelPlugin["outbound"]>["sendMedia"],
+): void {
+  const plugin: ChannelPlugin = {
+    ...createChannelTestPluginBase({
+      id: channel,
+      capabilities: { chatTypes: ["direct"], media: true },
+      config: { isConfigured: () => true, resolveAccount: () => ({ enabled: true }) },
+    }),
+    messaging: {
+      normalizeTarget: (raw) => raw.trim() || undefined,
+      targetResolver: { looksLikeId: (raw) => raw.trim().length > 0 },
+    },
+    outbound: {
+      deliveryMode: "direct",
+      resolveTarget: ({ to }) => ({ ok: true, to: to ?? "recipient" }),
+      sendText: async () => ({ channel, messageId: "sandbox-text-1" }),
+      sendMedia,
+    },
+  };
+  setActivePluginRegistry(createTestRegistry([{ pluginId: channel, source: "test", plugin }]));
+}
+
 describe("message tool sandbox attachments", () => {
   afterEach(() => {
     resetPluginRuntimeStateForTest();
@@ -88,27 +111,7 @@ describe("message tool sandbox attachments", () => {
         deliveredBytes.push(await readFile(ctx.mediaUrl));
         return { channel, messageId: "sandbox-media-1" };
       });
-      const plugin: ChannelPlugin = {
-        ...createChannelTestPluginBase({
-          id: channel,
-          capabilities: { chatTypes: ["direct"], media: true },
-          config: {
-            isConfigured: () => true,
-            resolveAccount: () => ({ enabled: true }),
-          },
-        }),
-        messaging: {
-          normalizeTarget: (raw) => raw.trim() || undefined,
-          targetResolver: { looksLikeId: (raw) => raw.trim().length > 0 },
-        },
-        outbound: {
-          deliveryMode: "direct",
-          resolveTarget: ({ to }) => ({ ok: true, to: to ?? "recipient" }),
-          sendText: async () => ({ channel, messageId: "sandbox-text-1" }),
-          sendMedia,
-        },
-      };
-      setActivePluginRegistry(createTestRegistry([{ pluginId: channel, source: "test", plugin }]));
+      registerSandboxMediaPlugin(sendMedia);
 
       const tool = createMessageTool({
         config: cfg,
@@ -117,6 +120,7 @@ describe("message tool sandbox attachments", () => {
         sandboxRoot: hostMirrorDir,
         sandboxContainerWorkdir: "/sandbox",
         sandboxFsBridge: bridge,
+        sandboxWorkspaceMediaReadAllowed: true,
         runMessageAction: (input) => runMessageAction({ ...input, skipQueue: true }),
       });
 
@@ -130,6 +134,53 @@ describe("message tool sandbox attachments", () => {
 
       expect(sendMedia).toHaveBeenCalledTimes(1);
       expect(deliveredBytes).toEqual([Buffer.from(expectedBytes)]);
+    });
+  });
+
+  it("does not invoke the workspace bridge when effective read policy denies attachments", async () => {
+    await withTempDir("message-tool-sandbox-media-denied-", async (tempDir) => {
+      const stateDir = await fs.realpath(tempDir);
+      const hostMirrorDir = path.join(stateDir, "host-mirror");
+      const remoteWorkspaceDir = path.join(stateDir, "remote-workspace");
+      await fs.mkdir(hostMirrorDir, { recursive: true });
+      await fs.mkdir(remoteWorkspaceDir, { recursive: true });
+      await fs.writeFile(path.join(remoteWorkspaceDir, "private.txt"), "private");
+      const bridge = createRemoteBridge({ hostMirrorDir, remoteWorkspaceDir });
+      const bridgeReadFile = vi.spyOn(bridge, "readFile");
+      const sendMedia = vi.fn(async (ctx: ChannelOutboundContext) => {
+        if (!ctx.mediaAccess?.readFile || !ctx.mediaUrl) {
+          throw new Error("sandbox media access was denied");
+        }
+        await ctx.mediaAccess.readFile(ctx.mediaUrl);
+        return { channel, messageId: "sandbox-media-denied" };
+      });
+      registerSandboxMediaPlugin(sendMedia);
+      const deniedCfg = {
+        channels: { sandboxchat: { enabled: true } },
+        tools: { allow: ["message"], deny: ["read"] },
+      } as OpenClawConfig;
+      const tool = createMessageTool({
+        config: deniedCfg,
+        getRuntimeConfig: () => deniedCfg,
+        conversationReadOrigin: "direct-operator",
+        sandboxRoot: hostMirrorDir,
+        sandboxContainerWorkdir: "/sandbox",
+        sandboxFsBridge: bridge,
+        sandboxWorkspaceMediaReadAllowed: false,
+        runMessageAction: (input) => runMessageAction({ ...input, skipQueue: true }),
+      });
+
+      await expect(
+        tool.execute("sandbox-media-denied", {
+          action: "send",
+          channel,
+          target: "recipient",
+          message: "send private file",
+          media: "/sandbox/private.txt",
+        }),
+      ).rejects.toThrow("sandbox media access was denied");
+      expect(sendMedia).toHaveBeenCalledTimes(1);
+      expect(bridgeReadFile).not.toHaveBeenCalled();
     });
   });
 
@@ -153,24 +204,7 @@ describe("message tool sandbox attachments", () => {
         deliveredBytes.push(await ctx.mediaAccess.readFile(ctx.mediaUrl));
         return { channel, messageId: "managed-media-1" };
       });
-      const plugin: ChannelPlugin = {
-        ...createChannelTestPluginBase({
-          id: channel,
-          capabilities: { chatTypes: ["direct"], media: true },
-          config: { isConfigured: () => true, resolveAccount: () => ({ enabled: true }) },
-        }),
-        messaging: {
-          normalizeTarget: (raw) => raw.trim() || undefined,
-          targetResolver: { looksLikeId: (raw) => raw.trim().length > 0 },
-        },
-        outbound: {
-          deliveryMode: "direct",
-          resolveTarget: ({ to }) => ({ ok: true, to: to ?? "recipient" }),
-          sendText: async () => ({ channel, messageId: "managed-text-1" }),
-          sendMedia,
-        },
-      };
-      setActivePluginRegistry(createTestRegistry([{ pluginId: channel, source: "test", plugin }]));
+      registerSandboxMediaPlugin(sendMedia);
       const tool = createMessageTool({
         config: cfg,
         getRuntimeConfig: () => cfg,
@@ -178,6 +212,7 @@ describe("message tool sandbox attachments", () => {
         sandboxRoot: hostMirrorDir,
         sandboxContainerWorkdir: "/sandbox",
         sandboxFsBridge: bridge,
+        sandboxWorkspaceMediaReadAllowed: true,
         runMessageAction: (input) => runMessageAction({ ...input, skipQueue: true }),
       });
 

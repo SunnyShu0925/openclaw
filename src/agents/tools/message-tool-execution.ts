@@ -176,6 +176,7 @@ type MessageToolOptions = {
   sandboxRoot?: string;
   sandboxContainerWorkdir?: string;
   sandboxFsBridge?: SandboxFsBridge;
+  sandboxWorkspaceMediaReadAllowed?: boolean;
   requireExplicitTarget?: boolean;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   /** Process-local completion authority: send only to the current source route. */
@@ -285,7 +286,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       );
   const sandboxRoot = options?.sandboxRoot?.trim();
   const sandboxWorkspaceMediaAccess =
-    sandboxRoot && options?.sandboxFsBridge
+    sandboxRoot && options?.sandboxFsBridge && options.sandboxWorkspaceMediaReadAllowed === true
       ? {
           localRoots: [
             sandboxRoot,
