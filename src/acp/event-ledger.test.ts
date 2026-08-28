@@ -421,3 +421,142 @@ describe("ACP event ledger", () => {
     ).resolves.toEqual({ complete: false, events: [] });
   });
 });
+
+describe("ACP event ledger agentId persistence", () => {
+  it("persists and replays agentId in memory ledger", async () => {
+    const ledger = createInMemoryAcpEventLedger();
+    await ledger.startSession({
+      sessionId: "session-1",
+      sessionKey: "global",
+      cwd: "/work",
+      complete: true,
+      agentId: "ops",
+    });
+
+    const replay = await ledger.readReplayBySessionId({ sessionId: "session-1" });
+    expect(replay.complete).toBe(true);
+    expect(replay.sessionKey).toBe("global");
+    expect(replay.agentId).toBe("ops");
+  });
+
+  it("persists and replays agentId in SQLite ledger", async () => {
+    requireNodeSqlite();
+    await withTestDir({ prefix: "openclaw-acp-ledger-agent-" }, async (dir) => {
+      const dbPath = path.join(dir, "openclaw.sqlite");
+      const ledger = createSqliteAcpEventLedger({ path: dbPath, now: () => 1000 });
+      await ledger.startSession({
+        sessionId: "session-1",
+        sessionKey: "global",
+        cwd: "/work",
+        complete: true,
+        agentId: "ops",
+      });
+
+      const replay = await ledger.readReplayBySessionId({ sessionId: "session-1" });
+      expect(replay.complete).toBe(true);
+      expect(replay.sessionKey).toBe("global");
+      expect(replay.agentId).toBe("ops");
+      closeOpenClawStateDatabaseForTest();
+    });
+  });
+
+  it("omits agentId when not provided", async () => {
+    const ledger = createInMemoryAcpEventLedger();
+    await ledger.startSession({
+      sessionId: "session-1",
+      sessionKey: "global",
+      cwd: "/work",
+      complete: true,
+    });
+
+    const replay = await ledger.readReplayBySessionId({ sessionId: "session-1" });
+    expect(replay.agentId).toBeUndefined();
+  });
+
+  it("clears a stale owner when an existing in-memory session is refreshed without one", async () => {
+    // Regression for P1: reroute resolves no owner, so resumeSession must
+    // clear the previously cached agent instead of retaining it for a
+    // later restart reload. Before the fix the existing-row branch skipped
+    // the assignment when agentId was undefined, leaving "ops" stored.
+    const ledger = createInMemoryAcpEventLedger();
+    await ledger.startSession({
+      sessionId: "session-1",
+      sessionKey: "global",
+      cwd: "/work",
+      complete: true,
+      agentId: "ops",
+    });
+    // Non-reset refresh carrying no owner (reroute clears the stale owner).
+    await ledger.startSession({
+      sessionId: "session-1",
+      sessionKey: "agent:research:main",
+      cwd: "/work",
+      complete: true,
+      agentId: undefined,
+    });
+
+    const replay = await ledger.readReplayBySessionId({ sessionId: "session-1" });
+    expect(replay.sessionKey).toBe("agent:research:main");
+    expect(replay.agentId).toBeUndefined();
+  });
+
+  it("clears a stale owner when an existing SQLite session is refreshed without one", async () => {
+    requireNodeSqlite();
+    await withTestDir({ prefix: "openclaw-acp-ledger-clear-" }, async (dir) => {
+      const dbPath = path.join(dir, "openclaw.sqlite");
+      const ledger = createSqliteAcpEventLedger({ path: dbPath, now: () => 1000 });
+      await ledger.startSession({
+        sessionId: "session-1",
+        sessionKey: "global",
+        cwd: "/work",
+        complete: true,
+        agentId: "ops",
+      });
+      await ledger.startSession({
+        sessionId: "session-1",
+        sessionKey: "agent:research:main",
+        cwd: "/work",
+        complete: true,
+        agentId: undefined,
+      });
+      closeOpenClawStateDatabaseForTest();
+
+      // Simulate a restart reload by key: the prior owner must not survive.
+      const reloaded = createSqliteAcpEventLedger({ path: dbPath, now: () => 2000 });
+      const replay = await reloaded.readReplayBySessionKey({
+        sessionKey: "agent:research:main",
+      });
+      expect(replay.complete).toBe(true);
+      expect(replay.sessionKey).toBe("agent:research:main");
+      expect(replay.agentId).toBeUndefined();
+      closeOpenClawStateDatabaseForTest();
+    });
+  });
+
+  it("accounts for agentId length in SQLite row byte estimate", async () => {
+    requireNodeSqlite();
+    await withTestDir({ prefix: "openclaw-acp-ledger-bytes-" }, async (dir) => {
+      const dbPath = path.join(dir, "openclaw.sqlite");
+      const ledger = createSqliteAcpEventLedger({ path: dbPath, now: () => 1000 });
+      await ledger.startSession({
+        sessionId: "with-owner",
+        sessionKey: "global",
+        cwd: "/work",
+        complete: true,
+        agentId: "ops",
+      });
+      closeOpenClawStateDatabaseForTest();
+
+      const { DatabaseSync } = require("node:sqlite");
+      const probe = new DatabaseSync(dbPath, { readOnly: true });
+      const row = probe
+        .prepare("SELECT estimated_bytes AS bytes FROM acp_replay_sessions WHERE session_id = ?")
+        .get("with-owner") as { bytes: number };
+      probe.close();
+
+      // Row overhead (32) + sessionId + sessionKey + cwd + agentId lengths.
+      const expected = "with-owner".length + "global".length + "/work".length + "ops".length + 32;
+      expect(Number(row.bytes)).toBe(expected);
+    });
+  });
+});

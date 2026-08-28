@@ -10,6 +10,7 @@ export type AcpDisconnectContext = {
 export type AcpPendingPrompt = {
   sessionId: string;
   sessionKey: string;
+  agentId?: string;
   ledgerSessionId?: string;
   idempotencyKey: string;
   sendAccepted?: boolean;

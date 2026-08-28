@@ -141,3 +141,107 @@ describe("acp session metadata and usage updates", () => {
     expect(session?.abortController).toBeNull();
   });
 });
+
+describe("acp session snapshot agent owner scoping", () => {
+  it("scopes snapshot reads to the resolved agent when multiple agents share a global key", async () => {
+    const sessionStore = createInMemorySessionStore();
+    const connection = createAcpConnection();
+    const sessionUpdate = connection["__sessionUpdateMock"];
+    const request = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === "sessions.resolve") {
+        return { ok: true, key: "global", agentId: "ops" };
+      }
+      if (method === "sessions.list") {
+        return {
+          ts: Date.now(),
+          path: "/tmp/sessions.json",
+          count: 2,
+          defaults: {
+            modelProvider: null,
+            model: null,
+            contextTokens: null,
+          },
+          sessions: [
+            {
+              key: "global",
+              agentId: "research",
+              displayName: "Research global",
+              kind: "direct",
+              updatedAt: 1_710_000_123_000,
+              thinkingLevel: "adaptive",
+              modelProvider: "anthropic",
+              model: "claude-sonnet",
+              totalTokens: 500,
+              totalTokensFresh: true,
+              contextTokens: 2000,
+            },
+            {
+              key: "global",
+              agentId: "ops",
+              displayName: "Ops global",
+              kind: "direct",
+              updatedAt: 1_710_000_123_001,
+              thinkingLevel: "adaptive",
+              modelProvider: "openai",
+              model: "gpt-5.4",
+              totalTokens: 1200,
+              totalTokensFresh: true,
+              contextTokens: 4000,
+            },
+          ],
+        };
+      }
+      if (method === "chat.send") {
+        return new Promise(() => {});
+      }
+      return { ok: true };
+    });
+    const agent = new AcpGatewayAgent(
+      connection,
+      createAcpGateway(request as GatewayClient["request"]),
+      {
+        sessionStore,
+      },
+    );
+
+    await agent.loadSession({
+      sessionId: "ops-session",
+      cwd: "/tmp",
+      mcpServers: [],
+      _meta: {
+        sessionKey: "agent:ops:main",
+        requireExistingSession: true,
+      },
+    } as never);
+
+    expect(sessionUpdate).toHaveBeenCalledWith({
+      sessionId: "ops-session",
+      update: {
+        sessionUpdate: "session_info_update",
+        title: "Ops global",
+        updatedAt: "2024-03-09T16:02:03.001Z",
+        _meta: {
+          sessionKey: "global",
+          kind: "direct",
+        },
+      },
+    });
+    expect(sessionUpdate).toHaveBeenCalledWith({
+      sessionId: "ops-session",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 1200,
+        size: 4000,
+        _meta: {
+          source: "gateway-session-store",
+          approximate: true,
+        },
+      },
+    });
+
+    const listCalls = request.mock.calls.filter(([method]) => method === "sessions.list");
+    expect(listCalls.length).toBeGreaterThan(0);
+    const lastListCall = listCalls[listCalls.length - 1];
+    expect(lastListCall?.[1]).toMatchObject({ agentId: "ops" });
+  });
+});

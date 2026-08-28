@@ -71,7 +71,7 @@ export class AcpTranslatorSessionLifecycle {
 
     const sessionId = randomUUID();
     const meta = parseSessionMeta(params["_meta"]);
-    const sessionKey = await this.resolveSessionKeyFromMeta({
+    const { sessionKey, agentId } = await this.resolveSessionKeyFromMeta({
       meta,
       fallbackKey: `acp-bridge:${sessionId}`,
     });
@@ -79,11 +79,20 @@ export class AcpTranslatorSessionLifecycle {
     const session = this.sessionStore.createSession({
       sessionId,
       sessionKey,
+      ...(agentId ? { agentId } : {}),
       cwd: params.cwd,
     });
-    await this.sessionUpdates.startLedgerSession(session, { complete: true, reset: true });
+    await this.sessionUpdates.startLedgerSession(session, {
+      complete: true,
+      reset: true,
+      ...(session.agentId ? { agentId: session.agentId } : {}),
+    });
     this.log(`newSession: ${session.sessionId} -> ${session.sessionKey}`);
-    const sessionSnapshot = await this.sessionState.getSnapshot(session.sessionKey);
+    const sessionSnapshot = await this.sessionState.getSnapshot(
+      session.sessionKey,
+      undefined,
+      session.agentId,
+    );
     await this.sessionState.sendSnapshotUpdate(session, sessionSnapshot, {
       includeControls: false,
       record: true,
@@ -113,10 +122,13 @@ export class AcpTranslatorSessionLifecycle {
         ? await this.sessionUpdates.readLedgerReplayBySessionKey(params.sessionId)
         : { complete: false, events: [] };
     const routedLedgerReplay = exactLedgerReplay.complete ? exactLedgerReplay : listedLedgerReplay;
-    const sessionKey = await this.resolveSessionKeyFromMeta({
+    const { sessionKey, agentId: resolvedLoadAgentId } = await this.resolveSessionKeyFromMeta({
       meta,
       fallbackKey: routedLedgerReplay.sessionKey ?? params.sessionId,
+      existingSessionKey: routedLedgerReplay.sessionKey,
+      existingAgentId: routedLedgerReplay.agentId,
     });
+    const agentId = resolvedLoadAgentId ?? routedLedgerReplay.agentId;
     const ledgerReplay =
       exactLedgerReplay.complete && exactLedgerReplay.sessionKey === sessionKey
         ? exactLedgerReplay
@@ -130,16 +142,20 @@ export class AcpTranslatorSessionLifecycle {
     const session = this.sessionStore.createSession({
       sessionId: params.sessionId,
       sessionKey,
+      agentId,
       ...(ledgerReplay.sessionId ? { ledgerSessionId: ledgerReplay.sessionId } : {}),
       cwd: params.cwd,
     });
-    await this.sessionUpdates.startLedgerSession(session, { complete: ledgerReplay.complete });
+    await this.sessionUpdates.startLedgerSession(session, {
+      complete: ledgerReplay.complete,
+      ...(session.agentId ? { agentId: session.agentId } : {}),
+    });
     this.log(`loadSession: ${session.sessionId} -> ${session.sessionKey}`);
     const [sessionSnapshot, transcript] = await Promise.all([
-      this.sessionState.getSnapshot(session.sessionKey),
+      this.sessionState.getSnapshot(session.sessionKey, undefined, session.agentId),
       ledgerReplay.complete
         ? Promise.resolve([])
-        : this.getSessionTranscript(session.sessionKey).catch((err: unknown) => {
+        : this.getSessionTranscript(session.sessionKey, session.agentId).catch((err: unknown) => {
             this.log(`session transcript fallback for ${session.sessionKey}: ${String(err)}`);
             return [];
           }),
@@ -226,23 +242,31 @@ export class AcpTranslatorSessionLifecycle {
 
     const meta = parseSessionMeta(params["_meta"]);
     const fallbackKey = existingSession?.sessionKey ?? params.sessionId;
-    const sessionKey = await this.resolveSessionKeyFromMeta({
+    const { sessionKey, agentId: resolvedAgentId } = await this.resolveSessionKeyFromMeta({
       meta,
       fallbackKey,
+      existingSessionKey: existingSession?.sessionKey,
+      existingAgentId: existingSession?.agentId,
     });
+    const isReroute = existingSession != null && sessionKey !== existingSession.sessionKey;
+    const agentId = resolvedAgentId ?? (!isReroute ? existingSession?.agentId : undefined);
 
     const shouldRequireGatewaySession =
       !existingSession || sessionKey !== existingSession.sessionKey;
     const sessionSnapshot = shouldRequireGatewaySession
-      ? await this.sessionState.getExistingSnapshot(sessionKey)
-      : await this.sessionState.getSnapshot(sessionKey);
+      ? await this.sessionState.getExistingSnapshot(sessionKey, agentId)
+      : await this.sessionState.getSnapshot(sessionKey, undefined, agentId);
 
     const session = this.sessionStore.createSession({
       sessionId: params.sessionId,
       sessionKey,
+      agentId,
       cwd: params.cwd,
     });
-    await this.sessionUpdates.startLedgerSession(session, { complete: false });
+    await this.sessionUpdates.startLedgerSession(session, {
+      complete: false,
+      ...(session.agentId ? { agentId: session.agentId } : {}),
+    });
     this.log(`resumeSession: ${session.sessionId} -> ${session.sessionKey}`);
     await this.sessionState.sendSnapshotUpdate(session, sessionSnapshot, {
       includeControls: false,
@@ -279,12 +303,17 @@ export class AcpTranslatorSessionLifecycle {
     try {
       await this.gateway.request("sessions.patch", {
         key: session.sessionKey,
+        ...(session.agentId ? { agentId: session.agentId } : {}),
         thinkingLevel: params.modeId,
       });
       this.log(`setSessionMode: ${session.sessionId} -> ${params.modeId}`);
-      const sessionSnapshot = await this.sessionState.getSnapshot(session.sessionKey, {
-        thinkingLevel: params.modeId,
-      });
+      const sessionSnapshot = await this.sessionState.getSnapshot(
+        session.sessionKey,
+        {
+          thinkingLevel: params.modeId,
+        },
+        session.agentId,
+      );
       await this.sessionState.sendSnapshotUpdate(session, sessionSnapshot, {
         includeControls: true,
         record: true,
@@ -309,6 +338,7 @@ export class AcpTranslatorSessionLifecycle {
       if (sessionPatch.patch) {
         await this.gateway.request("sessions.patch", {
           key: session.sessionKey,
+          ...(session.agentId ? { agentId: session.agentId } : {}),
           ...sessionPatch.patch,
         });
       }
@@ -318,6 +348,7 @@ export class AcpTranslatorSessionLifecycle {
       const sessionSnapshot = await this.sessionState.getSnapshot(
         session.sessionKey,
         sessionPatch.overrides,
+        session.agentId,
       );
       await this.sessionState.sendSnapshotUpdate(session, sessionSnapshot, {
         includeControls: true,
@@ -335,26 +366,35 @@ export class AcpTranslatorSessionLifecycle {
   private async resolveSessionKeyFromMeta(params: {
     meta: ReturnType<typeof parseSessionMeta>;
     fallbackKey: string;
-  }): Promise<string> {
-    const sessionKey = await resolveAcpSessionKey({
+    existingSessionKey?: string;
+    existingAgentId?: string;
+  }): Promise<{ sessionKey: string; agentId?: string }> {
+    const resolved = await resolveAcpSessionKey({
       meta: params.meta,
       fallbackKey: params.fallbackKey,
       gateway: this.gateway,
       opts: this.opts,
     });
+    const sameRoute =
+      params.existingSessionKey == null || resolved.sessionKey === params.existingSessionKey;
     await resetSessionIfNeeded({
       meta: params.meta,
-      sessionKey,
+      sessionKey: resolved.sessionKey,
+      agentId: resolved.agentId ?? (sameRoute ? params.existingAgentId : undefined),
       gateway: this.gateway,
       opts: this.opts,
     });
-    return sessionKey;
+    return resolved;
   }
 
-  private async getSessionTranscript(sessionKey: string): Promise<GatewayTranscriptMessage[]> {
+  private async getSessionTranscript(
+    sessionKey: string,
+    agentId?: string,
+  ): Promise<GatewayTranscriptMessage[]> {
     const result = await this.gateway.request("sessions.get", {
       key: sessionKey,
       limit: ACP_LOAD_SESSION_REPLAY_LIMIT,
+      ...(agentId ? { agentId } : {}),
     });
     if (!Array.isArray(result.messages)) {
       return [];

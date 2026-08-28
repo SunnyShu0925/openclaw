@@ -76,6 +76,7 @@ describe("acp setSessionMode", () => {
         "sessions.list",
         {
           includeDerivedTitles: true,
+          includeGlobal: true,
           limit: 200,
           search: "agent:main:main",
         },

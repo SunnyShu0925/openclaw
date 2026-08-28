@@ -36,9 +36,10 @@ export class AcpTranslatorSessionState {
   async getSnapshot(
     sessionKey: string,
     overrides?: Partial<GatewaySessionPresentationRow>,
+    agentId?: string,
   ): Promise<SessionSnapshot> {
     try {
-      const row = await this.getGatewaySessionRow(sessionKey);
+      const row = await this.getGatewaySessionRow(sessionKey, agentId);
       return {
         ...buildSessionPresentation({ row, overrides }),
         metadata: buildSessionMetadata({ row, sessionKey }),
@@ -53,8 +54,8 @@ export class AcpTranslatorSessionState {
     }
   }
 
-  async getExistingSnapshot(sessionKey: string): Promise<SessionSnapshot> {
-    const row = await this.getGatewaySessionRow(sessionKey);
+  async getExistingSnapshot(sessionKey: string, agentId?: string): Promise<SessionSnapshot> {
+    const row = await this.getGatewaySessionRow(sessionKey, agentId);
     if (!row) {
       throw new Error(`Session ${sessionKey} not found`);
     }
@@ -80,7 +81,11 @@ export class AcpTranslatorSessionState {
   }
 
   async sendSnapshotUpdate(
-    session: { sessionId: string; sessionKey: string; ledgerSessionId?: string },
+    session: {
+      sessionId: string;
+      sessionKey: string;
+      ledgerSessionId?: string;
+    },
     sessionSnapshot: SessionSnapshot,
     options: { includeControls: boolean; record: boolean; runId?: string },
   ): Promise<void> {
@@ -188,7 +193,9 @@ export class AcpTranslatorSessionState {
         const next = value === "inherit" ? null : value;
         return {
           patch: { responseUsage: next },
-          overrides: { responseUsage: next as GatewaySessionPresentationRow["responseUsage"] },
+          overrides: {
+            responseUsage: next as GatewaySessionPresentationRow["responseUsage"],
+          },
         };
       }
       case ACP_ELEVATED_LEVEL_CONFIG_ID:
@@ -208,13 +215,18 @@ export class AcpTranslatorSessionState {
 
   private async getGatewaySessionRow(
     sessionKey: string,
+    agentId?: string,
   ): Promise<GatewaySessionPresentationRow | undefined> {
     const result = await this.gateway.request<SessionsListResult>("sessions.list", {
       limit: 200,
       search: sessionKey,
+      includeGlobal: true,
       includeDerivedTitles: true,
+      ...(agentId ? { agentId } : {}),
     });
-    const session = result.sessions.find((entry) => entry.key === sessionKey);
+    const session = result.sessions.find(
+      (entry) => entry.key === sessionKey && (!agentId || entry.agentId === agentId),
+    );
     if (!session) {
       return undefined;
     }

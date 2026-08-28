@@ -11,6 +11,12 @@ type AcpSessionMeta = {
   prefixCwd?: boolean;
 };
 
+/** A resolved session key paired with its owner agent when the Gateway provided one. */
+export type ResolvedAcpSession = {
+  sessionKey: string;
+  agentId?: string;
+};
+
 /** Parses ACP request metadata into OpenClaw session routing hints. */
 export function parseSessionMeta(meta: unknown): AcpSessionMeta {
   if (!meta || typeof meta !== "object") {
@@ -32,65 +38,82 @@ export async function resolveAcpSessionKey(params: {
   fallbackKey: string;
   gateway: GatewayClient;
   opts: AcpServerOptions;
-}): Promise<string> {
+}): Promise<ResolvedAcpSession> {
   const requestedLabel = params.meta.sessionLabel ?? params.opts.defaultSessionLabel;
   const requestedKey = params.meta.sessionKey ?? params.opts.defaultSessionKey;
   const requireExisting =
     params.meta.requireExisting ?? params.opts.requireExistingSession ?? false;
 
   if (params.meta.sessionLabel) {
-    const resolved = await params.gateway.request<{ ok: true; key: string }>("sessions.resolve", {
+    const resolved = await params.gateway.request<{
+      ok: true;
+      key: string;
+      agentId?: string;
+    }>("sessions.resolve", {
       label: params.meta.sessionLabel,
     });
     if (!resolved?.key) {
       throw new Error(`Unable to resolve session label: ${params.meta.sessionLabel}`);
     }
-    return resolved.key;
+    return { sessionKey: resolved.key, agentId: resolved.agentId };
   }
 
   if (params.meta.sessionKey) {
     if (!requireExisting) {
-      return params.meta.sessionKey;
+      return { sessionKey: params.meta.sessionKey };
     }
-    const resolved = await params.gateway.request<{ ok: true; key: string }>("sessions.resolve", {
+    const resolved = await params.gateway.request<{
+      ok: true;
+      key: string;
+      agentId?: string;
+    }>("sessions.resolve", {
       key: params.meta.sessionKey,
     });
     if (!resolved?.key) {
       throw new Error(`Session key not found: ${params.meta.sessionKey}`);
     }
-    return resolved.key;
+    return { sessionKey: resolved.key, agentId: resolved.agentId };
   }
 
   if (requestedLabel) {
-    const resolved = await params.gateway.request<{ ok: true; key: string }>("sessions.resolve", {
+    const resolved = await params.gateway.request<{
+      ok: true;
+      key: string;
+      agentId?: string;
+    }>("sessions.resolve", {
       label: requestedLabel,
     });
     if (!resolved?.key) {
       throw new Error(`Unable to resolve session label: ${requestedLabel}`);
     }
-    return resolved.key;
+    return { sessionKey: resolved.key, agentId: resolved.agentId };
   }
 
   if (requestedKey) {
     if (!requireExisting) {
-      return requestedKey;
+      return { sessionKey: requestedKey };
     }
-    const resolved = await params.gateway.request<{ ok: true; key: string }>("sessions.resolve", {
+    const resolved = await params.gateway.request<{
+      ok: true;
+      key: string;
+      agentId?: string;
+    }>("sessions.resolve", {
       key: requestedKey,
     });
     if (!resolved?.key) {
       throw new Error(`Session key not found: ${requestedKey}`);
     }
-    return resolved.key;
+    return { sessionKey: resolved.key, agentId: resolved.agentId };
   }
 
-  return params.fallbackKey;
+  return { sessionKey: params.fallbackKey };
 }
 
 /** Sends a Gateway session reset when ACP metadata or server defaults request it. */
 export async function resetSessionIfNeeded(params: {
   meta: AcpSessionMeta;
   sessionKey: string;
+  agentId?: string;
   gateway: GatewayClient;
   opts: AcpServerOptions;
 }): Promise<void> {
@@ -98,5 +121,8 @@ export async function resetSessionIfNeeded(params: {
   if (!resetSession) {
     return;
   }
-  await params.gateway.request("sessions.reset", { key: params.sessionKey });
+  await params.gateway.request("sessions.reset", {
+    key: params.sessionKey,
+    ...(params.agentId ? { agentId: params.agentId } : {}),
+  });
 }

@@ -19,6 +19,7 @@ export type AcpEventLedgerReplay = {
   complete: boolean;
   sessionId?: string;
   sessionKey?: string;
+  agentId?: string;
   events: AcpEventLedgerEntry[];
 };
 
@@ -30,6 +31,7 @@ export type AcpEventLedger = {
     cwd: string;
     complete: boolean;
     reset?: boolean;
+    agentId?: string;
   }) => Promise<void>;
   recordUserPrompt: (params: {
     sessionId: string;
@@ -52,6 +54,7 @@ export type AcpEventLedger = {
 export type AcpLedgerSession = {
   sessionId: string;
   sessionKey: string;
+  agentId?: string;
   cwd: string;
   complete: boolean;
   createdAt: number;

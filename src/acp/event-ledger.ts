@@ -32,6 +32,7 @@ function normalizeSqliteInteger(value: number | bigint | null): number {
 type AcpReplaySessionRow = {
   session_id: string;
   session_key: string;
+  agent_id: string | null;
   cwd: string;
   complete: number | bigint;
   created_at: number | bigint;
@@ -64,6 +65,7 @@ function sqliteRowToLedgerSession(db: DatabaseSync, row: AcpReplaySessionRow): A
   return {
     sessionId: row.session_id,
     sessionKey: row.session_key,
+    ...(row.agent_id ? { agentId: row.agent_id } : {}),
     cwd: row.cwd,
     complete: normalizeSqliteInteger(row.complete) === 1,
     createdAt: normalizeSqliteInteger(row.created_at),
@@ -93,7 +95,7 @@ function sqliteRowToLedgerEvent(row: AcpReplayEventRow): AcpEventLedgerEntry | u
 function readSqliteSessionById(db: DatabaseSync, sessionId: string): AcpLedgerSession | undefined {
   const row = db
     .prepare(
-      `SELECT session_id, session_key, cwd, complete, created_at, updated_at, next_seq
+      `SELECT session_id, session_key, agent_id, cwd, complete, created_at, updated_at, next_seq
          FROM acp_replay_sessions
         WHERE session_id = ?`,
     )
@@ -107,7 +109,7 @@ function readLatestCompleteSqliteSessionByKey(
 ): AcpLedgerSession | undefined {
   const row = db
     .prepare(
-      `SELECT session_id, session_key, cwd, complete, created_at, updated_at, next_seq
+      `SELECT session_id, session_key, agent_id, cwd, complete, created_at, updated_at, next_seq
          FROM acp_replay_sessions
         WHERE session_key = ? AND complete = 1
         ORDER BY updated_at DESC, session_id ASC
@@ -126,6 +128,7 @@ function upsertSqliteSession(
     cwd: string;
     complete: boolean;
     reset?: boolean;
+    agentId?: string;
   },
 ): AcpLedgerSession {
   const now = state.now();
@@ -133,17 +136,23 @@ function upsertSqliteSession(
   if (!params.reset && existing) {
     const cwd = params.cwd || existing.cwd;
     const complete = existing.complete || params.complete ? 1 : 0;
+    const agentId = params.agentId ?? null;
     // SET expressions read the pre-update row, so the aggregate sheds the old
-    // key/cwd lengths and gains the new ones; drift here would silently
-    // unbound the byte budget.
+    // key/cwd/agent_id lengths and gains the new ones; drift here would
+    // silently unbound the byte budget. agent_id is overwritten (not
+    // COALESCEd) so a reroute that clears the owner writes NULL instead of
+    // retaining the prior agent for a later restart reload.
     db.prepare(
       `UPDATE acp_replay_sessions
-          SET estimated_bytes = estimated_bytes - length(session_key) - length(cwd) + ?,
-              session_key = ?, cwd = ?, complete = ?, updated_at = ?
+          SET estimated_bytes = estimated_bytes
+                - length(session_key) - length(cwd) - COALESCE(length(agent_id), 0)
+                + ?,
+              session_key = ?, agent_id = ?, cwd = ?, complete = ?, updated_at = ?
         WHERE session_id = ?`,
     ).run(
-      params.sessionKey.length + cwd.length,
+      params.sessionKey.length + cwd.length + (agentId?.length ?? 0),
       params.sessionKey,
+      agentId,
       cwd,
       complete,
       now,
@@ -152,6 +161,7 @@ function upsertSqliteSession(
     return {
       ...existing,
       sessionKey: params.sessionKey,
+      ...(agentId ? { agentId } : {}),
       cwd,
       complete: complete === 1,
       updatedAt: now,
@@ -167,13 +177,15 @@ function upsertSqliteSession(
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     cwd: params.cwd,
+    agentId: params.agentId,
   });
   db.prepare(
     `INSERT INTO acp_replay_sessions (
-       session_id, session_key, cwd, complete, created_at, updated_at, next_seq, estimated_bytes
-     ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+       session_id, session_key, agent_id, cwd, complete, created_at, updated_at, next_seq, estimated_bytes
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
      ON CONFLICT(session_id) DO UPDATE SET
        session_key = excluded.session_key,
+       agent_id = excluded.agent_id,
        cwd = excluded.cwd,
        complete = excluded.complete,
        updated_at = excluded.updated_at,
@@ -186,6 +198,7 @@ function upsertSqliteSession(
   ).run(
     params.sessionId,
     params.sessionKey,
+    params.agentId ?? null,
     params.cwd,
     params.complete ? 1 : 0,
     now,
@@ -195,6 +208,7 @@ function upsertSqliteSession(
   return {
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
+    ...(params.agentId ? { agentId: params.agentId } : {}),
     cwd: params.cwd,
     complete: params.complete,
     createdAt: existing?.createdAt ?? now,
@@ -219,8 +233,15 @@ function estimateSessionRowBytes(params: {
   sessionId: string;
   sessionKey: string;
   cwd: string;
+  agentId?: string;
 }): number {
-  return params.sessionId.length + params.sessionKey.length + params.cwd.length + 32;
+  return (
+    params.sessionId.length +
+    params.sessionKey.length +
+    params.cwd.length +
+    (params.agentId?.length ?? 0) +
+    32
+  );
 }
 
 function estimateEventRowBytes(params: {
@@ -391,6 +412,7 @@ function buildSqliteReplay(session: AcpLedgerSession | undefined): AcpEventLedge
     complete: true,
     sessionId: session.sessionId,
     sessionKey: session.sessionKey,
+    ...(session.agentId ? { agentId: session.agentId } : {}),
     events: session.events.map((event) => cloneAcpLedgerValue(event)),
   };
 }

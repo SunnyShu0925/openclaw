@@ -1106,6 +1106,7 @@ CREATE INDEX IF NOT EXISTS idx_acp_sessions_agent_activity
 CREATE TABLE IF NOT EXISTS acp_replay_sessions (
   session_id TEXT NOT NULL PRIMARY KEY,
   session_key TEXT NOT NULL,
+  agent_id TEXT,
   cwd TEXT NOT NULL,
   complete INTEGER NOT NULL,
   created_at INTEGER NOT NULL,

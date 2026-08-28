@@ -46,12 +46,20 @@ function getOrCreateSession(
     cwd: string;
     complete: boolean;
     reset?: boolean;
+    agentId?: string;
   },
 ): AcpLedgerSession {
   const now = state.now();
   const existing = state.store.sessions[params.sessionId];
   if (!params.reset && existing) {
     existing.sessionKey = params.sessionKey;
+    if (params.agentId) {
+      existing.agentId = params.agentId;
+    } else {
+      // An explicit undefined/null clears a stale owner so a reroute does
+      // not retain the prior agent across a restart reload.
+      delete existing.agentId;
+    }
     if (params.cwd) {
       existing.cwd = params.cwd;
     }
@@ -62,6 +70,7 @@ function getOrCreateSession(
   const session: AcpLedgerSession = {
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
+    ...(params.agentId ? { agentId: params.agentId } : {}),
     cwd: params.cwd,
     complete: params.complete,
     createdAt: now,
@@ -154,6 +163,7 @@ function createLedgerApi(params: {
     complete: true,
     sessionId: session.sessionId,
     sessionKey: session.sessionKey,
+    ...(session.agentId ? { agentId: session.agentId } : {}),
     events: session.events.map((event: AcpEventLedgerEntry) => cloneAcpLedgerValue(event)),
   });
 

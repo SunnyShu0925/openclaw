@@ -21,6 +21,7 @@ export interface AcpReplayEvents {
 }
 
 export interface AcpReplaySessions {
+  agent_id: string | null;
   complete: number;
   created_at: number;
   cwd: string;

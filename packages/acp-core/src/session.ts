@@ -9,6 +9,7 @@ export type AcpSessionStore = {
     sessionKey: string;
     cwd: string;
     sessionId?: string;
+    agentId?: string;
     ledgerSessionId?: string;
   }) => AcpSession;
   hasSession: (sessionId: string) => boolean;
@@ -100,6 +101,9 @@ export function createInMemorySessionStore(
     const existingSession = sessions.get(sessionId);
     if (existingSession) {
       existingSession.sessionKey = params.sessionKey;
+      if ("agentId" in params) {
+        existingSession.agentId = params.agentId;
+      }
       if ("ledgerSessionId" in params) {
         existingSession.ledgerSessionId = params.ledgerSessionId;
       }
@@ -118,6 +122,7 @@ export function createInMemorySessionStore(
     const session: AcpSession = {
       sessionId,
       sessionKey: params.sessionKey,
+      ...(params.agentId ? { agentId: params.agentId } : {}),
       ...(params.ledgerSessionId ? { ledgerSessionId: params.ledgerSessionId } : {}),
       cwd: params.cwd,
       createdAt: nowMs,

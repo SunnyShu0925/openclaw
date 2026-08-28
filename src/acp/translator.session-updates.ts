@@ -45,7 +45,7 @@ export class AcpTranslatorSessionUpdates {
 
   async startLedgerSession(
     session: AcpTranslatorLedgerSessionRef,
-    options: { complete: boolean; reset?: boolean },
+    options: { complete: boolean; reset?: boolean; agentId?: string },
   ): Promise<void> {
     if (this.stopped) {
       return;
@@ -57,6 +57,9 @@ export class AcpTranslatorSessionUpdates {
         cwd: session.cwd,
         complete: options.complete,
         ...(options.reset ? { reset: true } : {}),
+        // Always carry agentId (even undefined) so the ledger can clear a
+        // stale owner on reroute instead of retaining the prior value.
+        agentId: options.agentId,
       });
     } catch (err) {
       this.options.log(

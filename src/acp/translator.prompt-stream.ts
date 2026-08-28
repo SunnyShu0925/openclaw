@@ -223,7 +223,9 @@ export class AcpTranslatorPromptStream {
       }
       return await Promise.race([
         this.submitPrompt(params, session),
-        admission.closure.promise.then(() => ({ stopReason: "cancelled" as const })),
+        admission.closure.promise.then(() => ({
+          stopReason: "cancelled" as const,
+        })),
       ]);
     } finally {
       admission.settled.resolve();
@@ -267,6 +269,7 @@ export class AcpTranslatorPromptStream {
     this.sessionStore.setActiveRun(params.sessionId, runId, abortController);
     const requestParams = {
       sessionKey: session.sessionKey,
+      ...(session.agentId ? { agentId: session.agentId } : {}),
       message,
       attachments: attachments.length > 0 ? attachments : undefined,
       idempotencyKey: runId,
@@ -279,6 +282,7 @@ export class AcpTranslatorPromptStream {
       this.pendingPrompts.set(params.sessionId, {
         sessionId: params.sessionId,
         sessionKey: session.sessionKey,
+        ...(session.agentId ? { agentId: session.agentId } : {}),
         ...(session.ledgerSessionId ? { ledgerSessionId: session.ledgerSessionId } : {}),
         idempotencyKey: runId,
         disconnectContext: this.disconnects.activeContext ?? undefined,
@@ -401,6 +405,7 @@ export class AcpTranslatorPromptStream {
     session: {
       sessionId: string;
       sessionKey: string;
+      agentId?: string;
       activeRunId: string | null;
     },
     abortTimeoutMs?: number,
@@ -433,11 +438,14 @@ export class AcpTranslatorPromptStream {
     try {
       const abortParams = {
         sessionKey: session.sessionKey,
+        ...(session.agentId ? { agentId: session.agentId } : {}),
         runId: scopedRunId,
       };
       await (abortTimeoutMs === undefined
         ? this.gateway.request("chat.abort", abortParams)
-        : this.gateway.request("chat.abort", abortParams, { timeoutMs: abortTimeoutMs }));
+        : this.gateway.request("chat.abort", abortParams, {
+            timeoutMs: abortTimeoutMs,
+          }));
     } catch (err) {
       this.log(`cancel error: ${String(err)}`);
     }
@@ -582,7 +590,11 @@ export class AcpTranslatorPromptStream {
     const promptKey = this.pendingPromptKey(sessionId, pending.idempotencyKey);
     this.settlingPromptKeys.add(promptKey);
     try {
-      const sessionSnapshot = await this.sessionState.getSnapshot(pending.sessionKey);
+      const sessionSnapshot = await this.sessionState.getSnapshot(
+        pending.sessionKey,
+        undefined,
+        pending.agentId,
+      );
       try {
         await this.sessionState.sendSnapshotUpdate(
           {
