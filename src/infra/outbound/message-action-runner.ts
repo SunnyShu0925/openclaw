@@ -6,7 +6,6 @@ import {
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { AgentToolResult } from "../../agents/runtime/index.js";
-import { createSandboxBridgeReadFile } from "../../agents/sandbox-media-paths.js";
 import { readStringArrayParam, readToolStringParam } from "../../agents/tools/common.js";
 import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
@@ -230,7 +229,6 @@ async function handleInternalSourceReplySendAction(
     mediaPolicy: resolveAttachmentMediaPolicy({
       sandboxRoot: input.sandboxRoot,
       sandboxContainerWorkdir: input.sandboxContainerWorkdir,
-      sandboxReadFile: resolveSandboxAttachmentReadFile(input),
       mediaAccess: input.mediaAccess,
       mediaLocalRoots: getAgentScopedMediaLocalRoots(input.cfg, agentId),
     }),
@@ -264,6 +262,8 @@ async function handleInternalSourceReplySendAction(
       requesterSenderName: input.requesterSenderName ?? undefined,
       requesterSenderUsername: input.requesterSenderUsername ?? undefined,
       requesterSenderE164: input.requesterSenderE164 ?? undefined,
+      mediaAccess: input.mediaAccess,
+      workspaceMediaAccess: input.workspaceMediaAccess,
       sandboxRoot: input.sandboxRoot,
       sandboxContainerWorkdir: input.sandboxContainerWorkdir,
     })(sourceReplyPayload);
@@ -389,16 +389,6 @@ function buildInternalSourceReplyToolResult(payload: {
   };
 }
 
-/** Builds a sandbox bridge reader for remote-only attachment hydration, or undefined for host-root fallback. */
-function resolveSandboxAttachmentReadFile(
-  input: MessageActionInput,
-): ReturnType<typeof createSandboxBridgeReadFile> | undefined {
-  const sandboxRoot = input.sandboxRoot?.trim();
-  return sandboxRoot && input.sandboxFsBridge
-    ? createSandboxBridgeReadFile({ sandbox: { root: sandboxRoot, bridge: input.sandboxFsBridge } })
-    : undefined;
-}
-
 export async function runMessageAction(input: MessageActionInput): Promise<MessageActionResult> {
   const cfg = input.cfg;
   let params = { ...input.params };
@@ -435,12 +425,6 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
   params = route.params;
   const { channel, channelPlugin, accountId, dryRun, defersExternalTargetResolution } = route;
 
-  const normalizationPolicy = resolveAttachmentMediaPolicy({
-    sandboxRoot: input.sandboxRoot,
-    sandboxContainerWorkdir: input.sandboxContainerWorkdir,
-    sandboxReadFile: resolveSandboxAttachmentReadFile(input),
-    mediaLocalRoots: getAgentScopedMediaLocalRoots(cfg, resolvedAgentId),
-  });
   const extraActionMediaSourceParamKeys = resolveExtraActionMediaSourceParamKeys({
     cfg,
     action,
@@ -455,14 +439,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
   });
   const structuredAttachmentMode = action === "send" ? "all" : "selected";
 
-  await normalizeSandboxMediaParams({
-    args: params,
-    mediaPolicy: normalizationPolicy,
-    extraParamKeys: extraActionMediaSourceParamKeys,
-    structuredAttachments: structuredAttachmentMode,
-  });
-
-  const mediaAccess =
+  const resolveMediaAccess = () =>
     input.mediaAccess ??
     resolveAgentScopedOutboundMediaAccess({
       cfg,
@@ -470,6 +447,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
       mediaSources: collectActionMediaSourceHints(params, extraActionMediaSourceParamKeys, {
         structuredAttachments: structuredAttachmentMode,
       }),
+      workspaceMediaAccess: input.workspaceMediaAccess,
       sessionKey: input.sessionKey,
       messageProvider: input.sessionKey ? undefined : channel,
       accountId: input.sessionKey ? (input.requesterAccountId ?? accountId) : accountId,
@@ -478,10 +456,23 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
       requesterSenderUsername: input.requesterSenderUsername,
       requesterSenderE164: input.requesterSenderE164,
     });
+  const normalizationPolicy = resolveAttachmentMediaPolicy({
+    sandboxRoot: input.sandboxRoot,
+    sandboxContainerWorkdir: input.sandboxContainerWorkdir,
+    mediaAccess: resolveMediaAccess(),
+  });
+
+  await normalizeSandboxMediaParams({
+    args: params,
+    mediaPolicy: normalizationPolicy,
+    extraParamKeys: extraActionMediaSourceParamKeys,
+    structuredAttachments: structuredAttachmentMode,
+  });
+  const mediaAccess = resolveMediaAccess();
+
   const mediaPolicy = resolveAttachmentMediaPolicy({
     sandboxRoot: input.sandboxRoot,
     sandboxContainerWorkdir: input.sandboxContainerWorkdir,
-    sandboxReadFile: resolveSandboxAttachmentReadFile(input),
     mediaAccess,
   });
   const gateway = input.gateway;

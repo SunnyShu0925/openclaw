@@ -42,6 +42,7 @@ import {
   attachEmbeddedMessageDeliveryFact,
   projectEmbeddedMessageDeliveryFact,
 } from "../embedded-agent-message-delivery.js";
+import { createSandboxBridgeReadFile } from "../sandbox-media-paths.js";
 import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
 import { type AnyAgentTool, jsonResult, readToolStringParam } from "./common.js";
 import {
@@ -282,6 +283,20 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         options?.sourceReplyDeliveryMode,
         options?.requireExplicitTarget,
       );
+  const sandboxRoot = options?.sandboxRoot?.trim();
+  const sandboxWorkspaceMediaAccess =
+    sandboxRoot && options?.sandboxFsBridge
+      ? {
+          localRoots: [
+            sandboxRoot,
+            ...(options?.sandboxContainerWorkdir ? [options.sandboxContainerWorkdir] : []),
+          ],
+          readFile: createSandboxBridgeReadFile({
+            sandbox: { root: sandboxRoot, bridge: options.sandboxFsBridge },
+          }),
+          workspaceDir: sandboxRoot,
+        }
+      : undefined;
 
   return {
     label: "Message",
@@ -612,9 +627,9 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           runId: deliveryRunId,
           executionIdentityToken,
           agentId: resolvedAgentId,
+          workspaceMediaAccess: sandboxWorkspaceMediaAccess,
           sandboxRoot: options?.sandboxRoot,
           sandboxContainerWorkdir: options?.sandboxContainerWorkdir,
-          sandboxFsBridge: options?.sandboxFsBridge,
           sourceReplyDeliveryMode: sourceReplySinkDeliveryMode,
           // Only an admitted channel source can arm terminal restart reconciliation.
           // Source-less scheduled and ambient sends remain ordinary message actions.

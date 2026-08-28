@@ -19,9 +19,19 @@ import {
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { extractMessagingToolSourceReplyPayload } from "../embedded-agent-messaging-extraction.js";
 import { buildEmbeddedRunPayloads } from "../embedded-agent-runner/run/payloads.js";
+import type { SandboxFsBridge } from "../sandbox/fs-bridge.types.js";
+import { createRemoteShellSandboxFsBridge } from "../sandbox/remote-fs-bridge.js";
+import { createLocalRemoteShellScriptRunner } from "../sandbox/remote-fs-bridge.test-helpers.js";
+import { createSandboxTestContext } from "../sandbox/test-fixtures.js";
 import { createMessageTool } from "./message-tool-execution.js";
 
-function createCurrentSourceMessageTool(params: { workspaceDir?: string } = {}) {
+function createCurrentSourceMessageTool(
+  params: {
+    workspaceDir?: string;
+    sandboxFsBridge?: SandboxFsBridge;
+    sandboxContainerWorkdir?: string;
+  } = {},
+) {
   return createMessageTool({
     config: { agents: { entries: { main: { default: true } } } },
     currentChannelProvider: "webchat",
@@ -29,6 +39,9 @@ function createCurrentSourceMessageTool(params: { workspaceDir?: string } = {}) 
     agentSessionKey: "agent:main:webchat:dm:dashboard",
     runId: "webchat-run",
     workspaceDir: params.workspaceDir,
+    sandboxRoot: params.sandboxFsBridge ? params.workspaceDir : undefined,
+    sandboxContainerWorkdir: params.sandboxContainerWorkdir,
+    sandboxFsBridge: params.sandboxFsBridge,
     getScopedChannelsCommandSecretTargets: () => ({ targetIds: new Set<string>() }),
     resolveCommandSecretRefsViaGateway: async ({ config }) => ({
       resolvedConfig: config,
@@ -129,6 +142,51 @@ describe("WebChat message tool internal source reply", () => {
         const mediaPath = sourceReply?.mediaUrls?.[0];
         expect(mediaPath).toBeTruthy();
         await expect(fs.readFile(mediaPath as string)).resolves.toEqual(attachment);
+      },
+    );
+  });
+
+  it("stages remote-only workspace media before acknowledging the current-source send", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "message-tool-source-remote-media-" },
+      async (state) => {
+        await fs.mkdir(state.workspaceDir, { recursive: true });
+        const remoteWorkspaceDir = state.path("remote-workspace");
+        await fs.mkdir(remoteWorkspaceDir, { recursive: true });
+        await fs.writeFile(path.join(remoteWorkspaceDir, "proof.txt"), "remote proof");
+        const sandbox = createSandboxTestContext({
+          overrides: {
+            backendId: "test",
+            workspaceDir: state.workspaceDir,
+            agentWorkspaceDir: state.workspaceDir,
+            containerWorkdir: "/sandbox",
+          },
+        });
+        const sandboxFsBridge = createRemoteShellSandboxFsBridge({
+          sandbox,
+          runtime: {
+            remoteWorkspaceDir,
+            remoteAgentWorkspaceDir: remoteWorkspaceDir,
+            runRemoteShellScript: createLocalRemoteShellScriptRunner(),
+          },
+        });
+        const tool = createCurrentSourceMessageTool({
+          workspaceDir: state.workspaceDir,
+          sandboxContainerWorkdir: "/sandbox",
+          sandboxFsBridge,
+        });
+
+        const toolResult = await tool.execute("message-remote-media-call", {
+          action: "send",
+          message: "Attached proof.",
+          media: "/sandbox/proof.txt",
+        });
+
+        const sourceReply = extractMessagingToolSourceReplyPayload(toolResult);
+        expect(sourceReply?.mediaUrls).toHaveLength(1);
+        await expect(fs.readFile(sourceReply?.mediaUrls?.[0] as string, "utf8")).resolves.toBe(
+          "remote proof",
+        );
       },
     );
   });

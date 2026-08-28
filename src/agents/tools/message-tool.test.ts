@@ -205,6 +205,11 @@ type RunMessageActionInput = {
     requesterSenderId?: string;
     toolContext?: RunMessageActionInput["toolContext"];
   };
+  workspaceMediaAccess?: {
+    localRoots?: readonly string[];
+    readFile?: (filePath: string) => Promise<Buffer>;
+    workspaceDir?: string;
+  };
   sandboxRoot?: string;
   sessionKey?: string;
   sourceReplyDeliveryMode?: string;
@@ -5186,6 +5191,30 @@ describe("message tool sandbox passthrough", () => {
       },
     });
     expect(call?.sandboxRoot).toBe(expected);
+  });
+
+  it("adapts the sandbox bridge into media access through createOpenClawTools", async () => {
+    mockSendResult({ to: "telegram:123" });
+    const sandboxRoot = "/tmp/sandbox";
+    const sandboxFsBridge = { readFile: vi.fn() } as never;
+    const tool = createOpenClawTools({ sandboxRoot, sandboxFsBridge }).find(
+      (candidate) => candidate.name === "message",
+    );
+    if (!tool) {
+      throw new Error("message tool not found");
+    }
+
+    await tool.execute("sandbox-media-access", {
+      action: "send",
+      target: "telegram:123",
+      message: "ready",
+    });
+
+    expect(lastRunMessageActionInput()?.workspaceMediaAccess).toMatchObject({
+      localRoots: [sandboxRoot],
+      workspaceDir: sandboxRoot,
+      readFile: expect.any(Function),
+    });
   });
 
   it("does not trust ambient current-turn identity without a capability", async () => {

@@ -1,7 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentToolResult } from "../../agents/runtime/index.js";
-import type { SandboxFsBridge } from "../../agents/sandbox/fs-bridge.js";
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
 import type { InboundEventKind } from "../../channels/inbound-event/kind.js";
@@ -74,6 +73,8 @@ export type MessageActionInput = {
   toolContext?: ChannelThreadingToolContext;
   /** @internal Host media grant captured before untrusted caller code can mutate config. */
   mediaAccess?: OutboundMediaAccess;
+  /** @internal Workspace transport reader whose use remains subject to sender policy. */
+  workspaceMediaAccess?: OutboundMediaAccess;
   gateway?: MessageActionGateway;
   deps?: OutboundSendDeps;
   sessionKey?: string;
@@ -114,8 +115,6 @@ export type MessageActionInput = {
   ) => void;
   sandboxRoot?: string;
   sandboxContainerWorkdir?: string;
-  /** Active sandbox filesystem bridge for remote-only workspaces; when omitted, attachment reads fall back to the host sandbox root. */
-  sandboxFsBridge?: SandboxFsBridge;
   dryRun?: boolean;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   sourceReplyFinal?: boolean;
