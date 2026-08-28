@@ -140,11 +140,6 @@ describe("OpenClaw tools MCP server", () => {
   });
 
   it("serializes operator-approval-only through the native CLI MCP config", () => {
-    // A delegated CLI-backed turn threads operatorApprovalOnly into the tool
-    // options; the per-run MCP config must carry it so the out-of-process
-    // stdio server can reconstruct the same delegated refusal branch. The flag
-    // rides on the armed env's "operator-only" value rather than a new env
-    // name, keeping the protected OPENCLAW_* budget flat.
     const config = buildSystemAgentToolsMcpServerConfig({
       surface: "cli",
       operatorApprovalOnly: true,
@@ -166,11 +161,6 @@ describe("OpenClaw tools MCP server", () => {
   });
 
   it("reconstructs the delegated refusal from env on the native CLI MCP tool", async () => {
-    // End-to-end at the stdio boundary: the host serializes the delegated
-    // state, the server recreates createSystemAgentTool from env, and a
-    // persistent call returns the operator-UI handoff (never "reply yes")
-    // while still registering the proposal and keeping the needs-approval
-    // marker so out-of-process CLI hosts mirror the refusal.
     const operation = {
       kind: "config-set",
       path: "agents.defaults.subagents.thinking",

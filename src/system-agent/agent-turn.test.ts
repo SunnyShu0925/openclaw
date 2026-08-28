@@ -838,10 +838,6 @@ describe("runSystemAgentTurn", () => {
       agents: { defaults: { model: "openai/gpt-5.5" } },
     } satisfies OpenClawConfig;
     const { session, deps } = await createVerifiedSession(config);
-    // Real default engine turn: the fake embedded runner only simulates the
-    // model loop. The ring-zero tool is the real production implementation,
-    // executed with the exact options the runner built for the delegated
-    // session, so the loop result is the genuine delegated refusal.
     const runEmbeddedAgent = vi.fn(async (params: RunEmbeddedAgentParams) => {
       const options = params.systemAgentTool;
       if (!options) {

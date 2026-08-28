@@ -18,15 +18,8 @@ export const OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV =
   "OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED";
 export const OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_PROPOSAL_ENV =
   "OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_PROPOSAL";
-// The armed env is a closed transport value, not just a boolean: "1" marks a
-// host-armed direct turn, and "operator-only" marks a delegated session whose
-// approvals can only resolve in the operator UI. Delegated turns force the host
-// approval intent to "other", so the two states are mutually exclusive at
-// runtime (see ChatTurnRouter.resolveAssistantTurn) — one env name carries both.
-// (Name avoids the OPENCLAW_ prefix so the env-var-count ratchet does not count
-// this constant as a new production env name. Not exported: it is a module-local
-// transport value, and exporting it for tests would trip knip's production
-// unused-export scan — tests assert the literal "operator-only" string.)
+// Delegation and chat consent are mutually exclusive. Keep both in the existing
+// per-turn transport value so native transcript resume identity stays stable.
 const APPROVAL_ARMED_OPERATOR_ONLY_VALUE = "operator-only";
 
 const OPENCLAW_TOOLS_MCP_TOOL_IDS = ["cron", "openclaw"] as const;
@@ -75,12 +68,7 @@ export function resolveOpenClawToolsMcpSystemAgentSurface(
  * Reconstruct per-turn approval state for the served openclaw tool. The
  * stdio server runs out of process, so the host passes the armed bit and the
  * pending proposal hash through env; the host mirrors transitions back from
- * tool events (see mirrorSystemAgentProposalFromToolEvents in agent-turn.ts).
- *
- * `operatorApprovalOnly` rides on the same armed env value ("operator-only")
- * so delegated (messaging) CLI-backed sessions get the operator-UI handoff
- * instead of a dead-end "reply yes" prompt — the same boundary the embedded
- * loop enforces — without raising the protected OPENCLAW_* name budget.
+ * tool events (see mirrorSystemAgentToolStateFromEvents in agent-turn.ts).
  */
 export function resolveOpenClawToolsMcpSystemAgentApproval(env: NodeJS.ProcessEnv = process.env): {
   approvalArmed: boolean;
@@ -151,10 +139,7 @@ export function buildSystemAgentToolsMcpServerConfig(
           [OPENCLAW_TOOLS_MCP_TOOLS_ENV]: "openclaw" satisfies OpenClawToolsMcpToolId,
           [OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_SURFACE_ENV]: options.surface,
           // Per-turn approval state travels with the per-run MCP config; the
-          // host mirrors proposal transitions back from tool events. The armed
-          // env is a closed value: "1" for a host-armed direct turn,
-          // "operator-only" for a delegated session (mutually exclusive at
-          // runtime — delegated turns force the host intent to "other").
+          // host mirrors proposal transitions back from tool events.
           ...(options.operatorApprovalOnly === true
             ? {
                 [OPENCLAW_TOOLS_MCP_SYSTEM_AGENT_APPROVAL_ARMED_ENV]:

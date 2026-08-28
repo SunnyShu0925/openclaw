@@ -103,10 +103,6 @@ describe("openclaw tool", () => {
   });
 
   it("registers delegated proposals but never instructs a chat 'yes'", async () => {
-    // Delegated (operator-approval-only) sessions cannot resolve approvals by
-    // replying "yes": the host forces the intent to "other". The tool must
-    // still register the proposal for the operator registry while telling the
-    // model to surface the operator UI/CLI path instead of a dead-end prompt.
     const proposalRef: { current?: string } = {};
     const args = {
       action: "config_set" as const,

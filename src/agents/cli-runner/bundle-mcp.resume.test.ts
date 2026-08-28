@@ -108,10 +108,6 @@ describe("prepareCliBundleMcpConfig resume hash", () => {
     expect(first.mcpConfigHash).not.toBe(approval.mcpConfigHash);
     expect(first.mcpResumeHash).toBe(approval.mcpResumeHash);
     expect(approval.mcpResumeHash).not.toBe(otherSurface.mcpResumeHash);
-    // operatorApprovalOnly is per-turn delegated state, so it must be
-    // canonicalized out of the resume identity just like approvalArmed /
-    // proposalRef — a delegated turn and a direct turn with the same shape
-    // stay resume-compatible.
     const delegated = await prepare({
       surface: "cli",
       operatorApprovalOnly: true,
@@ -154,5 +150,6 @@ describe("prepareCliBundleMcpConfig resume hash", () => {
     await first.cleanup?.();
     await approval.cleanup?.();
     await otherSurface.cleanup?.();
+    await delegated.cleanup?.();
   });
 });

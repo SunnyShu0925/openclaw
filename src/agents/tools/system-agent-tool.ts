@@ -11,6 +11,7 @@ import type { RuntimeEnv } from "../../runtime.js";
 import {
   executeSystemAgentOperation,
   isPersistentSystemAgentOperation,
+  SYSTEM_AGENT_OPERATOR_APPROVAL_HANDOFF,
   type SystemAgentOperation,
 } from "../../system-agent/operations.js";
 import { validateSystemAgentPluginInstallSpec } from "../../system-agent/plugin-install-spec.js";
@@ -20,12 +21,7 @@ import { textResult, ToolInputError, readToolStringParam, type AnyAgentTool } fr
 export type SystemAgentToolOptions = {
   /** Where setup side effects run; the gateway surface never manages its own daemon. */
   surface: "cli" | "gateway";
-  /**
-   * Delegated (operator-approval-only) session: a persistent proposal can only
-   * be resolved by an operator in the OpenClaw UI, never by replying "yes" in
-   * chat. The tool must not instruct the model to ask the user to reply "yes";
-   * it still registers the proposal so the operator registry can resolve it.
-   */
+  /** Delegated proposals require operator UI approval, never a chat reply. */
   operatorApprovalOnly?: boolean;
   /**
    * Host-verified consent for THIS turn: true only when the host judged the
@@ -494,19 +490,11 @@ export function createSystemAgentTool(options: SystemAgentToolOptions): AnyAgent
             options.proposalRef.current = operationHash;
             options.proposalRef.operation = operation;
           }
-          if (options.operatorApprovalOnly) {
-            // Delegated chats cannot complete the approval handshake: the host
-            // forces the approval intent to "other", so a "yes" reply is
-            // intentionally ignored. Register the proposal (the operator
-            // registry resolves it) and tell the model to surface the real
-            // path instead of a dead-end conversational prompt.
-            return textResult(
-              `${SYSTEM_AGENT_NEEDS_APPROVAL_PREFIX}${operationHash}\nThis action changes state. The proposal is registered for operator approval, but this chat is a delegated session: a "yes" reply here cannot resolve it. Do not ask the user to reply "yes". Tell them this change needs operator approval in the OpenClaw operator UI (or run it via the \`openclaw\` CLI) and cannot be applied from this chat.`,
-              { needsApproval: true },
-            );
-          }
+          const approvalHint = options.operatorApprovalOnly
+            ? `The proposal is registered for operator approval. Do not request conversational approval. ${SYSTEM_AGENT_OPERATOR_APPROVAL_HANDOFF}`
+            : "The proposal is registered; describe this exact change and ask the user to reply yes (their approval unlocks THIS action only — then retry the exact registered operation with approved=true).";
           return textResult(
-            `${SYSTEM_AGENT_NEEDS_APPROVAL_PREFIX}${operationHash}\nThis action changes state. The proposal is registered; describe this exact change and ask the user to reply yes (their approval unlocks THIS action only — then retry the exact registered operation with approved=true).`,
+            `${SYSTEM_AGENT_NEEDS_APPROVAL_PREFIX}${operationHash}\nThis action changes state. ${approvalHint}`,
             { needsApproval: true },
           );
         }
