@@ -35,7 +35,6 @@ import {
 import { getAtPath, isConfigSchemaPath, parseConfigSetPath } from "./config-cli-path.js";
 import { handleConfigMutationError, runConfigOperations } from "./config-cli-runner.js";
 import {
-  collectManualExecProviderCommandPathErrors,
   ensureValidConfigSnapshotForCli,
   formatInvalidConfigRepairHint,
   strictlyValidateConfigSnapshotForCli,
@@ -213,10 +212,9 @@ export async function runConfigUnset(opts: {
       throw new Error("--json can only be used with --dry-run.");
     }
     const pathTokens = parseConcreteConfigPathTokens(opts.path);
-    const parsedPath = pathTokens.map(String);
     await runConfigOperations({
       runtime,
-      operations: [buildUnsetOperation(parsedPath, pathTokens)],
+      operations: [buildUnsetOperation(pathTokens.map(String), pathTokens)],
       options: cliOptions,
       successMode: "set",
     });
@@ -259,7 +257,7 @@ async function runConfigValidate(opts: { json?: boolean; runtime?: RuntimeEnv } 
   let outputPath = CONFIG_PATH ?? "openclaw.json";
   try {
     const read = await readConfigFileSnapshotWithPluginMetadata({ observe: false });
-    const snapshot = strictlyValidateConfigSnapshotForCli(
+    const snapshot = await strictlyValidateConfigSnapshotForCli(
       read.snapshot,
       read.pluginMetadataSnapshot,
     );
@@ -305,38 +303,6 @@ async function runConfigValidate(opts: { json?: boolean; runtime?: RuntimeEnv } 
       return;
     }
     const warnings = normalizeConfigIssues(snapshot.warnings);
-    // Run the same non-executing exec-provider command-path trust checks that
-    // startup activation applies, so a symlinked, missing, or unsafe command
-    // cannot pass validation and then crash the gateway on the next restart
-    // (see #117051).
-    const execProviderCommandPathErrors = await collectManualExecProviderCommandPathErrors({
-      config: snapshot.runtimeConfig,
-      operations: [],
-      validateAllProviders: true,
-    });
-    if (execProviderCommandPathErrors.length > 0) {
-      if (opts.json) {
-        writeRuntimeJson(
-          runtime,
-          {
-            valid: false,
-            path: outputPath,
-            issues: execProviderCommandPathErrors.map((error) => error.message),
-          },
-          0,
-        );
-      } else {
-        runtime.error(danger(`OpenClaw config is invalid: ${shortPath}`));
-        for (const error of execProviderCommandPathErrors) {
-          runtime.error(`  ${error.message}`);
-        }
-        runtime.error(
-          formatInvalidConfigRepairHint(snapshot, "to repair, or fix the keys above manually."),
-        );
-      }
-      runtime.exit(1);
-      return;
-    }
     if (opts.json) {
       writeRuntimeJson(runtime, { valid: true, path: outputPath, warnings }, 0);
     } else {

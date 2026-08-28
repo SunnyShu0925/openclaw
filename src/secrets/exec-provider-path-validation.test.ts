@@ -1,9 +1,8 @@
-/** Tests the non-executing exec-provider command-path validator (see #117051). */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { withMockedWindowsPlatform } from "../test-utils/vitest-spies.js";
+import { withMockedWindowsAclVerificationUnavailable } from "../test-utils/vitest-spies.js";
 import { assertSecureExecCommandPath } from "./exec-provider-path-validation.js";
 
 describe("exec provider command path validation", () => {
@@ -13,6 +12,7 @@ describe("exec provider command path validation", () => {
   }
   let fixtureRoot = "";
   let validExecutablePath = "";
+  let executionMarkerPath = "";
   let caseId = 0;
   const createCaseDir = async (label: string): Promise<string> => {
     const dir = path.join(fixtureRoot, `${label}-${caseId++}`);
@@ -21,12 +21,15 @@ describe("exec provider command path validation", () => {
   };
 
   beforeAll(async () => {
-    fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "exec-provider-path-validation-"));
-    // Copy the runtime executable so the fixture is a regular file with closed
-    // permissions on every platform (hosted-runner node binaries can be
-    // world-writable, which the validator correctly rejects).
+    fixtureRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "exec-provider-path-validation-")),
+    );
     validExecutablePath = path.join(fixtureRoot, "valid-executable");
-    await fs.copyFile(process.execPath, validExecutablePath);
+    executionMarkerPath = path.join(fixtureRoot, "executed");
+    await fs.writeFile(
+      validExecutablePath,
+      `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(executionMarkerPath)}, "executed");\n`,
+    );
     await fs.chmod(validExecutablePath, 0o755);
   });
   afterAll(async () => {
@@ -39,6 +42,7 @@ describe("exec provider command path validation", () => {
       label: "secrets.providers.execmain.command",
     });
     expect(securePath).toBe(validExecutablePath);
+    await expect(fs.access(executionMarkerPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   itPosix("rejects missing command paths", async () => {
@@ -64,7 +68,7 @@ describe("exec provider command path validation", () => {
   itPosix("rejects symlinked command paths", async () => {
     const root = await createCaseDir("link");
     const symlinkPath = path.join(root, "exec-link");
-    await fs.symlink(process.execPath, symlinkPath);
+    await fs.symlink(validExecutablePath, symlinkPath);
     await expect(
       assertSecureExecCommandPath({
         command: symlinkPath,
@@ -87,13 +91,9 @@ describe("exec provider command path validation", () => {
   });
 
   itPosix("accepts regular files lacking the owner-execute bit (startup parity)", async () => {
-    // The validator mirrors current startup activation, which does not require
-    // the owner-execute bit. Tightening this is upgrade-sensitive and left to
-    // maintainers (see #117128).
     const root = await createCaseDir("non-exec");
     const scriptPath = path.join(root, "not-executable");
-    await fs.copyFile(process.execPath, scriptPath);
-    // Readable, owner-owned, not world/group-writable, but NOT executable.
+    await fs.writeFile(scriptPath, "not executable\n");
     await fs.chmod(scriptPath, 0o600);
     await expect(
       assertSecureExecCommandPath({
@@ -109,7 +109,7 @@ describe("exec provider command path validation", () => {
     await fs.mkdir(trustedDir);
     await expect(
       assertSecureExecCommandPath({
-        command: process.execPath,
+        command: validExecutablePath,
         label: "secrets.providers.execmain.command",
         trustedDirs: [trustedDir],
       }),
@@ -120,8 +120,8 @@ describe("exec provider command path validation", () => {
     const root = await createCaseDir("trusted-ok");
     const trustedDir = path.join(root, "trusted");
     await fs.mkdir(trustedDir, { recursive: true });
-    const copy = path.join(trustedDir, "node");
-    await fs.copyFile(process.execPath, copy);
+    const copy = path.join(trustedDir, "helper");
+    await fs.writeFile(copy, "#!/bin/sh\nexit 1\n");
     await fs.chmod(copy, 0o755);
     await expect(
       assertSecureExecCommandPath({
@@ -133,22 +133,21 @@ describe("exec provider command path validation", () => {
   });
 
   it("fails closed with a supported recovery message when Windows ACL verification is unavailable", async () => {
-    // On a POSIX host, mocking process.platform to win32 makes the real
-    // inspectPathPermissions attempt Windows ACL inspection and return
-    // source="unknown" (icacls is unavailable), which exercises the Windows
-    // fail-closed branch without a Windows runner.
-    await withMockedWindowsPlatform(async () => {
-      try {
-        await assertSecureExecCommandPath({
-          command: process.execPath,
-          label: "secrets.providers.execmain.command",
+    await withMockedWindowsAclVerificationUnavailable(
+      path.join(fixtureRoot, "missing-windows-system-root"),
+      async () => {
+        await expect(
+          assertSecureExecCommandPath({
+            command: validExecutablePath,
+            label: "secrets.providers.execmain.command",
+          }),
+        ).rejects.toMatchObject({
+          code: "permission-unverified",
+          message: expect.stringMatching(
+            /ACL verification unavailable on Windows.*no provider-level bypass/,
+          ),
         });
-        expect.unreachable("expected the Windows ACL check to fail closed");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        expect(message).toMatch(/ACL verification is unavailable on Windows/);
-        expect(message).toMatch(/fails closed/);
-      }
-    });
+      },
+    );
   });
 });

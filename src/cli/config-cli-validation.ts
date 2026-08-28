@@ -4,13 +4,9 @@ import { readConfigFileSnapshotForWrite } from "../config/config.js";
 import { formatConfigIssueLines, normalizeConfigIssues } from "../config/issue-format.js";
 import { renderConfigValidationIssueLines } from "../config/issue-location.js";
 import { isPluginPackagingRuntimeOutputInvalidConfigSnapshot } from "../config/recovery-policy.js";
+import type { ConfigValidationIssue } from "../config/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  coerceSecretRef,
-  resolveSecretInputRef,
-  type PluginIntegrationSecretProviderConfig,
-  type SecretRef,
-} from "../config/types.secrets.js";
+import { coerceSecretRef, resolveSecretInputRef, type SecretRef } from "../config/types.secrets.js";
 import { validateConfigObjectRawWithPlugins } from "../config/validation.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
@@ -77,10 +73,10 @@ export async function loadValidConfigForWrite(runtime: RuntimeEnv = defaultRunti
 
 export { formatInvalidConfigRepairHint };
 
-export function strictlyValidateConfigSnapshotForCli(
+export async function strictlyValidateConfigSnapshotForCli(
   snapshot: ConfigFileSnapshot,
   pluginMetadataSnapshot?: Pick<PluginMetadataSnapshot, "manifestRegistry">,
-): ConfigFileSnapshot {
+): Promise<ConfigFileSnapshot> {
   if (!snapshot.valid) {
     return snapshot;
   }
@@ -88,7 +84,10 @@ export function strictlyValidateConfigSnapshotForCli(
     semanticValidation: "strict",
     pluginMetadataSnapshot,
   });
-  return validated.ok ? snapshot : { ...snapshot, valid: false, issues: validated.issues };
+  const issues = validated.ok
+    ? await collectConfigSecretProviderErrors({ config: snapshot.runtimeConfig })
+    : validated.issues;
+  return issues.length === 0 ? snapshot : { ...snapshot, valid: false, issues };
 }
 
 function collectSecretRefsFromUnknown(value: unknown): SecretRef[] {
@@ -278,19 +277,16 @@ function touchesSecretProviderCollection(path: readonly string[]): boolean {
   );
 }
 
-/**
- * Collects the provider aliases a set of write operations touches, plus whether
- * the whole provider collection was touched (forcing all providers to be
- * inspected). Shared by the plugin-integration and manual exec-provider
- * preflights so both honor the same touch scope.
- */
-function collectTouchedProviders(params: {
-  operations: ConfigSetOperation[];
-  validateAllProviders?: boolean;
-}): { touchedProviderAliases: Set<string>; validateAllProviders: boolean } {
+export async function collectConfigSecretProviderErrors(params: {
+  config: OpenClawConfig;
+  operations?: ConfigSetOperation[];
+}): Promise<ConfigValidationIssue[]> {
+  const providers = params.config.secrets?.providers ?? {};
   const touchedProviderAliases = new Set<string>();
-  let validateAllProviders = params.validateAllProviders === true;
-  for (const operation of params.operations) {
+  // Explicit validation checks all manual providers; writes must leave unrelated
+  // dormant providers alone so operators can repair the rest of their config.
+  let validateAllProviders = params.operations === undefined;
+  for (const operation of params.operations ?? []) {
     if (operation.touchedProviderAlias) {
       touchedProviderAliases.add(operation.touchedProviderAlias);
     }
@@ -302,106 +298,46 @@ function collectTouchedProviders(params: {
     }
     validateAllProviders ||= touchesSecretProviderCollection(operation.setPath);
   }
-  return { touchedProviderAliases, validateAllProviders };
-}
-
-export function collectPluginIntegrationProviderErrors(params: {
-  config: OpenClawConfig;
-  operations: ConfigSetOperation[];
-  validateAllProviders?: boolean;
-}): ConfigSetDryRunError[] {
-  const providers = params.config.secrets?.providers ?? {};
-  const { touchedProviderAliases, validateAllProviders } = collectTouchedProviders(params);
-  if (!validateAllProviders && touchedProviderAliases.size === 0) {
-    return [];
-  }
-  const integrationProviders: Array<{
-    alias: string;
-    provider: PluginIntegrationSecretProviderConfig;
-  }> = [];
-  for (const [alias, provider] of Object.entries(providers)) {
-    if (
-      (validateAllProviders || touchedProviderAliases.has(alias)) &&
-      isPluginIntegrationSecretProviderConfig(provider)
-    ) {
-      integrationProviders.push({ alias, provider });
-    }
-  }
-  if (integrationProviders.length === 0) {
-    return [];
-  }
-  const manifestRegistry = loadPluginMetadataSnapshot({
-    config: params.config,
-    env: process.env,
-  }).manifestRegistry;
-  const errors: ConfigSetDryRunError[] = [];
-  for (const { alias, provider } of integrationProviders) {
-    const resolved = resolveSecretProviderIntegrationConfig({
-      manifestRegistry,
-      providerAlias: alias,
-      providerConfig: provider,
-      config: params.config,
-      env: process.env,
-    });
-    if (!resolved.ok) {
-      errors.push({ kind: "schema", message: `secrets.providers.${alias}: ${resolved.reason}` });
-    }
-  }
-  return errors;
-}
-
-/**
- * Runs the non-executing exec-provider command-path trust checks (the same
- * rules startup activation applies) over the manual exec providers in the
- * candidate config. A write checks only the providers it touches, or every
- * provider when the write edits the provider collection itself; `config
- * validate` scans the whole config separately. Plugin-integration providers
- * are out of scope here; their materialized command parity is left to
- * maintainers.
- */
-export async function collectManualExecProviderCommandPathErrors(params: {
-  config: OpenClawConfig;
-  operations: ConfigSetOperation[];
-  validateAllProviders?: boolean;
-}): Promise<ConfigSetDryRunError[]> {
-  const providers = params.config.secrets?.providers ?? {};
-  const { touchedProviderAliases, validateAllProviders } = collectTouchedProviders(params);
-  if (!validateAllProviders && touchedProviderAliases.size === 0) {
-    return [];
-  }
-
-  const errors: ConfigSetDryRunError[] = [];
+  const issues: ConfigValidationIssue[] = [];
+  let manifestRegistry: PluginMetadataSnapshot["manifestRegistry"] | undefined;
   for (const [alias, provider] of Object.entries(providers)) {
     if (!validateAllProviders && !touchedProviderAliases.has(alias)) {
       continue;
     }
+    const providerPath = `secrets.providers.${alias}`;
     if (isPluginIntegrationSecretProviderConfig(provider)) {
-      continue;
-    }
-    // A value-mode write can set a provider to `null` or a primitive without
-    // triggering full schema validation; guard the `in` check so malformed
-    // provider values fall through to the normal config error path instead of
-    // throwing a raw TypeError.
-    if (provider === null || typeof provider !== "object") {
-      continue;
-    }
-    if (!("command" in provider)) {
-      continue;
-    }
-    try {
-      await assertSecureExecCommandPath({
-        command: provider.command,
-        label: `secrets.providers.${alias}.command`,
-        trustedDirs: provider.trustedDirs,
+      // Preserve write-time manifest validation without adding executable-path
+      // policy to plugin integrations; activation owns their materialized command.
+      if (!params.operations) {
+        continue;
+      }
+      manifestRegistry ??= loadPluginMetadataSnapshot({
+        config: params.config,
+        env: process.env,
+      }).manifestRegistry;
+      const resolved = resolveSecretProviderIntegrationConfig({
+        manifestRegistry,
+        providerAlias: alias,
+        providerConfig: provider,
+        config: params.config,
+        env: process.env,
       });
-    } catch (err) {
-      errors.push({
-        kind: "schema",
-        message: `secrets.providers.${alias}: ${String(err)}`,
-      });
+      if (!resolved.ok) {
+        issues.push({ path: providerPath, message: resolved.reason });
+      }
+    } else if (isPlainRecord(provider) && "command" in provider) {
+      try {
+        await assertSecureExecCommandPath({
+          command: provider.command,
+          label: `${providerPath}.command`,
+          trustedDirs: provider.trustedDirs,
+        });
+      } catch (err) {
+        issues.push({ path: `${providerPath}.command`, message: formatErrorMessage(err) });
+      }
     }
   }
-  return errors;
+  return issues;
 }
 
 export function dedupeDryRunErrors(errors: ConfigSetDryRunError[]): ConfigSetDryRunError[] {
