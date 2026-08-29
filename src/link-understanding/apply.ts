@@ -14,13 +14,19 @@ type ApplyLinkUnderstandingResult = {
 export async function applyLinkUnderstanding(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
+  signal?: AbortSignal;
 }): Promise<ApplyLinkUnderstandingResult> {
   const result = await runLinkUnderstanding({
     cfg: params.cfg,
     ctx: params.ctx,
+    signal: params.signal,
   });
 
   if (result.outputs.length === 0) {
+    return result;
+  }
+
+  if (params.signal?.aborted) {
     return result;
   }
 

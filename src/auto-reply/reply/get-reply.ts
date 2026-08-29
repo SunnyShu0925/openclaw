@@ -25,6 +25,7 @@ import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
+import { isAbortError } from "../../infra/abort-signal.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -286,6 +287,7 @@ function withExtractedFileImages(
 async function applyLinkUnderstandingIfNeeded(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
+  signal?: AbortSignal;
 }): Promise<boolean> {
   if (!hasLinkCandidate(params.ctx)) {
     return false;
@@ -295,6 +297,9 @@ async function applyLinkUnderstandingIfNeeded(params: {
     await applyLinkUnderstanding(params);
     return true;
   } catch (err) {
+    if (isAbortError(err)) {
+      throw err;
+    }
     linkUnderstandingApplyRuntimeLoader.clear();
     logVerbose(
       `link understanding failed, proceeding with raw content: ${formatErrorMessage(err)}`,
@@ -604,6 +609,7 @@ export async function getReplyFromConfig(
       applyLinkUnderstandingIfNeeded({
         ctx: finalized,
         cfg,
+        signal: internalOptsWithSkillFilter?.abortSignal,
       }),
     );
   }
