@@ -89,6 +89,8 @@ describe("sanitizeForPlainText", () => {
     ["<b>   </b>", { style: "markdown" as const }],
     ["<strong title='empty'></strong>", { style: "markdown" as const }],
     ["<b><span></span></b>", { style: "markdown" as const }],
+    ["<b><img src='empty'/></b>", { style: "markdown" as const }],
+    ["<li><img src='empty'/></li>", { style: "markdown" as const }],
     ["<i><b></b></i>", { style: "markdown" as const }],
     ["<b><i></i></b>", { style: "markdown" as const }],
   ])("does not create visible structure from %s", (input, options) => {

@@ -17,7 +17,7 @@ const CODE_PLACEHOLDER = "\u0000p";
 const CONVERTIBLE_HTML_OPEN_TAG_RE =
   /<(b|strong|i|em|s|strike|del|code|h[1-6]|li)(?=\s|>)(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
 const EMPTY_HTML_ELEMENT_RE =
-  /<([a-z][a-z0-9_.:-]*)(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>\s*<\/\1\s*>/gi;
+  /<([a-z][a-z0-9_.:-]*)(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>(?:\s|<\/?[a-z][a-z0-9_.:-]*(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>)*<\/\1\s*>/gi;
 
 function removeMatchesUntilStable(text: string, pattern: RegExp): string {
   let previous: string;
