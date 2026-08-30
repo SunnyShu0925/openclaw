@@ -27,6 +27,10 @@ function stripRemainingHtmlTags(text: string): string {
   return current;
 }
 
+function hasVisibleContent(body: string): boolean {
+  return stripRemainingHtmlTags(body).trim().length > 0;
+}
+
 function convertHtmlOutsideCode(text: string, options: { style?: "markdown" }): string {
   const boldMarker = options.style === "markdown" ? "**" : "*";
   const strikeMarker = options.style === "markdown" ? "~~" : "~";
@@ -39,16 +43,26 @@ function convertHtmlOutsideCode(text: string, options: { style?: "markdown" }): 
     .replace(/<br\s*\/?>/gi, "\n")
     // Block elements → newlines
     .replace(/<\/?(p|div)>/gi, "\n")
-    // Bold → selected lightweight markup
-    .replace(/<(b|strong)>(.*?)<\/\1>/gi, `${boldMarker}$2${boldMarker}`)
-    // Italic → WhatsApp/Signal italic
-    .replace(/<(i|em)>(.*?)<\/\1>/gi, "_$2_")
-    // Strikethrough → selected lightweight markup
-    .replace(/<(s|strike|del)>(.*?)<\/\1>/gi, `${strikeMarker}$2${strikeMarker}`)
-    // Inline code
-    .replace(/<code>(.*?)<\/code>/gi, "`$1`")
-    // Headings → bold text with newline
-    .replace(/<h[1-6]>(.*?)<\/h[1-6]>/gi, `\n${boldMarker}$1${boldMarker}\n`)
+    // Bold → selected lightweight markup (skip empty elements)
+    .replace(/<(b|strong)>(.*?)<\/\1>/gi, (_match, _tag, body: string) =>
+      hasVisibleContent(body) ? `${boldMarker}${body}${boldMarker}` : "",
+    )
+    // Italic → WhatsApp/Signal italic (skip empty elements)
+    .replace(/<(i|em)>(.*?)<\/\1>/gi, (_match, _tag, body: string) =>
+      hasVisibleContent(body) ? `_${body}_` : "",
+    )
+    // Strikethrough → selected lightweight markup (skip empty elements)
+    .replace(/<(s|strike|del)>(.*?)<\/\1>/gi, (_match, _tag, body: string) =>
+      hasVisibleContent(body) ? `${strikeMarker}${body}${strikeMarker}` : "",
+    )
+    // Inline code (skip empty elements)
+    .replace(/<code>(.*?)<\/code>/gi, (_match, body: string) =>
+      hasVisibleContent(body) ? `\`${body}\`` : "",
+    )
+    // Headings → bold text with newline (skip empty elements)
+    .replace(/<h[1-6]>(.*?)<\/h[1-6]>/gi, (_match, body: string) =>
+      hasVisibleContent(body) ? `\n${boldMarker}${body}${boldMarker}\n` : "",
+    )
     // List items → bullet points
     .replace(/<li>(.*?)<\/li>/gi, "• $1\n");
 
