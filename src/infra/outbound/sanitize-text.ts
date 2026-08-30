@@ -16,8 +16,9 @@ const CODE_PLACEHOLDER = "\u0000p";
 // Quoted attribute values may contain `>`; normalize convertible openers without leaking attribute text.
 const CONVERTIBLE_HTML_OPEN_TAG_RE =
   /<(b|strong|i|em|s|strike|del|code|h[1-6]|li)(?=\s|>)(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
+// br, p, and div own line structure, so they stay outside the inert-tree removal pass.
 const EMPTY_HTML_ELEMENT_RE =
-  /<([a-z][a-z0-9_.:-]*)(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>(?:\s|<\/?[a-z][a-z0-9_.:-]*(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>)*<\/\1\s*>/gi;
+  /<((?!(?:br|p|div)(?=[\s>]))[a-z][a-z0-9_.:-]*)(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>(?:[^\S\r\n\u2028\u2029]|<(?!\/?(?:br|p|div)(?=[\s/>]))\/?[a-z][a-z0-9_.:-]*(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>)*<\/\1\s*>/gi;
 
 function removeMatchesUntilStable(text: string, pattern: RegExp): string {
   let previous: string;

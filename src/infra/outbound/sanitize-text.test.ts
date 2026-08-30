@@ -105,6 +105,21 @@ describe("sanitizeForPlainText", () => {
     ).toBe("before\n\nafter");
   });
 
+  it.each([
+    ["<b><br></b>", "\n"],
+    ["<b>\n</b>", "\n"],
+    ["<b>\r\n</b>", "\r\n"],
+    ["<p></p>", "\n\n"],
+    ["<div></div>", "\n\n"],
+    ["<p><br></p>", "\n\n"],
+  ])("preserves structural breaks in %s", (input, expected) => {
+    expect(sanitizeForPlainText(input)).toBe(expected);
+  });
+
+  it("preserves a wrapped line break between visible text", () => {
+    expect(sanitizeForPlainText("before<b>\n</b>after")).toBe("before\nafter");
+  });
+
   // --- tag stripping ------------------------------------------------------
 
   it("strips unknown/remaining tags", () => {
