@@ -82,6 +82,23 @@ export function createResult(plugin = createPlugin()): PluginListResult {
   return { plugins: [plugin], diagnostics: [], mutationAllowed: true };
 }
 
+export function createSearchResult(
+  overrides: Partial<PluginSearchResult> = {},
+  index = 0,
+): PluginSearchResult {
+  return {
+    score: 1,
+    package: {
+      name: `plugin-${index}`,
+      displayName: `Plugin ${index}`,
+      family: "code-plugin",
+      channel: "community",
+      isOfficial: false,
+    },
+    ...overrides,
+  };
+}
+
 export function createInspectResult(
   overrides: Partial<PluginsInspectResult> = {},
 ): PluginsInspectResult {

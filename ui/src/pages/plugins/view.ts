@@ -1006,20 +1006,32 @@ function renderClawHubGroup(props: PluginsViewProps) {
     return nothing;
   }
   let body: TemplateResult;
-  if (props.searchLoading || (!props.searchResults && !props.searchError)) {
-    body = html`<div class="plugins-search-state" role="status">
-      ${t("pluginsPage.searching")}
-    </div>`;
-  } else if (props.searchError) {
+  if (props.searchError) {
     body = html`<div class="plugins-search-state plugins-search-state--error" role="alert">
       ${props.searchError}
     </div>`;
-  } else if (props.searchResults && props.searchResults.length === 0) {
-    body = html`${renderSettingsEmpty(t("pluginsPage.noClawHubResultsBody", { query }))}`;
   } else {
+    // One stable status owner transitions from pending to the completion text, so the
+    // node that announced "Searching ClawHub…" stays mounted and only its text changes.
+    const results = props.searchResults ?? [];
+    const isComplete = !props.searchLoading && props.searchResults !== null && !props.searchError;
+    const statusText =
+      props.searchLoading || (!props.searchResults && !props.searchError)
+        ? t("pluginsPage.searching")
+        : results.length === 0
+          ? t("pluginsPage.noClawHubResultsBody", { query })
+          : t(
+              results.length === 1
+                ? "pluginsPage.searchResultCountOne"
+                : "pluginsPage.searchResultCount",
+              { count: String(results.length) },
+            );
+    const statusClass =
+      isComplete && results.length === 0 ? "settings-empty" : "plugins-search-state";
     body = html`
+      <div class=${statusClass} role="status" aria-live="polite">${statusText}</div>
       ${repeat(
-        props.searchResults ?? [],
+        results,
         (item) => item.package.name,
         (item) => renderClawHubResult(item, props),
       )}

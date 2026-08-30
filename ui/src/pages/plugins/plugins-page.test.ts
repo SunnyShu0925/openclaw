@@ -3,6 +3,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError } from "../../api/gateway.ts";
+import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { i18n } from "../../i18n/index.ts";
@@ -24,6 +25,7 @@ import {
   createPluginsRouteLocation,
   createResult,
   createRuntimeConfigHarness,
+  createSearchResult,
   deferred,
   mountPage,
   resetPluginsPageTestState,
@@ -37,6 +39,19 @@ function clickHubTab(page: HTMLElement, tab: "installed" | "discover" | "skills"
   page
     .querySelector(`#plugins-tab-${tab}`)
     ?.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true }));
+}
+
+async function mountClawHubSearchPage(client: GatewayBrowserClient) {
+  const harness = createGateway(client);
+  const { page } = await mountPage(
+    createContext(harness.gateway),
+    createPluginsRouteData(
+      harness.gateway,
+      createResult(),
+      createPluginsRouteLocation("/settings/plugins/discover"),
+    ),
+  );
+  return page;
 }
 
 describe("PluginsPage", () => {
@@ -349,8 +364,7 @@ describe("PluginsPage", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(request).toHaveBeenCalledTimes(2);
 
-    const latest: PluginSearchResult = {
-      score: 1,
+    const latest = createSearchResult({
       package: {
         name: "latest-plugin",
         displayName: "Latest Plugin",
@@ -358,14 +372,52 @@ describe("PluginsPage", () => {
         channel: "community",
         isOfficial: false,
       },
-    };
+    });
     second.resolve({ results: [latest] });
     await vi.waitFor(() => expect(page.searchResults).toEqual([latest]));
     first.resolve({ results: [] });
     await Promise.resolve();
 
     expect(page.searchResults).toEqual([latest]);
+    expect(page.querySelector('[role="status"][aria-live="polite"]')?.textContent).toContain(
+      "1 result",
+    );
   });
+
+  it.each([
+    { resultCount: 0, expectedText: "ClawHub has no results" },
+    { resultCount: 1, expectedText: "1 result" },
+    { resultCount: 3, expectedText: "3 results" },
+  ])(
+    "announces ClawHub search completion with a live region for $resultCount result(s)",
+    async ({ resultCount, expectedText }) => {
+      vi.useFakeTimers();
+      const results = Array.from({ length: resultCount }, (_, index) =>
+        createSearchResult({}, index),
+      );
+      const pending = deferred<{ results: PluginSearchResult[] }>();
+      const { client } = createClient(async (method) =>
+        method === "plugins.search" ? pending.promise : Promise.reject(new Error(method)),
+      );
+      const page = await mountClawHubSearchPage(client);
+      const search = page.querySelector<HTMLInputElement>("#plugins-global-search")!;
+      search.value = resultCount === 0 ? "zzz-no-match" : "workboard";
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(300);
+      const pendingNode = page.querySelector('[role="status"][aria-live="polite"]');
+      pending.resolve({ results });
+
+      await vi.waitFor(() =>
+        expect(page.querySelector('[role="status"][aria-live="polite"]')?.textContent).toContain(
+          expectedText,
+        ),
+      );
+      expect(page.querySelector('[role="status"][aria-live="polite"]')).toBe(pendingNode);
+      expect(page.querySelector('[role="status"][aria-live="polite"]')?.getAttribute("class")).toBe(
+        resultCount === 0 ? "settings-empty" : "plugins-search-state",
+      );
+    },
+  );
 
   it("refreshes plugins and runtime config without discarding a pending config draft", async () => {
     const enabledPlugin = createPlugin({ enabled: true, state: "enabled" });

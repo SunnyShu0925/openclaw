@@ -3399,6 +3399,8 @@ export const en: TranslationMap = {
     searching: "Searching ClawHub…",
     fromClawHub: "From ClawHub",
     noClawHubResultsBody: "ClawHub has no results for “{query}”.",
+    searchResultCountOne: "{count} result",
+    searchResultCount: "{count} results",
     noDiscoverMatchTitle: "Nothing to discover matches",
     featuredGroup: "Featured",
     officialGroup: "Official plugins",
