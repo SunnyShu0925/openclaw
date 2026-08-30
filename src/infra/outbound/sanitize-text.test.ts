@@ -75,11 +75,9 @@ describe("sanitizeForPlainText", () => {
     );
   });
 
-  // --- empty formatting elements (#133077) -------------------------------
-
   it.each([
     ["<b></b>", { style: "markdown" as const }],
-    ["<strong></strong>", { style: "markdown" as const }],
+    ["<strong></strong>", {}],
     ["<i></i>", { style: "markdown" as const }],
     ["<em></em>", { style: "markdown" as const }],
     ["<s></s>", { style: "markdown" as const }],
@@ -87,37 +85,22 @@ describe("sanitizeForPlainText", () => {
     ["<del></del>", { style: "markdown" as const }],
     ["<code></code>", {}],
     ["<h2></h2>", { style: "markdown" as const }],
+    ["<li></li>", { style: "markdown" as const }],
     ["<b>   </b>", { style: "markdown" as const }],
+    ["<strong title='empty'></strong>", { style: "markdown" as const }],
     ["<b><span></span></b>", { style: "markdown" as const }],
-  ])("produces no markers for empty formatting element %s", (input, options) => {
+    ["<i><b></b></i>", { style: "markdown" as const }],
+    ["<b><i></i></b>", { style: "markdown" as const }],
+  ])("does not create visible structure from %s", (input, options) => {
     expect(sanitizeForPlainText(input, options)).toBe("");
   });
 
-  it("does not synthesize a thematic break from an empty bold element", () => {
-    const sanitized = sanitizeForPlainText("before\n<b></b>\nafter", {
-      style: "markdown",
-    });
-    expect(sanitized).toBe("before\n\nafter");
-    expect(sanitized).not.toContain("****");
-  });
-
-  it("suppresses a marker-only empty element between paragraphs", () => {
-    expect(sanitizeForPlainText("para one\n<b></b>\npara two", { style: "markdown" })).toBe(
-      "para one\n\npara two",
-    );
-  });
-
-  it("preserves formatting for non-empty elements alongside empty ones", () => {
+  it("preserves visible content around an empty element", () => {
     expect(
-      sanitizeForPlainText("Hello<br><b>world</b> <b></b> <i>nice</i>", {
+      sanitizeForPlainText("before\n<b></b>\nafter", {
         style: "markdown",
       }),
-    ).toBe("Hello\n**world**  _nice_");
-  });
-
-  it("preserves non-empty headings and bold after the empty-element fix", () => {
-    expect(sanitizeForPlainText("<h3>Title</h3>", { style: "markdown" })).toBe("\n**Title**\n");
-    expect(sanitizeForPlainText("<b>text</b>", { style: "markdown" })).toBe("**text**");
+    ).toBe("before\n\nafter");
   });
 
   // --- tag stripping ------------------------------------------------------

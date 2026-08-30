@@ -16,57 +16,42 @@ const CODE_PLACEHOLDER = "\u0000p";
 // Quoted attribute values may contain `>`; normalize convertible openers without leaking attribute text.
 const CONVERTIBLE_HTML_OPEN_TAG_RE =
   /<(b|strong|i|em|s|strike|del|code|h[1-6]|li)(?=\s|>)(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
+const EMPTY_HTML_ELEMENT_RE =
+  /<([a-z][a-z0-9_.:-]*)(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>\s*<\/\1\s*>/gi;
 
-function stripRemainingHtmlTags(text: string): string {
+function removeMatchesUntilStable(text: string, pattern: RegExp): string {
   let previous: string;
   let current = text;
   do {
     previous = current;
-    current = current.replace(HTML_TAG_RE, "");
+    current = current.replace(pattern, "");
   } while (current !== previous);
   return current;
-}
-
-function hasVisibleContent(body: string): boolean {
-  return stripRemainingHtmlTags(body).trim().length > 0;
 }
 
 function convertHtmlOutsideCode(text: string, options: { style?: "markdown" }): string {
   const boldMarker = options.style === "markdown" ? "**" : "*";
   const strikeMarker = options.style === "markdown" ? "~~" : "~";
-  const converted = text
-    // Preserve angle-bracket autolinks as plain URLs before tag stripping.
-    .replace(/<((?:https?:\/\/|mailto:)[^<>\s]+)>/gi, "$1")
-    // Normalize attributes once; conversions below only need exact bare tag names.
-    .replace(CONVERTIBLE_HTML_OPEN_TAG_RE, "<$1>")
-    // Line breaks
+  // Remove inner elements first so an empty nested tree cannot synthesize markers.
+  const converted = removeMatchesUntilStable(
+    text
+      // Preserve angle-bracket autolinks as plain URLs before tag stripping.
+      .replace(/<((?:https?:\/\/|mailto:)[^<>\s]+)>/gi, "$1")
+      // Normalize attributes once; conversions below only need exact bare tag names.
+      .replace(CONVERTIBLE_HTML_OPEN_TAG_RE, "<$1>"),
+    EMPTY_HTML_ELEMENT_RE,
+  )
     .replace(/<br\s*\/?>/gi, "\n")
     // Block elements → newlines
     .replace(/<\/?(p|div)>/gi, "\n")
-    // Bold → selected lightweight markup (skip empty elements)
-    .replace(/<(b|strong)>(.*?)<\/\1>/gi, (_match, _tag, body: string) =>
-      hasVisibleContent(body) ? `${boldMarker}${body}${boldMarker}` : "",
-    )
-    // Italic → WhatsApp/Signal italic (skip empty elements)
-    .replace(/<(i|em)>(.*?)<\/\1>/gi, (_match, _tag, body: string) =>
-      hasVisibleContent(body) ? `_${body}_` : "",
-    )
-    // Strikethrough → selected lightweight markup (skip empty elements)
-    .replace(/<(s|strike|del)>(.*?)<\/\1>/gi, (_match, _tag, body: string) =>
-      hasVisibleContent(body) ? `${strikeMarker}${body}${strikeMarker}` : "",
-    )
-    // Inline code (skip empty elements)
-    .replace(/<code>(.*?)<\/code>/gi, (_match, body: string) =>
-      hasVisibleContent(body) ? `\`${body}\`` : "",
-    )
-    // Headings → bold text with newline (skip empty elements)
-    .replace(/<h[1-6]>(.*?)<\/h[1-6]>/gi, (_match, body: string) =>
-      hasVisibleContent(body) ? `\n${boldMarker}${body}${boldMarker}\n` : "",
-    )
-    // List items → bullet points
+    .replace(/<(b|strong)>(.*?)<\/\1>/gi, `${boldMarker}$2${boldMarker}`)
+    .replace(/<(i|em)>(.*?)<\/\1>/gi, "_$2_")
+    .replace(/<(s|strike|del)>(.*?)<\/\1>/gi, `${strikeMarker}$2${strikeMarker}`)
+    .replace(/<code>(.*?)<\/code>/gi, "`$1`")
+    .replace(/<h[1-6]>(.*?)<\/h[1-6]>/gi, `\n${boldMarker}$1${boldMarker}\n`)
     .replace(/<li>(.*?)<\/li>/gi, "• $1\n");
 
-  return stripRemainingHtmlTags(converted).replace(/\n{3,}/g, "\n\n");
+  return removeMatchesUntilStable(converted, HTML_TAG_RE).replace(/\n{3,}/g, "\n\n");
 }
 
 /**
