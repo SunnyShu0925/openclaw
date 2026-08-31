@@ -1263,4 +1263,32 @@ describe("gateway-status command", () => {
     expect(call.identity).toBe("/tmp/explicit_id");
   });
 });
+
+describe("gateway status timeout validation", () => {
+  it.each([
+    { label: "empty", timeout: "" },
+    { label: "whitespace", timeout: "   " },
+  ])("rejects a $label --timeout before any probe starts", async ({ timeout }) => {
+    const { runtime } = createRuntimeCapture();
+    probeGateway.mockClear();
+
+    await expect(runGatewayStatus(runtime, { timeout, json: true })).rejects.toThrow(
+      "Invalid --timeout",
+    );
+
+    expect(probeGateway).not.toHaveBeenCalled();
+  });
+
+  it("accepts an omitted --timeout and uses the default", async () => {
+    const { runtime } = createRuntimeCapture();
+    probeGateway.mockClear();
+
+    // Omitted timeout should not throw and should reach the probe stage.
+    // runGatewayStatus requires a timeout string in its type, so pass undefined
+    // directly to gatewayStatusCommand to simulate an omitted flag.
+    await gatewayStatusCommand({ timeout: undefined, json: true }, asRuntimeEnv(runtime));
+
+    expect(probeGateway).toHaveBeenCalled();
+  });
+});
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
