@@ -10,6 +10,7 @@ import {
   jsdomOptimizedDeps,
   nonIsolatedRunnerPath,
   resolveDefaultVitestPool,
+  sharedVitestConfig,
 } from "../test/vitest/vitest.shared.config.ts";
 import { uiIsolatedTestFiles } from "../test/vitest/vitest.ui-isolated-paths.mjs";
 import { controlUiLocaleModulesPlugin } from "./config/control-ui-locales.ts";
@@ -70,6 +71,10 @@ const workspaceSourceAliases = [
     replacement: path.resolve(repoRoot, "packages/session-url-contract/src/parse.ts"),
   },
   {
+    find: "@openclaw/session-url-contract/share-build",
+    replacement: path.resolve(repoRoot, "packages/session-url-contract/src/share-build.ts"),
+  },
+  {
     find: "@openclaw/session-url-contract",
     replacement: path.resolve(repoRoot, "packages/session-url-contract/src/index.ts"),
   },
@@ -97,6 +102,8 @@ const sharedUiTestConfig = {
 const nodeDrivenBrowserLayoutTests = [
   "src/ui/chat/sidebar-session-picker.browser.test.ts",
   "src/pages/chat/chat-responsive.browser.test.ts",
+  "src/pages/chat/chat-working-indicator.browser.test.ts",
+  "src/pages/chat/chat-composer-undo-redo.browser.test.ts",
   "src/pages/chat/components/chat-swarm-progress.browser.test.ts",
   "src/components/form-controls.browser.test.ts",
   "src/components/sidebar-footer-layout.browser.test.ts",
@@ -105,6 +112,7 @@ const nodeDrivenBrowserLayoutTests = [
   "src/styles/cursor-policy.browser.test.ts",
   "src/styles/chat-file-link-presentation.browser.test.ts",
   "src/styles/chat-github-link-presentation.browser.test.ts",
+  "src/styles/shimmer.browser.test.ts",
   "src/styles/sr-only.browser.test.ts",
 ] as const;
 const mockRegistryUnitTests = [
@@ -151,6 +159,7 @@ export default defineConfig({
   },
   test: {
     ...sharedUiTestConfig,
+    reporters: sharedVitestConfig.test.reporters,
     projects: [
       defineProject({
         plugins: [controlUiLocaleModulesPlugin()],

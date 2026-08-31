@@ -300,15 +300,22 @@ export async function createTargetViaCdp(opts: {
           if (!targetId) {
             throw new Error("CDP Target.createTarget returned no targetId");
           }
-          opts.signal?.throwIfAborted();
-          const finalUrl = await prepareCdpTargetSession(
-            send,
-            targetId,
-            opts.waitForNavigationResult ? opts.url : undefined,
-            opts.signal,
-          );
-          opts.signal?.throwIfAborted();
-          return finalUrl ? { targetId, finalUrl } : { targetId };
+          try {
+            opts.signal?.throwIfAborted();
+            const finalUrl = await prepareCdpTargetSession(
+              send,
+              targetId,
+              opts.waitForNavigationResult ? opts.url : undefined,
+              opts.signal,
+            );
+            opts.signal?.throwIfAborted();
+            return finalUrl ? { targetId, finalUrl } : { targetId };
+          } catch (error) {
+            // The caller cannot compensate until it receives this id. Keep cleanup
+            // on the creating socket, independent of cancellation, before releasing it.
+            await send("Target.closeTarget", { targetId }).catch(() => {});
+            throw error;
+          }
         },
         {
           commandTimeoutMs: opts.timeouts?.httpTimeoutMs ?? 5000,
@@ -816,8 +823,6 @@ async function buildCdpRoleSnapshot(params: {
   }
 
   const counts = new Map<string, number>();
-  const refsByKey = new Map<string, string[]>();
-  const nodesByRef = new Map<string, RoleTreeNode>();
   const refs: Record<string, CdpRoleRef> = {};
   for (const node of tree) {
     const role = node.role.toLowerCase();
@@ -836,32 +841,17 @@ async function buildCdpRoleSnapshot(params: {
     params.nextRef.value += 1;
     node.ref = ref;
     node.nth = nth;
-    const refsForKey = refsByKey.get(key);
-    if (refsForKey) {
-      refsForKey.push(ref);
-    } else {
-      refsByKey.set(key, [ref]);
-    }
-    nodesByRef.set(ref, node);
     refs[ref] = {
       role,
       ...(node.name ? { name: node.name } : {}),
-      ...(nth > 0 ? { nth } : {}),
+      nth,
       ...(node.backendDOMNodeId ? { backendDOMNodeId: node.backendDOMNodeId } : {}),
       ...(params.frameId ? { frameId: params.frameId } : {}),
     };
   }
-  for (const refList of refsByKey.values()) {
-    if (refList.length > 1) {
-      continue;
-    }
-    const ref = refList[0];
-    if (ref) {
-      delete refs[ref]?.nth;
-      const node = nodesByRef.get(ref);
-      if (node) {
-        delete node.nth;
-      }
+  for (const node of tree) {
+    if (node.ref && counts.get(`${node.role.toLowerCase()}:${node.name}`) === 1) {
+      delete refs[node.ref]?.nth;
     }
   }
 
@@ -927,6 +917,7 @@ export async function snapshotRoleViaCdp(opts: {
   lookup?: typeof dnsLookupCb;
   options?: CdpRoleSnapshotOptions;
   urls?: boolean;
+  recurseIframes?: boolean;
   timeoutMs?: number;
   maxChars?: number;
   delta?: { mode: RoleSnapshotIdentityMode; previousKeys?: ReadonlySet<string> };
@@ -945,7 +936,7 @@ export async function snapshotRoleViaCdp(opts: {
         send,
         options: opts.options ?? {},
         urls: opts.urls,
-        recurseIframes: true,
+        recurseIframes: opts.recurseIframes ?? true,
         nextRef: { value: 1 },
       });
       const renderedSnapshot =
