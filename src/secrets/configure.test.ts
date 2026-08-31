@@ -12,6 +12,7 @@ const loadPersistedSharedAuthProfileStoreMock = vi.hoisted(() => vi.fn());
 const resolveSharedAuthStoreOwnershipMock = vi.hoisted(() => vi.fn());
 const resolveSharedAuthStorePathMock = vi.hoisted(() => vi.fn());
 const resolveAuthProfileDatabasePathMock = vi.hoisted(() => vi.fn());
+const resolveAgentDirMock = vi.hoisted(() => vi.fn());
 const loadPluginManifestRegistryMock = vi.hoisted(() => vi.fn());
 const runSecretsApplyMock = vi.hoisted(() => vi.fn());
 const tempDirs: string[] = [];
@@ -40,6 +41,19 @@ vi.mock("../agents/auth-profiles/path-resolve.js", () => ({
   resolveSharedAuthStorePath: (...args: unknown[]) => resolveSharedAuthStorePathMock(...args),
   resolveSharedAuthPath: () => "/fake/shared-auth.json",
 }));
+
+vi.mock("../agents/auth-profiles/sqlite.js", () => ({
+  resolveAuthProfileDatabasePath: (...args: unknown[]) =>
+    resolveAuthProfileDatabasePathMock(...args),
+}));
+
+vi.mock("../agents/agent-scope.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents/agent-scope.js")>();
+  return {
+    ...actual,
+    resolveAgentDir: (...args: unknown[]) => resolveAgentDirMock(...args),
+  };
+});
 
 vi.mock("../plugins/manifest-registry.js", () => ({
   loadPluginManifestRegistryCore: (...args: unknown[]) => loadPluginManifestRegistryMock(...args),
@@ -77,6 +91,8 @@ describe("runSecretsConfigureInteractive", () => {
     resolveSharedAuthStorePathMock.mockReturnValue("/fake/shared-auth.sqlite");
     resolveAuthProfileDatabasePathMock.mockReset();
     resolveAuthProfileDatabasePathMock.mockReturnValue("/fake/agent-auth.sqlite");
+    resolveAgentDirMock.mockReset();
+    resolveAgentDirMock.mockImplementation((cfg, agentId, env) => `/fake/agents/${agentId}/agent`);
     loadPluginManifestRegistryMock.mockReset();
     loadPluginManifestRegistryMock.mockReturnValue({ diagnostics: [], plugins: [] });
     runSecretsApplyMock.mockReset();
@@ -485,4 +501,98 @@ it("dedupes the agent store when it resolves to the same database as the shared 
     opt?.label?.includes(`${sharedProfileId}.key`),
   ).length;
   expect(sharedCandidateCount).toBe(1);
+});
+
+it("resolves the agent store from the injected environment, not ambient process.env", async () => {
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+
+  const injectedEnv = {
+    OPENCLAW_STATE_DIR: "/fake/injected-root",
+    OPENAI_API_KEY: "test-key",
+  } as NodeJS.ProcessEnv;
+  const sharedProfileId = "openai:shared-injected";
+  resolveSharedAuthStoreOwnershipMock.mockReturnValue({ location: "state-db" });
+  loadPersistedSharedAuthProfileStoreMock.mockReturnValue({
+    version: 1,
+    profiles: {
+      [sharedProfileId]: {
+        provider: "openai",
+        credential: { type: "api_key", key: "shared-key" },
+      },
+    },
+  });
+  // Distinct shared/agent paths so the agent scope is not deduped away.
+  resolveSharedAuthStorePathMock.mockReturnValue("/fake/injected-root/shared.sqlite");
+  resolveAuthProfileDatabasePathMock.mockReturnValue("/fake/injected-root/agent.sqlite");
+  // Capture the env argument passed to resolveAgentDir; it must be the
+  // injected env, not ambient process.env.
+  resolveAgentDirMock.mockImplementation(
+    (cfg: unknown, agentId: string, env?: NodeJS.ProcessEnv) => {
+      return path.join(env?.OPENCLAW_STATE_DIR ?? "/AMBIENT", "agents", agentId, "agent");
+    },
+  );
+
+  type SelectOption = { value: string; hint?: string; label?: string };
+  textMock.mockReset();
+  textMock.mockImplementation(async (params: { message?: string }) => {
+    if (params.message?.toLowerCase().includes("provider")) {
+      return "openai";
+    }
+    return "OPENAI_API_KEY";
+  });
+  selectMock.mockImplementation(async (params: { options: SelectOption[] }) => {
+    const authProfileOptions = params.options.filter((opt) => opt.hint === "auth profile store");
+    if (authProfileOptions.length > 0) {
+      return authProfileOptions[0]!.value;
+    }
+    if (params.options.length > 0 && typeof params.options[0]?.value === "string") {
+      return params.options[0]!.value;
+    }
+    return "__done__";
+  });
+  confirmMock.mockResolvedValue(false);
+
+  createSecretsConfigIOMock.mockReturnValue({
+    readConfigFileSnapshotForWrite: async () => ({
+      snapshot: {
+        valid: true,
+        config: {
+          secrets: {
+            providers: {
+              openai: { source: "env" },
+            },
+          },
+        },
+        resolved: {
+          secrets: {
+            providers: {
+              openai: { source: "env" },
+            },
+          },
+        },
+      },
+    }),
+  });
+
+  await runSecretsConfigureInteractive({
+    providersOnly: false,
+    skipProviderSetup: true,
+    env: injectedEnv,
+  });
+
+  // resolveAgentDir must have received the injected env (third argument)
+  // in at least one call, proving agent-store discovery uses the same
+  // caller-provided root as shared-store discovery.
+  const callWithInjectedEnv = resolveAgentDirMock.mock.calls.find(
+    (call) => call[2] === injectedEnv,
+  );
+  expect(callWithInjectedEnv).toBeDefined();
+  // No call should fall back to ambient process.env as the env argument.
+  const ambientCalls = resolveAgentDirMock.mock.calls.filter(
+    (call) => call[2] === undefined || call[2] === process.env,
+  );
+  expect(ambientCalls).toHaveLength(0);
 });

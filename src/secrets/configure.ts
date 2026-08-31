@@ -337,7 +337,7 @@ function loadAuthProfileStoreForConfigure(params: {
   if (sharedStore && Object.keys(sharedStore.profiles).length > 0) {
     scopes.push({ store: sharedStore, authProfileStore: "shared" });
   }
-  const agentDir = resolveAgentDir(params.config, params.agentId);
+  const agentDir = resolveAgentDir(params.config, params.agentId, params.env);
   const agentDatabasePath = path.resolve(resolveAuthProfileDatabasePath(agentDir));
   // When the selected agent's local store resolves to the same database as the
   // shared store (e.g. the main agent under legacy-main ownership), skip the
