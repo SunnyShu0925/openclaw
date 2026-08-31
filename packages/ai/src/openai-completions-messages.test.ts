@@ -133,3 +133,237 @@ describe("convertMessages assistant text replay", () => {
     expect(normalizedToolResultId).toBe(prefix);
   });
 });
+
+describe("convertMessages parallel tool-result image ownership", () => {
+  const imageModel: Model<"openai-completions"> = {
+    ...model,
+    input: ["text", "image"],
+  };
+
+  function makeToolCallAssistant(callIds: string[], toolNames: string[]): AssistantMessage {
+    return {
+      role: "assistant",
+      api: imageModel.api,
+      provider: imageModel.provider,
+      model: imageModel.id,
+      content: callIds.map((id, idx) => ({
+        type: "toolCall" as const,
+        id,
+        name: toolNames[idx] ?? id,
+        arguments: {},
+      })),
+      usage: emptyUsage,
+      stopReason: "toolUse",
+      timestamp: 1,
+    };
+  }
+
+  function makeImageToolResult(
+    callId: string,
+    toolName: string,
+    images: Array<{ mimeType: string; data: string }>,
+  ) {
+    return {
+      role: "toolResult" as const,
+      toolCallId: callId,
+      toolName,
+      content: images.map((img) => ({
+        type: "image" as const,
+        mimeType: img.mimeType,
+        data: img.data,
+      })),
+      isError: false,
+      timestamp: 2,
+    };
+  }
+
+  it("distinguishes image ownership between different parallel result partitions", () => {
+    const imgA = { mimeType: "image/png", data: "AAAA" };
+    const imgB = { mimeType: "image/png", data: "BBBB" };
+    const imgC = { mimeType: "image/png", data: "CCCC" };
+
+    // Partition P: call_a=[A], call_b=[B,C]
+    const contextP: Context = {
+      messages: [
+        makeToolCallAssistant(["call_a", "call_b"], ["screenshot", "camera"]),
+        makeImageToolResult("call_a", "screenshot", [imgA]),
+        makeImageToolResult("call_b", "camera", [imgB, imgC]),
+      ],
+    };
+
+    // Partition Q: call_a=[A,B], call_b=[C]
+    const contextQ: Context = {
+      messages: [
+        makeToolCallAssistant(["call_a", "call_b"], ["screenshot", "camera"]),
+        makeImageToolResult("call_a", "screenshot", [imgA, imgB]),
+        makeImageToolResult("call_b", "camera", [imgC]),
+      ],
+    };
+
+    const convertedP = convertMessages(
+      imageModel,
+      contextP,
+      resolveOpenAICompletionsCompat(imageModel),
+    );
+    const convertedQ = convertMessages(
+      imageModel,
+      contextQ,
+      resolveOpenAICompletionsCompat(imageModel),
+    );
+
+    const userMsgP = convertedP.find((m) => m.role === "user" && Array.isArray(m.content));
+    const userMsgQ = convertedQ.find((m) => m.role === "user" && Array.isArray(m.content));
+
+    // The two partitions must produce different content (ownership is distinguishable)
+    expect(JSON.stringify(userMsgP?.content)).not.toBe(JSON.stringify(userMsgQ?.content));
+
+    // Partition P: first group has 1 image from screenshot, second has 2 from camera
+    const contentP = userMsgP?.content as Array<{
+      type: string;
+      text?: string;
+      image_url?: { url: string };
+    }>;
+    expect(contentP).toEqual([
+      { type: "text", text: "Image(s) from screenshot (call call_a):" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      { type: "text", text: "Image(s) from camera (call call_b):" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
+      { type: "image_url", image_url: { url: "data:image/png;base64,CCCC" } },
+    ]);
+
+    // Partition Q: first group has 2 images from screenshot, second has 1 from camera
+    const contentQ = userMsgQ?.content as Array<{
+      type: string;
+      text?: string;
+      image_url?: { url: string };
+    }>;
+    expect(contentQ).toEqual([
+      { type: "text", text: "Image(s) from screenshot (call call_a):" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
+      { type: "text", text: "Image(s) from camera (call call_b):" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,CCCC" } },
+    ]);
+  });
+
+  it("labels single tool-result images with tool name and call id", () => {
+    const context: Context = {
+      messages: [
+        makeToolCallAssistant(["call_x"], ["screenshot"]),
+        makeImageToolResult("call_x", "screenshot", [{ mimeType: "image/png", data: "aW1n" }]),
+      ],
+    };
+
+    const converted = convertMessages(
+      imageModel,
+      context,
+      resolveOpenAICompletionsCompat(imageModel),
+    );
+
+    const userMsg = converted.find((m) => m.role === "user" && Array.isArray(m.content));
+    expect(userMsg?.content).toEqual([
+      { type: "text", text: "Image(s) from screenshot (call call_x):" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,aW1n" } },
+    ]);
+  });
+
+  it("does not emit a user message when tool results have no images", () => {
+    const context: Context = {
+      messages: [
+        makeToolCallAssistant(["call_a", "call_b"], ["lookup", "search"]),
+        {
+          role: "toolResult",
+          toolCallId: "call_a",
+          toolName: "lookup",
+          content: [{ type: "text", text: "found it" }],
+          isError: false,
+          timestamp: 2,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "call_b",
+          toolName: "search",
+          content: [{ type: "text", text: "no results" }],
+          isError: false,
+          timestamp: 3,
+        },
+      ],
+    };
+
+    const converted = convertMessages(
+      imageModel,
+      context,
+      resolveOpenAICompletionsCompat(imageModel),
+    );
+
+    const userMsgs = converted.filter((m) => m.role === "user");
+    expect(userMsgs).toHaveLength(0);
+  });
+
+  it("handles mixed text and image tool results", () => {
+    const context: Context = {
+      messages: [
+        makeToolCallAssistant(["call_a"], ["screenshot"]),
+        {
+          role: "toolResult",
+          toolCallId: "call_a",
+          toolName: "screenshot",
+          content: [
+            { type: "text", text: "Captured screen region" },
+            { type: "image", mimeType: "image/png", data: "aW1n" },
+          ],
+          isError: false,
+          timestamp: 2,
+        },
+      ],
+    };
+
+    const converted = convertMessages(
+      imageModel,
+      context,
+      resolveOpenAICompletionsCompat(imageModel),
+    );
+
+    // Tool message gets the text content
+    const toolMsg = converted.find((m) => m.role === "tool");
+    expect(toolMsg).toMatchObject({
+      role: "tool",
+      content: "Captured screen region",
+      tool_call_id: "call_a",
+    });
+
+    // User message gets the labeled image
+    const userMsg = converted.find((m) => m.role === "user" && Array.isArray(m.content));
+    expect(userMsg?.content).toEqual([
+      { type: "text", text: "Image(s) from screenshot (call call_a):" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,aW1n" } },
+    ]);
+  });
+
+  it("bounds oversized tool name and call ID in provenance labels", () => {
+    const longName = "x".repeat(200);
+    const longCallId = "y".repeat(200);
+    const context: Context = {
+      messages: [
+        makeToolCallAssistant([longCallId], [longName]),
+        makeImageToolResult(longCallId, longName, [{ mimeType: "image/png", data: "aW1n" }]),
+      ],
+    };
+
+    const converted = convertMessages(
+      imageModel,
+      context,
+      resolveOpenAICompletionsCompat(imageModel),
+    );
+
+    const userMsg = converted.find((m) => m.role === "user" && Array.isArray(m.content));
+    const content = userMsg?.content as Array<{ type: string; text?: string }>;
+    const labelText = content[0]?.text ?? "";
+
+    // Label must not contain the full 200-char strings
+    expect(labelText).not.toContain(longName);
+    expect(labelText).not.toContain(longCallId);
+    // Label must be bounded
+    expect(labelText.length).toBeLessThan(200);
+  });
+});

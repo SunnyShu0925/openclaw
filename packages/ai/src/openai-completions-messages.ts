@@ -240,7 +240,9 @@ export function convertMessages(
       }
       params.push(assistantMsg);
     } else if (msg.role === "toolResult") {
-      const imageBlocks: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+      const imageContentParts: Array<
+        ChatCompletionContentPartText | { type: "image_url"; image_url: { url: string } }
+      > = [];
       let j = i;
 
       while (j < transformedMessages.length) {
@@ -267,9 +269,19 @@ export function convertMessages(
         params.push(toolResultMsg);
 
         if (hasImages && model.input.includes("image")) {
+          const boundedToolName = sanitizeSurrogates(truncateUtf16Safe(toolMsg.toolName ?? "", 64));
+          const boundedCallId = sanitizeSurrogates(truncateUtf16Safe(toolMsg.toolCallId, 64));
+          const label = boundedToolName
+            ? `Image(s) from ${boundedToolName} (call ${boundedCallId}):`
+            : `Image(s) from tool call ${boundedCallId}:`;
+          let pushedLabel = false;
           for (const block of toolMsg.content) {
             if (isImageWithMediaPayload(block)) {
-              imageBlocks.push({
+              if (!pushedLabel) {
+                imageContentParts.push({ type: "text", text: label });
+                pushedLabel = true;
+              }
+              imageContentParts.push({
                 type: "image_url",
                 image_url: { url: `data:${block.mimeType};base64,${block.data}` },
               });
@@ -281,13 +293,13 @@ export function convertMessages(
 
       i = j - 1;
 
-      if (imageBlocks.length > 0) {
+      if (imageContentParts.length > 0) {
         if (compat.requiresAssistantAfterToolResult) {
           params.push({ role: "assistant", content: "I have processed the tool results." });
         }
         params.push({
           role: "user",
-          content: [{ type: "text", text: "Attached image(s) from tool result:" }, ...imageBlocks],
+          content: imageContentParts,
         });
         lastRole = "user";
       } else {

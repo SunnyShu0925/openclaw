@@ -1,6 +1,6 @@
 // Xai plugin module implements stream behavior.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
-import { streamSimple } from "openclaw/plugin-sdk/llm";
+import { sanitizeSurrogates, streamSimple } from "openclaw/plugin-sdk/llm";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import {
   composeProviderStreamWrappers,
@@ -9,6 +9,7 @@ import {
   createToolStreamWrapper,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { filterStringEntries } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { XAI_GROK_OAUTH_BASE_URL } from "./provider-catalog.js";
 import { isXaiProviderId } from "./provider-id.js";
 
@@ -103,6 +104,7 @@ type ReplayableInputImagePart =
 type NormalizedFunctionCallOutput = {
   normalizedItem: unknown;
   imageParts: Array<Record<string, unknown>>;
+  callId: string | undefined;
 };
 
 function isReplayableInputImagePart(
@@ -179,12 +181,12 @@ function normalizeXaiResponsesFunctionCallOutput(
   includeImages: boolean,
 ): NormalizedFunctionCallOutput {
   if (!item || typeof item !== "object") {
-    return { normalizedItem: item, imageParts: [] };
+    return { normalizedItem: item, imageParts: [], callId: undefined };
   }
 
   const itemObj = item as Record<string, unknown>;
   if (itemObj.type !== "function_call_output" || !Array.isArray(itemObj.output)) {
-    return { normalizedItem: itemObj, imageParts: [] };
+    return { normalizedItem: itemObj, imageParts: [], callId: undefined };
   }
 
   const outputParts = itemObj.output as Array<Record<string, unknown>>;
@@ -204,12 +206,15 @@ function normalizeXaiResponsesFunctionCallOutput(
   const hadNonTextParts = outputParts.some((part) => part.type !== "input_text");
   const mediaPlaceholder = describeXaiFunctionOutputMediaPlaceholder(outputParts);
 
+  const callId = typeof itemObj.call_id === "string" ? itemObj.call_id : undefined;
+
   return {
     normalizedItem: {
       ...itemObj,
       output: textOutput || mediaPlaceholder || (hadNonTextParts ? "(see attached media)" : ""),
     },
     imageParts,
+    callId,
   };
 }
 
@@ -223,22 +228,28 @@ function normalizeXaiResponsesToolResultPayload(
 
   const includeImages = supportsExplicitImageInput(model);
   const normalizedInput: unknown[] = [];
-  const collectedImageParts: Array<Record<string, unknown>> = [];
+  const imageContentParts: Array<Record<string, unknown>> = [];
 
   for (const item of payloadObj.input) {
     const normalized = normalizeXaiResponsesFunctionCallOutput(item, includeImages);
     normalizedInput.push(normalized.normalizedItem);
-    collectedImageParts.push(...normalized.imageParts);
+    if (normalized.imageParts.length > 0) {
+      const boundedCallId = sanitizeSurrogates(truncateUtf16Safe(normalized.callId ?? "", 64));
+      imageContentParts.push({
+        type: "input_text",
+        text: boundedCallId
+          ? `Image(s) from tool call ${boundedCallId}:`
+          : TOOL_RESULT_IMAGE_REPLAY_TEXT,
+      });
+      imageContentParts.push(...normalized.imageParts);
+    }
   }
 
-  if (collectedImageParts.length > 0) {
+  if (imageContentParts.length > 0) {
     normalizedInput.push({
       type: "message",
       role: "user",
-      content: [
-        { type: "input_text", text: TOOL_RESULT_IMAGE_REPLAY_TEXT },
-        ...collectedImageParts,
-      ],
+      content: imageContentParts,
     });
   }
 

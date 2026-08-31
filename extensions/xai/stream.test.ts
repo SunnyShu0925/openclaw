@@ -616,7 +616,7 @@ describe("xai stream wrappers", () => {
         type: "message",
         role: "user",
         content: [
-          { type: "input_text", text: "Attached image(s) from tool result:" },
+          { type: "input_text", text: "Image(s) from tool call call_1:" },
           {
             type: "input_image",
             detail: "auto",
@@ -659,7 +659,7 @@ describe("xai stream wrappers", () => {
         type: "message",
         role: "user",
         content: [
-          { type: "input_text", text: "Attached image(s) from tool result:" },
+          { type: "input_text", text: "Image(s) from tool call call_1:" },
           {
             type: "input_image",
             source: {
@@ -719,12 +719,13 @@ describe("xai stream wrappers", () => {
         type: "message",
         role: "user",
         content: [
-          { type: "input_text", text: "Attached image(s) from tool result:" },
+          { type: "input_text", text: "Image(s) from tool call call_1:" },
           {
             type: "input_image",
             detail: "auto",
             image_url: "data:image/png;base64,QUFBQQ==",
           },
+          { type: "input_text", text: "Image(s) from tool call call_2:" },
           {
             type: "input_image",
             detail: "auto",
@@ -733,6 +734,41 @@ describe("xai stream wrappers", () => {
         ],
       },
     ]);
+  });
+
+  it("bounds call ID labels with UTF-16-safe truncation and surrogate sanitization", () => {
+    // 63 ASCII chars + astral char (emoji = 2 UTF-16 code units) → slice at 64 would split the surrogate pair
+    const astralCallId = "a".repeat(63) + "🙈";
+    const payload: Record<string, unknown> = {
+      input: [
+        {
+          type: "function_call_output",
+          call_id: astralCallId,
+          output: [
+            { type: "input_text", text: "ok" },
+            {
+              type: "input_image",
+              detail: "auto",
+              image_url: "data:image/png;base64,QUJDRA==",
+            },
+          ],
+        },
+      ],
+    };
+    runXaiToolPayloadWrapper({ payload, input: ["text", "image"] });
+
+    const userMessage = (payload.input as Array<Record<string, unknown>>).find(
+      (item) => item.type === "message",
+    );
+    const content = userMessage?.content as Array<Record<string, unknown>>;
+    const labelText = (content[0] as { text?: string }).text ?? "";
+
+    // Must not contain the full astral call ID (truncated before the emoji)
+    expect(labelText).not.toContain("🙈");
+    // Must not contain a dangling surrogate
+    expect(labelText).not.toMatch(/[\uD800-\uDBFF]|[\uDC00-\uDFFF]/);
+    // Must still contain the ASCII prefix
+    expect(labelText).toContain("a".repeat(63));
   });
 
   it("drops image blocks and uses fallback text for models without image input", () => {
