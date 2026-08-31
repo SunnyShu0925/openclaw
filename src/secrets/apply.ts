@@ -590,7 +590,6 @@ function resolveAuthStoreTargetForShared(params: {
   const scopedEnv = {
     ...params.env,
     OPENCLAW_STATE_DIR: params.stateDir,
-    OPENCLAW_AGENT_DIR: undefined,
   };
   return {
     kind: "shared",

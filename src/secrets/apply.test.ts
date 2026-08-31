@@ -829,7 +829,6 @@ describe("secrets apply", () => {
       const sharedPath = resolveSharedAuthStorePath({
         ...fixture.env,
         OPENCLAW_STATE_DIR: fixture.stateDir,
-        OPENCLAW_AGENT_DIR: undefined,
       });
       expect(result.changedFiles).toContain(sharedPath);
       expect(result.changedFiles).not.toContain(fixture.authStorePath);
@@ -874,6 +873,56 @@ describe("secrets apply", () => {
       },
     };
     expect(isSecretsApplyPlan(plan)).toBe(false);
+  });
+
+  it("preserves relocated legacy-main shared store when applying a shared SecretRef", async () => {
+    const relocatedDir = path.join(fixture.rootDir, "relocated-shared-legacy");
+    vi.stubEnv("OPENCLAW_STATE_DIR", fixture.stateDir);
+    vi.stubEnv("OPENCLAW_AGENT_DIR", relocatedDir);
+    noteCommittedSharedAuthStoreOwnership({ location: "legacy-main" }, fixture.env);
+    fixture.env.OPENCLAW_AGENT_DIR = relocatedDir;
+    const shared: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        "openai:legacy": {
+          type: "api_key",
+          provider: "openai",
+          key: "sk-legacy-plaintext", // pragma: allowlist secret
+        },
+      },
+    };
+    await writeJsonFile(resolveAuthProfileDatabasePath(relocatedDir), shared);
+
+    const target: SecretsApplyPlan["targets"][number] = {
+      type: "auth-profiles.api_key.key",
+      path: "profiles.openai:legacy.key",
+      pathSegments: ["profiles", "openai:legacy", "key"],
+      authProfileStore: "shared",
+      ref: OPENAI_API_KEY_ENV_REF,
+    };
+    const plan = createPlan({
+      targets: [target],
+      options: {
+        scrubEnv: false,
+        scrubAuthProfilesForProviderTargets: false,
+        scrubLegacyAuthJson: false,
+      },
+    });
+    expect(isSecretsApplyPlan(plan)).toBe(true);
+
+    const result = await runSecretsApply({
+      plan,
+      env: fixture.env,
+      write: true,
+    });
+
+    expect(result.changed).toBe(true);
+    const expectedPath = resolveAuthProfileDatabasePath(relocatedDir);
+    expect(result.changedFiles).toContain(expectedPath);
+    const sharedRaw = readPersistedAuthProfileStoreRaw(relocatedDir) as AuthProfileStore;
+    const profile = sharedRaw.profiles["openai:legacy"] as { key?: string; keyRef?: unknown };
+    expect(profile.key).toBeUndefined();
+    expect(profile.keyRef).toEqual(OPENAI_API_KEY_ENV_REF);
   });
 
   it("rolls back committed auth rows when runtime publication fails", async () => {

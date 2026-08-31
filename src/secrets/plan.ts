@@ -38,9 +38,10 @@ export type SecretsPlanTarget = {
   agentId?: string;
   /**
    * Optional auth-profile store owner. `"shared"` routes the SecretRef to the
-   * canonical shared state database; `"agent"` (or omitted) preserves legacy
-   * per-agent database behavior. Any other present value is rejected by plan
-   * validation.
+   * shared auth-profile store (the state database after Doctor relocation, or
+   * the legacy main-agent database before it); `"agent"` (or omitted) preserves
+   * legacy per-agent database behavior. Any other present value is rejected by
+   * plan validation.
    */
   authProfileStore?: "shared" | "agent";
   /**
