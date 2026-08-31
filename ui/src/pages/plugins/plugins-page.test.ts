@@ -3,7 +3,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError } from "../../api/gateway.ts";
-import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { i18n } from "../../i18n/index.ts";
@@ -27,6 +26,7 @@ import {
   createRuntimeConfigHarness,
   createSearchResult,
   deferred,
+  mountClawHubSearchPage,
   mountPage,
   resetPluginsPageTestState,
   type RuntimeConfigTestState,
@@ -39,19 +39,6 @@ function clickHubTab(page: HTMLElement, tab: "installed" | "discover" | "skills"
   page
     .querySelector(`#plugins-tab-${tab}`)
     ?.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true }));
-}
-
-async function mountClawHubSearchPage(client: GatewayBrowserClient) {
-  const harness = createGateway(client);
-  const { page } = await mountPage(
-    createContext(harness.gateway),
-    createPluginsRouteData(
-      harness.gateway,
-      createResult(),
-      createPluginsRouteLocation("/settings/plugins/discover"),
-    ),
-  );
-  return page;
 }
 
 describe("PluginsPage", () => {
@@ -404,16 +391,14 @@ describe("PluginsPage", () => {
       search.value = resultCount === 0 ? "zzz-no-match" : "workboard";
       search.dispatchEvent(new Event("input", { bubbles: true }));
       await vi.advanceTimersByTimeAsync(300);
-      const pendingNode = page.querySelector('[role="status"][aria-live="polite"]');
+      const selector = '[role="status"][aria-live="polite"]';
+      const pendingNode = page.querySelector(selector);
       pending.resolve({ results });
-
       await vi.waitFor(() =>
-        expect(page.querySelector('[role="status"][aria-live="polite"]')?.textContent).toContain(
-          expectedText,
-        ),
+        expect(page.querySelector(selector)?.textContent).toContain(expectedText),
       );
-      expect(page.querySelector('[role="status"][aria-live="polite"]')).toBe(pendingNode);
-      expect(page.querySelector('[role="status"][aria-live="polite"]')?.getAttribute("class")).toBe(
+      expect(page.querySelector(selector)).toBe(pendingNode);
+      expect(page.querySelector(selector)?.getAttribute("class")).toBe(
         resultCount === 0 ? "settings-empty" : "plugins-search-state",
       );
     },
