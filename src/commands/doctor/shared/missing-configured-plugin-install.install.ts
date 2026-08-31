@@ -33,7 +33,6 @@ import { isUnavailableNpmTarget } from "../../../plugins/install-types.js";
 import { installPluginFromNpmSpec } from "../../../plugins/install.js";
 import {
   buildNpmResolutionInstallFields,
-  isExactRegistryNpmSpec,
   resolveNpmInstallRecordSpec,
 } from "../../../plugins/installs.js";
 import { ManagedPluginLifecycleError } from "../../../plugins/management-lifecycle-error.js";
@@ -180,7 +179,8 @@ async function installCandidatePackage(
   // `installs_unpinned_npm_specs` in the deep security audit.
   const pinResolvedSpecForStaleRepair =
     params.repairReason === "stale-version-bound-runtime" &&
-    isExactRegistryNpmSpec(params.records[candidate.pluginId]?.spec);
+    parseRegistryNpmSpec(params.records[candidate.pluginId]?.spec ?? "")?.selectorKind ===
+      "exact-version";
   const clawhubSpecs = candidate.clawhubSpec
     ? resolveClawHubInstallSpecsForUpdateChannel({
         spec: candidate.clawhubSpec,
