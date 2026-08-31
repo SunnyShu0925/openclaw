@@ -11,11 +11,12 @@ import {
 import { normalizeCsvOrLooseStringList } from "@openclaw/normalization-core/string-normalization";
 import { listAgentIds, resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { AUTH_STORE_VERSION } from "../agents/auth-profiles/constants.js";
-import { resolveSharedAuthStoreOwnership } from "../agents/auth-profiles/path-resolve.js";
+import { resolveSharedAuthStorePath } from "../agents/auth-profiles/path-resolve.js";
 import {
   loadPersistedAuthProfileStore,
   loadPersistedSharedAuthProfileStore,
 } from "../agents/auth-profiles/persisted.js";
+import { resolveAuthProfileDatabasePath } from "../agents/auth-profiles/sqlite.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -331,19 +332,23 @@ function loadAuthProfileStoreForConfigure(params: {
   env: NodeJS.ProcessEnv;
 }): AuthProfileConfigureScope[] {
   const scopes: AuthProfileConfigureScope[] = [];
-  const ownership = resolveSharedAuthStoreOwnership(params.env);
-  if (ownership.location === "state-db") {
-    const shared = loadPersistedSharedAuthProfileStore(params.env);
-    if (shared && Object.keys(shared.profiles).length > 0) {
-      scopes.push({ store: shared, authProfileStore: "shared" });
-    }
+  const sharedStore = loadPersistedSharedAuthProfileStore(params.env);
+  const sharedDatabasePath = path.resolve(resolveSharedAuthStorePath(params.env));
+  if (sharedStore && Object.keys(sharedStore.profiles).length > 0) {
+    scopes.push({ store: sharedStore, authProfileStore: "shared" });
   }
   const agentDir = resolveAgentDir(params.config, params.agentId);
-  const agentStore = loadPersistedAuthProfileStore(agentDir);
-  scopes.push({
-    store: agentStore ?? { version: AUTH_STORE_VERSION, profiles: {} },
-    authProfileStore: "agent",
-  });
+  const agentDatabasePath = path.resolve(resolveAuthProfileDatabasePath(agentDir));
+  // When the selected agent's local store resolves to the same database as the
+  // shared store (e.g. the main agent under legacy-main ownership), skip the
+  // duplicate agent scope so the same profiles are not offered twice.
+  if (agentDatabasePath !== sharedDatabasePath) {
+    const agentStore = loadPersistedAuthProfileStore(agentDir);
+    scopes.push({
+      store: agentStore ?? { version: AUTH_STORE_VERSION, profiles: {} },
+      authProfileStore: "agent",
+    });
+  }
   return scopes;
 }
 

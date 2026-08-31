@@ -10,6 +10,8 @@ const createSecretsConfigIOMock = vi.hoisted(() => vi.fn());
 const loadPersistedAuthProfileStoreMock = vi.hoisted(() => vi.fn());
 const loadPersistedSharedAuthProfileStoreMock = vi.hoisted(() => vi.fn());
 const resolveSharedAuthStoreOwnershipMock = vi.hoisted(() => vi.fn());
+const resolveSharedAuthStorePathMock = vi.hoisted(() => vi.fn());
+const resolveAuthProfileDatabasePathMock = vi.hoisted(() => vi.fn());
 const loadPluginManifestRegistryMock = vi.hoisted(() => vi.fn());
 const runSecretsApplyMock = vi.hoisted(() => vi.fn());
 const tempDirs: string[] = [];
@@ -35,6 +37,7 @@ vi.mock("../agents/auth-profiles/persisted.js", () => ({
 vi.mock("../agents/auth-profiles/path-resolve.js", () => ({
   resolveSharedAuthStoreOwnership: (...args: unknown[]) =>
     resolveSharedAuthStoreOwnershipMock(...args),
+  resolveSharedAuthStorePath: (...args: unknown[]) => resolveSharedAuthStorePathMock(...args),
   resolveSharedAuthPath: () => "/fake/shared-auth.json",
 }));
 
@@ -70,6 +73,10 @@ describe("runSecretsConfigureInteractive", () => {
     loadPersistedSharedAuthProfileStoreMock.mockReset();
     resolveSharedAuthStoreOwnershipMock.mockReset();
     resolveSharedAuthStoreOwnershipMock.mockReturnValue({ location: "agent-dir" });
+    resolveSharedAuthStorePathMock.mockReset();
+    resolveSharedAuthStorePathMock.mockReturnValue("/fake/shared-auth.sqlite");
+    resolveAuthProfileDatabasePathMock.mockReset();
+    resolveAuthProfileDatabasePathMock.mockReturnValue("/fake/agent-auth.sqlite");
     loadPluginManifestRegistryMock.mockReset();
     loadPluginManifestRegistryMock.mockReturnValue({ diagnostics: [], plugins: [] });
     runSecretsApplyMock.mockReset();
@@ -297,4 +304,185 @@ describe("runSecretsConfigureInteractive", () => {
       expect(opt?.label).toContain("agent");
     }
   });
+});
+
+it("discovers shared auth-profile candidates under legacy-main ownership", async () => {
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+
+  const sharedProfileId = "openai:legacy-shared";
+  const localOnlyProfileId = "anthropic:child-local";
+
+  // legacy-main ownership: shared store lives in the relocated shared-main
+  // agent directory, not the state database. A non-main (child) agent
+  // inherits profiles from that canonical shared store at runtime.
+  resolveSharedAuthStoreOwnershipMock.mockReturnValue({ location: "legacy-main" });
+  loadPersistedSharedAuthProfileStoreMock.mockReturnValue({
+    version: 1,
+    profiles: {
+      [sharedProfileId]: {
+        provider: "openai",
+        credential: { type: "api_key", key: "legacy-shared-key" },
+      },
+    },
+  });
+  loadPersistedAuthProfileStoreMock.mockReturnValue({
+    version: 1,
+    profiles: {
+      [localOnlyProfileId]: {
+        provider: "anthropic",
+        credential: { type: "api_key", key: "child-local-key" },
+      },
+    },
+  });
+  // Distinct paths so the child agent's local store is not deduped away.
+  resolveSharedAuthStorePathMock.mockReturnValue("/fake/legacy-shared-main.sqlite");
+  resolveAuthProfileDatabasePathMock.mockReturnValue("/fake/child-agent.sqlite");
+
+  type SelectOption = { value: string; hint?: string; label?: string };
+  const capturedCandidates: SelectOption[] = [];
+  textMock.mockReset();
+  textMock.mockImplementation(async (params: { message?: string }) => {
+    if (params.message?.toLowerCase().includes("provider")) {
+      return "openai";
+    }
+    return "OPENAI_API_KEY";
+  });
+  selectMock.mockImplementation(async (params: { options: SelectOption[] }) => {
+    const authProfileOptions = params.options.filter((opt) => opt.hint === "auth profile store");
+    if (authProfileOptions.length > 0) {
+      capturedCandidates.push(...authProfileOptions);
+      return authProfileOptions[0]!.value;
+    }
+    if (params.options.length > 0 && typeof params.options[0]?.value === "string") {
+      return params.options[0]!.value;
+    }
+    return "__done__";
+  });
+  confirmMock.mockResolvedValue(false);
+
+  createSecretsConfigIOMock.mockReturnValue({
+    readConfigFileSnapshotForWrite: async () => ({
+      snapshot: {
+        valid: true,
+        config: {
+          secrets: {
+            providers: {
+              openai: { source: "env" },
+            },
+          },
+        },
+        resolved: {
+          secrets: {
+            providers: {
+              openai: { source: "env" },
+            },
+          },
+        },
+      },
+    }),
+  });
+
+  await runSecretsConfigureInteractive({
+    providersOnly: false,
+    skipProviderSetup: true,
+    env: { OPENCLAW_STATE_DIR: "/fake", OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+  });
+
+  // The shared profile from the relocated legacy shared-main store must be
+  // discoverable even though ownership is legacy-main (not state-db).
+  const allLabels = capturedCandidates.map((opt) => opt?.label ?? "").join("\n");
+  expect(allLabels).toContain(sharedProfileId);
+  expect(allLabels).toContain(localOnlyProfileId);
+  // Shared candidate labeled "shared", not "agent".
+  const sharedLabels = capturedCandidates.filter((opt) => opt?.label?.includes(sharedProfileId));
+  expect(sharedLabels.length).toBeGreaterThan(0);
+  for (const opt of sharedLabels) {
+    expect(opt?.label).toContain("shared");
+    expect(opt?.label).not.toContain("agent");
+  }
+});
+
+it("dedupes the agent store when it resolves to the same database as the shared store", async () => {
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+
+  const sharedProfileId = "openai:shared-only";
+
+  resolveSharedAuthStoreOwnershipMock.mockReturnValue({ location: "legacy-main" });
+  loadPersistedSharedAuthProfileStoreMock.mockReturnValue({
+    version: 1,
+    profiles: {
+      [sharedProfileId]: {
+        provider: "openai",
+        credential: { type: "api_key", key: "shared-key" },
+      },
+    },
+  });
+  // The main agent's local store resolves to the same database as the shared
+  // store (legacy-main: shared store IS the main agent's store). The agent
+  // scope should be skipped to avoid offering duplicate candidates.
+  resolveSharedAuthStorePathMock.mockReturnValue("/fake/main-agent.sqlite");
+  resolveAuthProfileDatabasePathMock.mockReturnValue("/fake/main-agent.sqlite");
+
+  type SelectOption = { value: string; hint?: string; label?: string };
+  const capturedCandidates: SelectOption[] = [];
+  textMock.mockReset();
+  textMock.mockImplementation(async (params: { message?: string }) => {
+    if (params.message?.toLowerCase().includes("provider")) {
+      return "openai";
+    }
+    return "OPENAI_API_KEY";
+  });
+  selectMock.mockImplementation(async (params: { options: SelectOption[] }) => {
+    const authProfileOptions = params.options.filter((opt) => opt.hint === "auth profile store");
+    if (authProfileOptions.length > 0) {
+      capturedCandidates.push(...authProfileOptions);
+      return authProfileOptions[0]!.value;
+    }
+    if (params.options.length > 0 && typeof params.options[0]?.value === "string") {
+      return params.options[0]!.value;
+    }
+    return "__done__";
+  });
+  confirmMock.mockResolvedValue(false);
+
+  createSecretsConfigIOMock.mockReturnValue({
+    readConfigFileSnapshotForWrite: async () => ({
+      snapshot: {
+        valid: true,
+        config: {
+          secrets: {
+            providers: {
+              openai: { source: "env" },
+            },
+          },
+        },
+        resolved: {
+          secrets: {
+            providers: {
+              openai: { source: "env" },
+            },
+          },
+        },
+      },
+    }),
+  });
+
+  await runSecretsConfigureInteractive({
+    providersOnly: false,
+    skipProviderSetup: true,
+    env: { OPENCLAW_STATE_DIR: "/fake", OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+  });
+
+  // The shared profile appears exactly once (not duplicated from an agent
+  // scope that resolves to the same database).
+  const sharedCandidateCount = capturedCandidates.filter((opt) =>
+    opt?.label?.includes(`${sharedProfileId}.key`),
+  ).length;
+  expect(sharedCandidateCount).toBe(1);
 });
