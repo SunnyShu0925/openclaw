@@ -2087,7 +2087,7 @@ export function restoreAuthProfileStorePersistenceSnapshot(
   snapshot: AuthProfileStorePersistenceSnapshot,
   owned: AuthProfileStorePersistenceSnapshot,
   agentDir?: string,
-  options: { stateDir?: string } = {},
+  options: { stateDir?: string; env?: NodeJS.ProcessEnv } = {},
 ): void {
   assertAuthProfilePersistenceOwner(owned.owner, agentDir, options.stateDir);
   if (

@@ -996,7 +996,9 @@ export async function runSecretsApply(params: {
           snapshot.persistence,
           snapshot.owned,
           snapshot.target.kind === "agent" ? snapshot.target.agentDir : undefined,
-          snapshot.target.kind === "shared" ? { stateDir: snapshot.target.stateDir } : {},
+          snapshot.target.kind === "shared"
+            ? { stateDir: snapshot.target.stateDir, env: snapshot.target.env }
+            : {},
         );
       } catch {
         // Best effort only; preserve original error.

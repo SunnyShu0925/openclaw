@@ -970,6 +970,56 @@ describe("secrets apply", () => {
     expect(readPersistedAuthProfileStateRaw(fixture.agentDir)).toEqual(stateBefore);
   });
 
+  it("rolls back relocated legacy-main shared store when runtime publication fails", async () => {
+    const relocatedDir = path.join(fixture.rootDir, "relocated-agent");
+    await fs.mkdir(relocatedDir, { recursive: true });
+    vi.stubEnv("OPENCLAW_STATE_DIR", fixture.stateDir);
+    vi.stubEnv("OPENCLAW_AGENT_DIR", relocatedDir);
+    noteCommittedSharedAuthStoreOwnership({ location: "legacy-main" }, fixture.env);
+    fixture.env.OPENCLAW_AGENT_DIR = relocatedDir;
+    const shared: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        "openai:legacy": {
+          type: "api_key",
+          provider: "openai",
+          key: "sk-legacy-plaintext",
+        },
+      },
+    };
+    await writeJsonFile(resolveAuthProfileDatabasePath(relocatedDir), shared);
+    const credentialsBefore = readPersistedAuthProfileStoreRaw(relocatedDir);
+    const stateBefore = readPersistedAuthProfileStateRaw(relocatedDir);
+    const target: SecretsApplyPlan["targets"][number] = {
+      type: "auth-profiles.api_key.key",
+      path: "profiles.openai:legacy.key",
+      pathSegments: ["profiles", "openai:legacy", "key"],
+      authProfileStore: "shared",
+      ref: OPENAI_API_KEY_ENV_REF,
+    };
+    const plan = createPlan({
+      targets: [target],
+      options: {
+        scrubEnv: false,
+        scrubAuthProfilesForProviderTargets: false,
+        scrubLegacyAuthJson: false,
+      },
+    });
+    let publicationAttempted = false;
+    storeTesting.setRuntimeSnapshotPublisherForTest(() => {
+      publicationAttempted = true;
+      throw new Error("injected postcommit publication failure");
+    });
+
+    await expect(runSecretsApply({ plan, env: fixture.env, write: true })).rejects.toThrow(
+      "auth profile runtime publication failed",
+    );
+
+    expect(publicationAttempted).toBe(true);
+    expect(readPersistedAuthProfileStoreRaw(relocatedDir)).toEqual(credentialsBefore);
+    expect(readPersistedAuthProfileStateRaw(relocatedDir)).toEqual(stateBefore);
+  });
+
   it("uses the configured agent id for custom auth-profile target agent dirs", async () => {
     const coderAgentDir = path.join(fixture.rootDir, "custom-coder-agent");
     const coderStorePath = resolveAuthProfileDatabasePath(coderAgentDir);

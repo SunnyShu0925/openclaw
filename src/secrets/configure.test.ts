@@ -92,7 +92,7 @@ describe("runSecretsConfigureInteractive", () => {
     resolveAuthProfileDatabasePathMock.mockReset();
     resolveAuthProfileDatabasePathMock.mockReturnValue("/fake/agent-auth.sqlite");
     resolveAgentDirMock.mockReset();
-    resolveAgentDirMock.mockImplementation((cfg, agentId, env) => `/fake/agents/${agentId}/agent`);
+    resolveAgentDirMock.mockImplementation((cfg, agentId, _env) => `/fake/agents/${agentId}/agent`);
     loadPluginManifestRegistryMock.mockReset();
     loadPluginManifestRegistryMock.mockReturnValue({ diagnostics: [], plugins: [] });
     runSecretsApplyMock.mockReset();
@@ -215,12 +215,14 @@ describe("runSecretsConfigureInteractive", () => {
       version: 1,
       profiles: {
         [sharedProfileId]: {
+          type: "api_key",
           provider: "openai",
-          credential: { type: "api_key", key: "shared-key" },
+          key: "shared-key",
         },
         [duplicateProfileId]: {
+          type: "api_key",
           provider: "google",
-          credential: { type: "api_key", key: "shared-dup-key" },
+          key: "shared-dup-key",
         },
       },
     });
@@ -228,12 +230,14 @@ describe("runSecretsConfigureInteractive", () => {
       version: 1,
       profiles: {
         [localOnlyProfileId]: {
+          type: "api_key",
           provider: "anthropic",
-          credential: { type: "api_key", key: "local-key" },
+          key: "local-key",
         },
         [duplicateProfileId]: {
+          type: "api_key",
           provider: "google",
-          credential: { type: "api_key", key: "local-dup-key" },
+          key: "local-dup-key",
         },
       },
     });
@@ -339,8 +343,9 @@ it("discovers shared auth-profile candidates under legacy-main ownership", async
     version: 1,
     profiles: {
       [sharedProfileId]: {
+        type: "api_key",
         provider: "openai",
-        credential: { type: "api_key", key: "legacy-shared-key" },
+        key: "legacy-shared-key",
       },
     },
   });
@@ -348,8 +353,9 @@ it("discovers shared auth-profile candidates under legacy-main ownership", async
     version: 1,
     profiles: {
       [localOnlyProfileId]: {
+        type: "api_key",
         provider: "anthropic",
-        credential: { type: "api_key", key: "child-local-key" },
+        key: "child-local-key",
       },
     },
   });
@@ -434,8 +440,9 @@ it("dedupes the agent store when it resolves to the same database as the shared 
     version: 1,
     profiles: {
       [sharedProfileId]: {
+        type: "api_key",
         provider: "openai",
-        credential: { type: "api_key", key: "shared-key" },
+        key: "shared-key",
       },
     },
   });
@@ -519,8 +526,9 @@ it("resolves the agent store from the injected environment, not ambient process.
     version: 1,
     profiles: {
       [sharedProfileId]: {
+        type: "api_key",
         provider: "openai",
-        credential: { type: "api_key", key: "shared-key" },
+        key: "shared-key",
       },
     },
   });
