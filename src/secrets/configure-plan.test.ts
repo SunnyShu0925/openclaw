@@ -228,4 +228,54 @@ describe("secrets configure plan helpers", () => {
       scrubLegacyAuthJson: false,
     });
   });
+
+  it("omits agentId for shared auth-profile targets so v1 clients fail closed", () => {
+    const sharedTarget = {
+      type: "auth-profiles.api_key.key",
+      path: "profiles.openai:shared.key",
+      pathSegments: ["profiles", "openai:shared", "key"],
+      label: "profiles.openai:shared.key (auth profile, shared)",
+      configFile: "auth-profile-store" as const,
+      expectedResolvedValue: "string" as const,
+      agentId: "main",
+      authProfileStore: "shared" as "shared" | "agent",
+      ref: {
+        source: "env" as const,
+        provider: "default",
+        id: "OPENAI_API_KEY",
+      },
+    };
+    const agentTarget = {
+      type: "auth-profiles.api_key.key",
+      path: "profiles.openai:agent.key",
+      pathSegments: ["profiles", "openai:agent", "key"],
+      label: "profiles.openai:agent.key (auth profile, agent main)",
+      configFile: "auth-profile-store" as const,
+      expectedResolvedValue: "string" as const,
+      agentId: "main",
+      authProfileStore: "agent" as "shared" | "agent",
+      ref: {
+        source: "env" as const,
+        provider: "default",
+        id: "OPENAI_API_KEY",
+      },
+    };
+    const selected = new Map([
+      ["profiles.openai:shared.key", sharedTarget],
+      ["profiles.openai:agent.key", agentTarget],
+    ]);
+    const plan = buildSecretsConfigurePlan({
+      selectedTargets: selected,
+      providerChanges: { upserts: {}, deletes: [] },
+    });
+    const sharedPlanTarget = plan.targets.find((t) => t.path.includes("openai:shared"));
+    const agentPlanTarget = plan.targets.find((t) => t.path.includes("openai:agent"));
+    // Shared targets must NOT carry agentId — released v1 clients require it
+    // for auth-profile targets, so its absence makes them reject the plan.
+    expect(sharedPlanTarget?.agentId).toBeUndefined();
+    expect(sharedPlanTarget?.authProfileStore).toBe("shared");
+    // Agent targets still carry agentId for backward compatibility.
+    expect(agentPlanTarget?.agentId).toBe("main");
+    expect(agentPlanTarget?.authProfileStore).toBe("agent");
+  });
 });

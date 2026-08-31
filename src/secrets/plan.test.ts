@@ -165,6 +165,46 @@ describe("secrets plan validation", () => {
     expect(withAgent).toBe(true);
   });
 
+  it("rejects shared auth-profile targets that carry agentId (v1 fail-closed invariant)", () => {
+    const sharedWithoutAgent = isSecretsApplyPlan({
+      version: 1,
+      protocolVersion: 1,
+      generatedAt: "2026-02-28T00:00:00.000Z",
+      generatedBy: "manual",
+      targets: [
+        {
+          type: "auth-profiles.api_key.key",
+          path: "profiles.openai:shared.key",
+          pathSegments: ["profiles", "openai:shared", "key"],
+          authProfileStore: "shared",
+          ref: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+        },
+      ],
+    });
+    expect(sharedWithoutAgent).toBe(true);
+
+    const sharedWithAgent = isSecretsApplyPlan({
+      version: 1,
+      protocolVersion: 1,
+      generatedAt: "2026-02-28T00:00:00.000Z",
+      generatedBy: "manual",
+      targets: [
+        {
+          type: "auth-profiles.api_key.key",
+          path: "profiles.openai:shared.key",
+          pathSegments: ["profiles", "openai:shared", "key"],
+          authProfileStore: "shared",
+          agentId: "main",
+          ref: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+        },
+      ],
+    });
+    // A shared target with agentId is ambiguous: new clients route to the
+    // shared store, but released v1 clients use agentId to route to the agent
+    // store. Reject this contradictory shape.
+    expect(sharedWithAgent).toBe(false);
+  });
+
   it("accepts valid exec secret ref ids in plans", () => {
     for (const id of VALID_EXEC_SECRET_REF_IDS) {
       const isValid = isSecretsApplyPlan({

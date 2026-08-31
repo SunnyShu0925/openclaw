@@ -37,6 +37,13 @@ export type SecretsPlanTarget = {
    */
   agentId?: string;
   /**
+   * Optional auth-profile store owner. `"shared"` routes the SecretRef to the
+   * canonical shared state database; `"agent"` (or omitted) preserves legacy
+   * per-agent database behavior. Any other present value is rejected by plan
+   * validation.
+   */
+  authProfileStore?: "shared" | "agent";
+  /**
    * For provider targets, used to scrub auth-profile/static residues.
    */
   providerId?: string;
@@ -164,7 +171,27 @@ export function isSecretsApplyPlan(value: unknown): value is SecretsApplyPlan {
       return false;
     }
     if (resolved.entry.configFile === "auth-profile-store") {
-      if (typeof candidate.agentId !== "string" || candidate.agentId.trim().length === 0) {
+      // SAFETY: candidate is Partial<SecretsPlanTarget>; authProfileStore is read as unknown before validation.
+      const authProfileStore = (candidate as { authProfileStore?: unknown }).authProfileStore;
+      // Shared ownership routes to the canonical shared state database and does
+      // not require an agent. Any present value outside the allowed set is
+      // rejected so existing exported plans cannot silently change targets.
+      if (
+        authProfileStore !== undefined &&
+        authProfileStore !== "shared" &&
+        authProfileStore !== "agent"
+      ) {
+        return false;
+      }
+      if (authProfileStore === "shared") {
+        // Shared targets must not carry agentId. The generator omits it, but
+        // hand-written plans are a supported input — a shared target with
+        // agentId is ambiguous: new clients route to the shared store while
+        // released v1 clients use agentId to route to the agent store.
+        if (candidate.agentId !== undefined) {
+          return false;
+        }
+      } else if (typeof candidate.agentId !== "string" || candidate.agentId.trim().length === 0) {
         return false;
       }
       if (

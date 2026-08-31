@@ -36,6 +36,14 @@ This page defines the strict contract enforced by `openclaw secrets apply`. If a
       path: "profiles.openai:default.key",
       pathSegments: ["profiles", "openai:default", "key"],
       agentId: "main",
+      authProfileStore: "agent",
+      ref: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+    },
+    {
+      type: "auth-profiles.api_key.key",
+      path: "profiles.openai:shared.key",
+      pathSegments: ["profiles", "openai:shared", "key"],
+      authProfileStore: "shared",
       ref: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
     },
   ],
@@ -105,7 +113,8 @@ Each target is validated with all of the following:
 - Forbidden segments are rejected: `__proto__`, `prototype`, `constructor`.
 - The normalized path must match the registered path shape for the target type.
 - If `providerId` or `accountId` is set, it must match the id encoded in the path.
-- SQLite auth-profile targets require `agentId`.
+- SQLite auth-profile targets require `agentId` unless `authProfileStore` is `"shared"`.
+- `authProfileStore` is optional (`"shared"` or `"agent"`). When omitted, the target uses the legacy per-agent store. When `"shared"`, the target routes to the canonical shared state database and `agentId` is omitted so older clients that require it reject the plan instead of silently writing to the agent store.
 - When creating a new auth-profile mapping, include `authProfileProvider`.
 
 ## Failure behavior

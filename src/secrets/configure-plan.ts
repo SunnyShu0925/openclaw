@@ -29,6 +29,7 @@ export type ConfigureCandidate = {
   providerId?: string;
   accountId?: string;
   authProfileProvider?: string;
+  authProfileStore?: "shared" | "agent";
 };
 
 /** Configure candidate after the operator chooses the SecretRef to write. */
@@ -80,6 +81,7 @@ export function buildConfigureCandidatesForScope(params: {
   authProfiles?: {
     agentId: string;
     store: AuthProfileStore;
+    authProfileStore?: "shared" | "agent";
   };
 }): ConfigureCandidate[] {
   const authoredConfig = params.authoredOpenClawConfig ?? params.config;
@@ -142,13 +144,16 @@ export function buildConfigureCandidatesForScope(params: {
                 type: entry.entry.targetType,
                 path: entry.path,
                 pathSegments: [...entry.pathSegments],
-                label: `${entry.path} (auth profile, agent ${authProfiles.agentId})`,
+                label: `${entry.path} (auth profile, ${authProfiles.authProfileStore === "shared" ? "shared" : `agent ${authProfiles.agentId}`})`,
                 configFile: `auth-profile-store` as const,
                 expectedResolvedValue: entry.entry.expectedResolvedValue,
               },
               resolved.ref ? { existingRef: resolved.ref } : {},
               { agentId: authProfiles.agentId },
               authProfileProvider ? { authProfileProvider } : {},
+              authProfiles.authProfileStore
+                ? { authProfileStore: authProfiles.authProfileStore }
+                : {},
             );
           });
 
@@ -251,10 +256,14 @@ export function buildSecretsConfigurePlan(params: {
           pathSegments: [...entry.pathSegments],
           ref: entry.ref,
         },
-        entry.agentId ? { agentId: entry.agentId } : {},
+        // Shared targets omit agentId so released v1 clients that require it
+        // reject the plan (fail closed) instead of silently routing to the
+        // agent database and recreating the original wrong-store bug.
+        entry.authProfileStore === "shared" ? {} : entry.agentId ? { agentId: entry.agentId } : {},
         entry.providerId ? { providerId: entry.providerId } : {},
         entry.accountId ? { accountId: entry.accountId } : {},
         entry.authProfileProvider ? { authProfileProvider: entry.authProfileProvider } : {},
+        entry.authProfileStore ? { authProfileStore: entry.authProfileStore } : {},
       ),
     ),
     ...(Object.keys(params.providerChanges.upserts).length > 0

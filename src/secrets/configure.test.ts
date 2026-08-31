@@ -8,14 +8,18 @@ const confirmMock = vi.hoisted(() => vi.fn());
 const selectMock = vi.hoisted(() => vi.fn());
 const createSecretsConfigIOMock = vi.hoisted(() => vi.fn());
 const loadPersistedAuthProfileStoreMock = vi.hoisted(() => vi.fn());
+const loadPersistedSharedAuthProfileStoreMock = vi.hoisted(() => vi.fn());
+const resolveSharedAuthStoreOwnershipMock = vi.hoisted(() => vi.fn());
 const loadPluginManifestRegistryMock = vi.hoisted(() => vi.fn());
 const runSecretsApplyMock = vi.hoisted(() => vi.fn());
 const tempDirs: string[] = [];
 
+const textMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@clack/prompts", () => ({
   confirm: (...args: unknown[]) => confirmMock(...args),
   select: (...args: unknown[]) => selectMock(...args),
-  text: vi.fn(),
+  text: (...args: unknown[]) => textMock(...args),
 }));
 
 vi.mock("./config-io.js", () => ({
@@ -24,6 +28,14 @@ vi.mock("./config-io.js", () => ({
 
 vi.mock("../agents/auth-profiles/persisted.js", () => ({
   loadPersistedAuthProfileStore: (...args: unknown[]) => loadPersistedAuthProfileStoreMock(...args),
+  loadPersistedSharedAuthProfileStore: (...args: unknown[]) =>
+    loadPersistedSharedAuthProfileStoreMock(...args),
+}));
+
+vi.mock("../agents/auth-profiles/path-resolve.js", () => ({
+  resolveSharedAuthStoreOwnership: (...args: unknown[]) =>
+    resolveSharedAuthStoreOwnershipMock(...args),
+  resolveSharedAuthPath: () => "/fake/shared-auth.json",
 }));
 
 vi.mock("../plugins/manifest-registry.js", () => ({
@@ -55,6 +67,9 @@ describe("runSecretsConfigureInteractive", () => {
     selectMock.mockReset();
     createSecretsConfigIOMock.mockReset();
     loadPersistedAuthProfileStoreMock.mockReset();
+    loadPersistedSharedAuthProfileStoreMock.mockReset();
+    resolveSharedAuthStoreOwnershipMock.mockReset();
+    resolveSharedAuthStoreOwnershipMock.mockReturnValue({ location: "agent-dir" });
     loadPluginManifestRegistryMock.mockReset();
     loadPluginManifestRegistryMock.mockReturnValue({ diagnostics: [], plugins: [] });
     runSecretsApplyMock.mockReset();
@@ -160,5 +175,126 @@ describe("runSecretsConfigureInteractive", () => {
       }),
     );
     expect(loadPersistedAuthProfileStoreMock).not.toHaveBeenCalled();
+  });
+
+  it("discovers auth-profile candidates from both shared and agent stores with local precedence", async () => {
+    Object.defineProperty(process.stdin, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+
+    const sharedProfileId = "openai:shared";
+    const localOnlyProfileId = "anthropic:local-only";
+    const duplicateProfileId = "google:duplicate";
+
+    resolveSharedAuthStoreOwnershipMock.mockReturnValue({ location: "state-db" });
+    loadPersistedSharedAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        [sharedProfileId]: {
+          provider: "openai",
+          credential: { type: "api_key", key: "shared-key" },
+        },
+        [duplicateProfileId]: {
+          provider: "google",
+          credential: { type: "api_key", key: "shared-dup-key" },
+        },
+      },
+    });
+    loadPersistedAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        [localOnlyProfileId]: {
+          provider: "anthropic",
+          credential: { type: "api_key", key: "local-key" },
+        },
+        [duplicateProfileId]: {
+          provider: "google",
+          credential: { type: "api_key", key: "local-dup-key" },
+        },
+      },
+    });
+
+    type SelectOption = { value: string; hint?: string; label?: string };
+    const capturedCandidates: SelectOption[] = [];
+    textMock.mockReset();
+    textMock.mockImplementation(async (params: { message?: string }) => {
+      // Provider alias must be lowercase; secret id must be uppercase env var.
+      if (params.message?.toLowerCase().includes("provider")) {
+        return "openai";
+      }
+      return "OPENAI_API_KEY";
+    });
+    // Capture auth-profile candidates from the credential selection prompt, then
+    // drive the rest of the flow (source → provider → id → confirm) to completion.
+    selectMock.mockImplementation(async (params: { options: SelectOption[] }) => {
+      const authProfileOptions = params.options.filter((opt) => opt.hint === "auth profile store");
+      if (authProfileOptions.length > 0) {
+        capturedCandidates.push(...authProfileOptions);
+        return authProfileOptions[0]!.value;
+      }
+      // Secret source selection — pick the first option (usually "env").
+      if (params.options.length > 0 && typeof params.options[0]?.value === "string") {
+        return params.options[0]!.value;
+      }
+      return "__done__";
+    });
+    confirmMock.mockResolvedValue(false);
+
+    createSecretsConfigIOMock.mockReturnValue({
+      readConfigFileSnapshotForWrite: async () => ({
+        snapshot: {
+          valid: true,
+          config: {
+            secrets: {
+              providers: {
+                openai: { source: "env" },
+              },
+            },
+          },
+          resolved: {
+            secrets: {
+              providers: {
+                openai: { source: "env" },
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    await runSecretsConfigureInteractive({
+      providersOnly: false,
+      skipProviderSetup: true,
+      env: { OPENCLAW_STATE_DIR: "/fake", OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+    });
+
+    // All three distinct profile ids should appear: shared-only, local-only, and duplicate.
+    const allLabels = capturedCandidates.map((opt) => opt?.label ?? "").join("\n");
+    expect(allLabels).toContain(sharedProfileId);
+    expect(allLabels).toContain(localOnlyProfileId);
+    expect(allLabels).toContain(duplicateProfileId);
+    // The duplicate profile's key target should appear exactly once (local precedence,
+    // not once per store). Each profile produces separate .key and .token candidates.
+    const duplicateKeyCount = capturedCandidates.filter((opt) =>
+      opt?.label?.includes(`${duplicateProfileId}.key`),
+    ).length;
+    expect(duplicateKeyCount).toBe(1);
+    // Shared candidates must be labeled "shared", not "agent <id>", so an operator
+    // is not misled into thinking they are changing an agent-local credential.
+    const sharedLabels = capturedCandidates.filter((opt) => opt?.label?.includes(sharedProfileId));
+    expect(sharedLabels.length).toBeGreaterThan(0);
+    for (const opt of sharedLabels) {
+      expect(opt?.label).toContain("shared");
+      expect(opt?.label).not.toContain("agent");
+    }
+    // Agent-local candidates keep the "agent <id>" label.
+    const localLabels = capturedCandidates.filter((opt) =>
+      opt?.label?.includes(localOnlyProfileId),
+    );
+    expect(localLabels.length).toBeGreaterThan(0);
+    for (const opt of localLabels) {
+      expect(opt?.label).toContain("agent");
+    }
   });
 });

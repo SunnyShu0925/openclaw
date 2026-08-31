@@ -11,7 +11,11 @@ import {
 import { normalizeCsvOrLooseStringList } from "@openclaw/normalization-core/string-normalization";
 import { listAgentIds, resolveAgentDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { AUTH_STORE_VERSION } from "../agents/auth-profiles/constants.js";
-import { loadPersistedAuthProfileStore } from "../agents/auth-profiles/persisted.js";
+import { resolveSharedAuthStoreOwnership } from "../agents/auth-profiles/path-resolve.js";
+import {
+  loadPersistedAuthProfileStore,
+  loadPersistedSharedAuthProfileStore,
+} from "../agents/auth-profiles/persisted.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -316,17 +320,31 @@ function resolveConfigureAgentId(config: OpenClawConfig, explicitAgentId?: strin
   );
 }
 
+type AuthProfileConfigureScope = {
+  store: AuthProfileStore;
+  authProfileStore: "shared" | "agent";
+};
+
 function loadAuthProfileStoreForConfigure(params: {
   config: OpenClawConfig;
   agentId: string;
-}): AuthProfileStore {
-  const agentDir = resolveAgentDir(params.config, params.agentId);
-  return (
-    loadPersistedAuthProfileStore(agentDir) ?? {
-      version: AUTH_STORE_VERSION,
-      profiles: {},
+  env: NodeJS.ProcessEnv;
+}): AuthProfileConfigureScope[] {
+  const scopes: AuthProfileConfigureScope[] = [];
+  const ownership = resolveSharedAuthStoreOwnership(params.env);
+  if (ownership.location === "state-db") {
+    const shared = loadPersistedSharedAuthProfileStore(params.env);
+    if (shared && Object.keys(shared.profiles).length > 0) {
+      scopes.push({ store: shared, authProfileStore: "shared" });
     }
-  );
+  }
+  const agentDir = resolveAgentDir(params.config, params.agentId);
+  const agentStore = loadPersistedAuthProfileStore(agentDir);
+  scopes.push({
+    store: agentStore ?? { version: AUTH_STORE_VERSION, profiles: {} },
+    authProfileStore: "agent",
+  });
+  return scopes;
 }
 
 async function promptNewAuthProfileCandidate(agentId: string): Promise<ConfigureCandidate> {
@@ -834,18 +852,34 @@ export async function runSecretsConfigureInteractive(
   const selectedByPath = new Map<string, ConfigureCandidate & { ref: SecretRef }>();
   if (!params.providersOnly) {
     const configureAgentId = resolveConfigureAgentId(snapshot.config, params.agentId);
-    const authStore = loadAuthProfileStoreForConfigure({
+    const authProfileScopes = loadAuthProfileStoreForConfigure({
       config: snapshot.config,
       agentId: configureAgentId,
+      env,
     });
-    const candidates = buildConfigureCandidatesForScope({
-      config: stagedConfig,
-      authoredOpenClawConfig: snapshot.resolved,
-      authProfiles: {
-        agentId: configureAgentId,
-        store: authStore,
-      },
-    });
+    // Discover candidates from both shared and agent stores. The agent store
+    // is first so duplicate profile ids resolve to the agent-local candidate,
+    // matching runtime's local-overrides-shared precedence.
+    const candidates = authProfileScopes
+      .toReversed()
+      .flatMap((scope) =>
+        buildConfigureCandidatesForScope({
+          config: stagedConfig,
+          authoredOpenClawConfig: snapshot.resolved,
+          authProfiles: {
+            agentId: configureAgentId,
+            store: scope.store,
+            authProfileStore: scope.authProfileStore,
+          },
+        }),
+      )
+      .filter(
+        (candidate, index, all) =>
+          index ===
+          all.findIndex(
+            (other) => configureCandidateKey(other) === configureCandidateKey(candidate),
+          ),
+      );
     if (candidates.length === 0) {
       throw new Error("No configurable secret-bearing fields found for this agent scope.");
     }
