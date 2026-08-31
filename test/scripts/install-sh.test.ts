@@ -22,6 +22,8 @@ import { NODE_RELEASE_VERSION_CASES } from "../helpers/node-version-cases.js";
 import { createInstallGitCommitFixtureScript } from "./install-git-fixtures.js";
 import {
   writeNpmBeforePolicyFixture,
+  writeNpmEexistRecoveryFixture,
+  writeNpmEnotemptyRecoveryFixture,
   writeNpmFreshnessConflictFixture,
   writeNpmInstallRetryFixture,
   writeNpmLifecycleFixture,
@@ -1259,6 +1261,111 @@ EOF
     expect(result.status).toBe(0);
   });
 
+  it("recovers from an EEXIST dangling launcher under the default npm command (no --silent)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-npm-eexist-"));
+    const bin = join(tmp, "bin");
+    const npmRoot = join(tmp, "lib", "node_modules");
+    const packageDir = join(npmRoot, "openclaw");
+    const argsLog = join(tmp, "npm-args.log");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(npmRoot, { recursive: true });
+    linkNodeExecutable(bin);
+    // Dangling launcher left by a prior install: points at a path that no longer exists,
+    // so npm's bin linker lstat fails with EEXIST exactly like a real conflicting file.
+    symlinkSync("/nonexistent/ClawX.app/Contents/Resources/cli/openclaw", join(bin, "openclaw"));
+    writeNpmEexistRecoveryFixture(join(bin, "npm"), argsLog);
+
+    try {
+      const result = runInstallShell(
+        [
+          "set -euo pipefail",
+          `source ${JSON.stringify(SCRIPT_PATH)}`,
+          `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
+          "OPENCLAW_VERSION=latest",
+          "USE_BETA=0",
+          // The default command must not pass --silent: it blanks the captured
+          // log that the EEXIST recovery greps over.
+          `npm_global_bin_dir() { printf '%s\\n' ${JSON.stringify(bin)}; }`,
+          "install_openclaw_npm openclaw@latest",
+        ].join("\n"),
+        {
+          NPM_FAKE_ROOT: npmRoot,
+          NPM_FAKE_PREFIX: tmp,
+          NPM_FAKE_PACKAGE_DIR: packageDir,
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const args = readFileSync(argsLog, "utf8");
+      // The default command must not blank the log with npm's --silent alias.
+      expect(args).not.toContain("--silent");
+      // First attempt failed with EEXIST; the recovery moved the dangling launcher
+      // aside and retried, so npm was invoked twice.
+      expect(args.trim().split("\n")).toHaveLength(2);
+      // Recovery fired: the EEXIST branch reported moving the existing command aside.
+      // Under the pre-fix default (--silent blanked the log) this branch never runs.
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        "Moved existing openclaw command aside for npm retry",
+      );
+    } finally {
+      rmSync(tmp, { force: true, recursive: true });
+    }
+  });
+
+  it("recovers from an ENOTEMPTY stale rename directory under the default npm command (no --silent)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-npm-enotempty-"));
+    const bin = join(tmp, "bin");
+    const npmRoot = join(tmp, "lib", "node_modules");
+    const packageDir = join(npmRoot, "openclaw");
+    const argsLog = join(tmp, "npm-args.log");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(npmRoot, { recursive: true });
+    linkNodeExecutable(bin);
+    // Stale rename directory left by an interrupted npm install: cleanup_npm_stale_rename_dirs
+    // removes it before retrying. Under --silent the log is blank, so the ENOTEMPTY grep that
+    // gates this recovery never fires.
+    mkdirSync(join(npmRoot, ".openclaw-stale"));
+    writeNpmEnotemptyRecoveryFixture(join(bin, "npm"), argsLog);
+
+    try {
+      const result = runInstallShell(
+        [
+          "set -euo pipefail",
+          `source ${JSON.stringify(SCRIPT_PATH)}`,
+          `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
+          "OPENCLAW_VERSION=latest",
+          "USE_BETA=0",
+          // The default command must not pass --silent: it blanks the captured
+          // log that the ENOTEMPTY recovery greps over.
+          `npm_global_bin_dir() { printf '%s\\n' ${JSON.stringify(bin)}; }`,
+          "install_openclaw_npm openclaw@latest",
+        ].join("\n"),
+        {
+          NPM_FAKE_ROOT: npmRoot,
+          NPM_FAKE_PREFIX: tmp,
+          NPM_FAKE_PACKAGE_DIR: packageDir,
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const args = readFileSync(argsLog, "utf8");
+      // The default command must not blank the log with npm's --silent alias.
+      expect(args).not.toContain("--silent");
+      // First attempt failed with ENOTEMPTY; the recovery removed the stale rename
+      // directory and retried, so npm was invoked twice.
+      expect(args.trim().split("\n")).toHaveLength(2);
+      // Recovery fired: the ENOTEMPTY branch reported removing stale directories.
+      // Under the pre-fix default (--silent blanked the log) this branch never runs.
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        "Removed interrupted npm rename directories",
+      );
+      // The stale rename directory was cleaned up before the retry.
+      expect(existsSync(join(npmRoot, ".openclaw-stale"))).toBe(false);
+    } finally {
+      rmSync(tmp, { force: true, recursive: true });
+    }
+  });
+
   it("does not report npm owner retirement when uninstall fails", () => {
     const result = runInstallShell(`
       source "${SCRIPT_PATH}"
@@ -2367,7 +2474,6 @@ EOF
             `OPENCLAW_VERSION=${requested}`,
             "USE_BETA=0",
             "NPM_LOGLEVEL=error",
-            "NPM_SILENT_FLAG=",
             `npm_global_bin_dir() { printf '%s\\n' ${JSON.stringify(bin)}; }`,
             "set +e",
             "install_openclaw",
@@ -2417,7 +2523,6 @@ EOF
           "OPENCLAW_VERSION=latest",
           "USE_BETA=0",
           "NPM_LOGLEVEL=error",
-          "NPM_SILENT_FLAG=",
           `npm_global_bin_dir() { printf '%s\\n' ${JSON.stringify(bin)}; }`,
           "install_openclaw",
         ].join("\n"),
@@ -2464,7 +2569,6 @@ EOF
           `HOME=${JSON.stringify(home)}`,
           `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
           "NPM_LOGLEVEL=error",
-          "NPM_SILENT_FLAG=",
           `run_npm_global_install openclaw@latest ${JSON.stringify(join(tmp, "install.log"))}`,
         ].join("\n"),
       );
@@ -2503,7 +2607,6 @@ EOF
           `HOME=${JSON.stringify(home)}`,
           `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
           "NPM_LOGLEVEL=error",
-          "NPM_SILENT_FLAG=",
           `run_npm_global_install openclaw@latest ${JSON.stringify(join(tmp, "install.log"))}`,
         ].join("\n"),
       );
@@ -4128,7 +4231,9 @@ HOOK
       const repo = join(tmp, "repo");
       const outer = join(tmp, "outer");
       const temp = join(tmp, "temp");
-      for (const dir of [bin, repo, outer, temp]) mkdirSync(dir, { recursive: true });
+      for (const dir of [bin, repo, outer, temp]) {
+        mkdirSync(dir, { recursive: true });
+      }
       writeFileSync(
         join(repo, "package.json"),
         JSON.stringify({ packageManager: `pnpm@${version}` }),

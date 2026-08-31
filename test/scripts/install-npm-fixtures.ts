@@ -104,6 +104,91 @@ export function writeNpmBeforePolicyFixture(path: string, argsLog: string) {
   chmodSync(path, 0o755);
 }
 
+export function writeNpmEexistRecoveryFixture(path: string, argsLog: string) {
+  writeFileSync(
+    path,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'if [[ "${1:-}" == "--version" ]]; then printf "11.15.0\\n"; exit 0; fi',
+      'if [[ "$1" == "config" && "$2" == "get" && "$3" == "min-release-age" ]]; then printf "null\\n"; exit 0; fi',
+      'if [[ "$1" == "config" && "$2" == "get" && "$3" == "before" ]]; then printf "null\\n"; exit 0; fi',
+      'if [[ "$1" == "view" ]]; then printf "2026.8.1\\n"; exit 0; fi',
+      'if [[ "$1" == "root" ]]; then printf "%s\\n" "${NPM_FAKE_ROOT:-}"; exit 0; fi',
+      'if [[ "$1" == "prefix" ]]; then printf "%s\\n" "${NPM_FAKE_PREFIX:-}"; exit 0; fi',
+      "is_install=0",
+      'for arg in "$@"; do [[ "$arg" == "install" ]] && is_install=1; done',
+      'if [[ "$is_install" -eq 0 ]]; then exit 0; fi',
+      `printf '%s\\n' "$*" >> ${JSON.stringify(argsLog)}`,
+      `attempt="$(awk 'END { print NR }' ${JSON.stringify(argsLog)})"`,
+      "if (( attempt == 1 )); then",
+      "  # --silent is npm's alias for --loglevel silent: it blanks the captured log,",
+      "  # so the EEXIST recovery that greps over that log never fires.",
+      "  has_silent=0",
+      '  for arg in "$@"; do [[ "$arg" == "--silent" ]] && has_silent=1; done',
+      '  if [[ "$has_silent" -eq 0 ]]; then',
+      '    printf "npm error code EEXIST\\n" >&2',
+      '    printf "npm error path %s/openclaw\\n" "${NPM_FAKE_PREFIX:-}/bin" >&2',
+      '    printf "npm error EEXIST: file already exists\\n" >&2',
+      '    printf "npm error File exists: %s/bin/openclaw\\n" "${NPM_FAKE_PREFIX:-}" >&2',
+      "  fi",
+      "  exit 1",
+      "fi",
+      'if [[ -n "${NPM_FAKE_PACKAGE_DIR:-}" ]]; then',
+      '  mkdir -p "$NPM_FAKE_PACKAGE_DIR/dist"',
+      '  printf "#!/bin/sh\\nprintf \'2026.8.1\\\\n\'\\n" > "$NPM_FAKE_PACKAGE_DIR/openclaw.mjs"',
+      '  printf "#!/usr/bin/env node\\n" > "$NPM_FAKE_PACKAGE_DIR/dist/entry.js"',
+      '  chmod +x "$NPM_FAKE_PACKAGE_DIR/openclaw.mjs" "$NPM_FAKE_PACKAGE_DIR/dist/entry.js"',
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(path, 0o755);
+}
+
+export function writeNpmEnotemptyRecoveryFixture(path: string, argsLog: string) {
+  writeFileSync(
+    path,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'if [[ "${1:-}" == "--version" ]]; then printf "11.15.0\\n"; exit 0; fi',
+      'if [[ "$1" == "config" && "$2" == "get" && "$3" == "min-release-age" ]]; then printf "null\\n"; exit 0; fi',
+      'if [[ "$1" == "config" && "$2" == "get" && "$3" == "before" ]]; then printf "null\\n"; exit 0; fi',
+      'if [[ "$1" == "view" ]]; then printf "2026.8.1\\n"; exit 0; fi',
+      'if [[ "$1" == "root" ]]; then printf "%s\\n" "${NPM_FAKE_ROOT:-}"; exit 0; fi',
+      'if [[ "$1" == "prefix" ]]; then printf "%s\\n" "${NPM_FAKE_PREFIX:-}"; exit 0; fi',
+      "is_install=0",
+      'for arg in "$@"; do [[ "$arg" == "install" ]] && is_install=1; done',
+      'if [[ "$is_install" -eq 0 ]]; then exit 0; fi',
+      `printf '%s\\n' "$*" >> ${JSON.stringify(argsLog)}`,
+      `attempt="$(awk 'END { print NR }' ${JSON.stringify(argsLog)})"`,
+      "if (( attempt == 1 )); then",
+      "  # --silent is npm's alias for --loglevel silent: it blanks the captured log,",
+      "  # so the ENOTEMPTY recovery that greps over that log never fires.",
+      "  has_silent=0",
+      '  for arg in "$@"; do [[ "$arg" == "--silent" ]] && has_silent=1; done',
+      '  if [[ "$has_silent" -eq 0 ]]; then',
+      '    printf "npm error code ENOTEMPTY\\n" >&2',
+      '    printf "npm error syscall rename\\n" >&2',
+      '    printf "npm error ENOTEMPTY: directory not empty, rename %s/.openclaw-stale -> %s/openclaw\\n" "${NPM_FAKE_ROOT:-}" "${NPM_FAKE_ROOT:-}" >&2',
+      "  fi",
+      "  exit 1",
+      "fi",
+      'if [[ -n "${NPM_FAKE_PACKAGE_DIR:-}" ]]; then',
+      '  mkdir -p "$NPM_FAKE_PACKAGE_DIR/dist"',
+      '  printf "#!/bin/sh\\nprintf \'2026.8.1\\\\n\'\\n" > "$NPM_FAKE_PACKAGE_DIR/openclaw.mjs"',
+      '  printf "#!/usr/bin/env node\\n" > "$NPM_FAKE_PACKAGE_DIR/dist/entry.js"',
+      '  chmod +x "$NPM_FAKE_PACKAGE_DIR/openclaw.mjs" "$NPM_FAKE_PACKAGE_DIR/dist/entry.js"',
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(path, 0o755);
+}
+
 export function writeNpmLifecycleFixture(path: string) {
   writeFileSync(
     path,
