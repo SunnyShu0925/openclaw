@@ -6803,12 +6803,16 @@ export const en: TranslationMap = {
     },
     actions: {
       runNow: "Run now",
+      runNowJob: "Run now: {name}",
       runIfDue: "Run if due",
       pause: "Pause",
+      pauseJob: "Pause: {name}",
       resume: "Resume",
+      resumeJob: "Resume: {name}",
       clone: "Clone",
       remove: "Remove",
       removeConfirmTitle: 'Remove "{name}"?',
+      moreJob: "More actions for {name}",
       removeConfirmMessage:
         "This permanently deletes the automation and stops all future runs. This action cannot be undone.",
       more: "More actions",
