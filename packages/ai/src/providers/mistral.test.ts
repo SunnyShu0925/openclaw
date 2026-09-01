@@ -15,7 +15,7 @@ interface MistralMockState {
   streamResult: unknown;
 }
 
-const mistralMockState = vi.hoisted((): MistralMockState => {
+function getMistralMockState(): MistralMockState {
   const key = "__mistralMockState";
   const g = globalThis as Record<string, unknown>;
   const existing = g[key] as MistralMockState | undefined;
@@ -33,7 +33,9 @@ const mistralMockState = vi.hoisted((): MistralMockState => {
   };
   g[key] = fresh;
   return fresh;
-});
+}
+
+const mistralMockState = getMistralMockState();
 
 vi.mock("node:crypto", async () => {
   const actual = await vi.importActual<typeof import("node:crypto")>("node:crypto");

@@ -1,7 +1,7 @@
-import { toolCallFromJSON, type ToolCall } from "@mistralai/mistralai/models/components";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureAiTransportHost } from "../host.js";
-import type { Context, Model } from "../types.js";
+
+const MISTRAL_MOCK_KEY = "__mistralMockState";
 
 interface MistralMockState {
   configs: unknown[];
@@ -13,10 +13,9 @@ interface MistralMockState {
   streamResult: unknown;
 }
 
-const mistralMockState = vi.hoisted((): MistralMockState => {
-  const key = "__mistralMockState";
+function getMistralMockState(): MistralMockState {
   const g = globalThis as Record<string, unknown>;
-  const existing = g[key] as MistralMockState | undefined;
+  const existing = g[MISTRAL_MOCK_KEY] as MistralMockState | undefined;
   if (existing) {
     return existing;
   }
@@ -29,9 +28,11 @@ const mistralMockState = vi.hoisted((): MistralMockState => {
     streamError: new Error("stop before network"),
     streamResult: undefined,
   };
-  g[key] = fresh;
+  g[MISTRAL_MOCK_KEY] = fresh;
   return fresh;
-});
+}
+
+const mistralMockState = getMistralMockState();
 
 vi.mock("node:crypto", async () => {
   const actual = await vi.importActual<typeof import("node:crypto")>("node:crypto");
@@ -81,6 +82,8 @@ vi.mock("@mistralai/mistralai", async () => {
   };
 });
 
+import { toolCallFromJSON, type ToolCall } from "@mistralai/mistralai/models/components";
+import type { Context, Model } from "../types.js";
 import { streamMistral } from "./mistral.js";
 
 function makeMistralModel(): Model<"mistral-conversations"> {
@@ -169,7 +172,6 @@ async function runMistralToolFixture(
     toolCalls: result.content.filter((block) => block.type === "toolCall"),
   };
 }
-
 describe("Mistral provider — fragmented streamed function names", () => {
   beforeEach(() => {
     mistralMockState.configs = [];
