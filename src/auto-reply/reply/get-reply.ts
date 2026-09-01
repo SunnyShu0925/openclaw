@@ -207,12 +207,15 @@ function canSelfServeLocalPaths(params: {
   }
   const policySessionKey = resolveRuntimePolicySessionKey({
     cfg: params.cfg,
+    agentId: params.agentId,
     ctx: params.ctx,
     sessionKey: params.sessionKey,
   });
   const sandboxed = resolveSandboxRuntimeStatus({
     cfg: params.cfg,
-    sessionKey: policySessionKey,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    classificationSessionKey: policySessionKey,
   }).sandboxed;
   if (
     (sandboxed && !params.stagedPathsAvailable) ||
@@ -560,6 +563,7 @@ export async function getReplyFromConfig(
       stageRemoteInboundMediaIfNeeded({
         ctx: finalized,
         cfg,
+        agentId,
         sessionKey: agentSessionKey,
         workspaceDir,
       }),
@@ -716,8 +720,15 @@ export async function getReplyFromConfig(
   }
   // Utility-model narration is turn-local decoration. Initialize the durable
   // session first, then keep it completely outside model-locked native runs.
-  const optsWithSessionSkillOverrides = sessionEntry.toolOverrides?.skills
-    ? { ...optsWithCommandQueueOverride, skillOverrides: sessionEntry.toolOverrides.skills }
+  const admittedSessionSettings =
+    // SAFETY: Gateway dispatch owns this internal extension and forwards the same options object here.
+    (optsWithCommandQueueOverride as RuntimeInternalGetReplyOptions | undefined)
+      ?.admittedSessionSettings;
+  const turnToolOverrides = admittedSessionSettings
+    ? admittedSessionSettings.toolOverrides
+    : sessionEntry.toolOverrides;
+  const optsWithSessionSkillOverrides = turnToolOverrides?.skills
+    ? { ...optsWithCommandQueueOverride, skillOverrides: turnToolOverrides.skills }
     : optsWithCommandQueueOverride;
   const resolvedOpts = attachProgressNarratorToReplyOptions({
     cfg,
@@ -1259,6 +1270,7 @@ export async function getReplyFromConfig(
         ctx,
         sessionCtx,
         cfg,
+        agentId,
         sessionKey,
         workspaceDir,
       }),
