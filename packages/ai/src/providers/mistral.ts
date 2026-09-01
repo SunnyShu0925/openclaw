@@ -182,8 +182,15 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
       }
       // Derive the requested tool-name set from the final payload, after onPayload
       // may have replaced it, so the assembly gate sees the tools actually sent.
+      // payload.tools is a Mistral tool union; only function tools carry a name.
       const requestedToolNames = payload.tools
-        ? new Set(payload.tools.map((tool) => tool.function.name))
+        ? new Set(
+            payload.tools
+              .filter(
+                (tool): tool is FunctionTool & { type: "function" } => tool.type === "function",
+              )
+              .map((tool) => tool.function.name),
+          )
         : undefined;
       const headers = { ...model.headers, ...options?.headers };
       // Mistral infrastructure uses `x-affinity` for KV-cache reuse (prefix caching).
