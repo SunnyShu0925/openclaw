@@ -862,6 +862,73 @@ describe("Mistral provider", () => {
     ]);
   });
 
+  it("refuses a differing whole name on a stable id when it cannot assemble a requested tool name", async () => {
+    // Without a provider wire contract, a differing name on a stable id is an
+    // identity collision (or a snapshot replacement), not a provable fragment.
+    // Gate the append on the assembled name being a prefix of a requested tool
+    // name: get_weather + read_file => "get_weatherread_file", which is a prefix
+    // of no requested tool, so main's fail-closed refusal fires instead of
+    // forwarding the first call's arguments under an unmatched name.
+    const parsed = [
+      [
+        parseMistralToolCall({
+          id: "call_x",
+          index: 0,
+          function: { name: "get_weather", arguments: '{"city":"Paris"}' },
+        }),
+      ],
+      [
+        parseMistralToolCall({
+          id: "call_x",
+          index: 0,
+          function: { name: "read_file", arguments: "" },
+        }),
+      ],
+    ];
+    mistralMockState.streamResult = mistralToolStream("response-name-gate-collision", ...parsed);
+    const result = await runMistralFixture({
+      ...context,
+      tools: [
+        { ...makeHealthyTool(), name: "get_weather" },
+        { ...makeHealthyTool(), name: "read_file" },
+      ] as never,
+    });
+
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toContain(
+      "Mistral streamed tool-call continuation changed function name; refusing to merge arguments",
+    );
+  });
+
+  it("assembles a fragmented name when the concatenation is a prefix of a requested tool name", async () => {
+    // Genuine fragments (get_ + weather) assemble toward a requested tool name
+    // ("get_weather"), so the gate permits the append and the call completes.
+    const parsed = [
+      [
+        parseMistralToolCall({
+          id: "call_a",
+          index: 0,
+          function: { name: "get_", arguments: '{"city":' },
+        }),
+      ],
+      [
+        parseMistralToolCall({
+          id: "call_a",
+          index: 0,
+          function: { name: "weather", arguments: '"Paris"}' },
+        }),
+      ],
+    ];
+    mistralMockState.streamResult = mistralToolStream("response-name-gate-fragment", ...parsed);
+    const result = await runMistralFixture({
+      ...context,
+      tools: [{ ...makeHealthyTool(), name: "get_weather" }] as never,
+    });
+    const toolCalls = result.content.filter((block) => block.type === "toolCall");
+
+    expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
+
   it("does not concatenate when a late id adopts a name-matched block", async () => {
     // openclaw deliberately supports id-less Mistral-compatible endpoints. When
     // an idless opening fragment resolves by name and the explicit id arrives

@@ -175,7 +175,13 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
         normalizeMistralToolCallId(id),
       );
 
-      let payload = buildChatPayload(model, context, transformedMessages, options);
+      const { payload: builtPayload, convertedToolNames } = buildChatPayload(
+        model,
+        context,
+        transformedMessages,
+        options,
+      );
+      let payload = builtPayload;
       const nextPayload = await options?.onPayload?.(payload, model);
       if (nextPayload !== undefined) {
         payload = nextPayload as ChatCompletionStreamRequest;
@@ -199,7 +205,7 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
         });
       }
       stream.push({ type: "start", partial: output });
-      await consumeChatStream(model, output, stream, mistralStream);
+      await consumeChatStream(model, output, stream, mistralStream, convertedToolNames);
 
       if (options?.signal?.aborted) {
         throw transportAbortError(options.signal);
@@ -319,7 +325,7 @@ function buildChatPayload(
   context: Context,
   messages: Message[],
   options?: MistralOptions,
-): ChatCompletionStreamRequest {
+): { payload: ChatCompletionStreamRequest; convertedToolNames?: Set<string> } {
   const payload: ChatCompletionStreamRequest = {
     model: model.id,
     stream: true,
@@ -367,7 +373,7 @@ function buildChatPayload(
     });
   }
 
-  return payload;
+  return { payload, convertedToolNames };
 }
 
 function resolveMistralPromptCacheKey(options?: MistralOptions): string | undefined {
@@ -399,6 +405,7 @@ async function consumeChatStream(
   output: AssistantMessage,
   stream: AssistantMessageEventStream,
   mistralStream: AsyncIterable<CompletionEvent>,
+  requestedToolNames?: ReadonlySet<string>,
 ): Promise<void> {
   let currentBlock: TextContent | ThinkingContent | null = null;
   let terminalFinishReason: string | undefined;
@@ -749,16 +756,27 @@ async function consumeChatStream(
       }
       if (functionName) {
         if (existingIndex !== undefined && block.name !== functionName) {
-          // Continuation of an existing block. Append only a genuinely new
-          // fragment (get_ + weather => get_weather). A name that already equals
-          // the accumulated name is a repeated whole name
-          // (get_weather + get_weather => get_weather) or a late-id adoption onto
-          // a name-matched block — both must be idempotent, never concatenated
-          // into a name no registered tool will match. This also keeps the
-          // explicit-id and idless arms aligned: a repeat is treated as a repeat
-          // regardless of how the block was resolved.
+          // Continuation of an existing block with a differing name. Append only
+          // when the assembled name could still be a requested tool name: the
+          // concatenation must be a prefix of (or equal to) one of the tool names
+          // actually sent to the provider. A collision (get_weather + read_file)
+          // or a snapshot replacement (get_ + get_weather) cannot assemble into a
+          // registered name, so it is refused with main's fail-closed error
+          // rather than forwarded under a name no registered tool will match.
+          // This makes "fragment vs snapshot" a measured property (the assembled
+          // prefix is reachable) instead of a wire-contract assumption.
+          const assembled = block.name + functionName;
+          if (
+            requestedToolNames &&
+            requestedToolNames.size > 0 &&
+            ![...requestedToolNames].some((name) => name.startsWith(assembled))
+          ) {
+            throw new Error(
+              "Mistral streamed tool-call continuation changed function name; refusing to merge arguments",
+            );
+          }
           const previousName = block.name;
-          block.name += functionName;
+          block.name = assembled;
           // The opening fragment was recorded as the block's durable name
           // identity at creation. Once the full name is assembled, that stale
           // fragment must be replaced so a later idless call repeating the
