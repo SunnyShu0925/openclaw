@@ -3,21 +3,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureAiTransportHost } from "../host.js";
 import type { Context, Model } from "../types.js";
 
-const mistralMockState = vi.hoisted(() => {
+interface MistralMockState {
+  configs: unknown[];
+  payloads: unknown[];
+  requestOptions: unknown[];
+  randomUUIDs: string[];
+  requestThroughHttpClient: boolean;
+  streamError: unknown;
+  streamResult: unknown;
+}
+
+const mistralMockState = vi.hoisted((): MistralMockState => {
   const key = "__mistralMockState";
   const g = globalThis as Record<string, unknown>;
-  if (!g[key]) {
-    g[key] = {
-      configs: [] as unknown[],
-      payloads: [] as unknown[],
-      requestOptions: [] as unknown[],
-      randomUUIDs: [] as string[],
-      requestThroughHttpClient: false,
-      streamError: new Error("stop before network") as unknown,
-      streamResult: undefined as unknown,
-    };
+  const existing = g[key] as MistralMockState | undefined;
+  if (existing) {
+    return existing;
   }
-  return g[key];
+  const fresh: MistralMockState = {
+    configs: [],
+    payloads: [],
+    requestOptions: [],
+    randomUUIDs: [],
+    requestThroughHttpClient: false,
+    streamError: new Error("stop before network"),
+    streamResult: undefined,
+  };
+  g[key] = fresh;
+  return fresh;
 });
 
 vi.mock("node:crypto", async () => {
@@ -89,33 +102,6 @@ const context = {
   messages: [{ role: "user", content: "hello", timestamp: 0 }],
 } satisfies Context;
 
-function makeUnreadableParameterTool() {
-  const tool = {
-    name: "broken_tool",
-    description: "broken tool",
-    parameters: { type: "object", properties: {} },
-    execute: async () => ({ content: [{ type: "text", text: "broken" }] }),
-  };
-  Object.defineProperty(tool, "parameters", {
-    enumerable: true,
-    get() {
-      throw new Error("fuzzplugin parameters getter exploded");
-    },
-  });
-  return tool;
-}
-
-function makeUnreadableNameTool() {
-  const tool = makeHealthyTool();
-  Object.defineProperty(tool, "name", {
-    enumerable: true,
-    get() {
-      throw new Error("fuzzplugin name getter exploded");
-    },
-  });
-  return tool;
-}
-
 function makeHealthyTool(parameters: Record<string, unknown> = { type: "object", properties: {} }) {
   return {
     name: "healthy_tool",
@@ -131,13 +117,6 @@ function parseMistralToolCall(value: unknown): ToolCall {
     throw new Error("Mistral SDK failed to parse tool-call fixture");
   }
   return parsed.value;
-}
-
-function requireMistralFixtureValue<T>(value: T | undefined): T {
-  if (value === undefined) {
-    throw new Error("Mistral fixture is missing an expected value");
-  }
-  return value;
 }
 
 function mistralToolStream(responseId: string, ...chunks: ToolCall[][]) {
@@ -162,25 +141,12 @@ function mistralToolStream(responseId: string, ...chunks: ToolCall[][]) {
 }
 
 type MistralTestOptions = NonNullable<Parameters<typeof streamMistral>[2]>;
-type SimpleMistralTestOptions = NonNullable<Parameters<typeof streamSimpleMistral>[2]>;
-
 function runMistralFixture(
   testContext: Context = context,
   options: MistralTestOptions = {},
   testModel = makeMistralModel(),
 ) {
   return streamMistral(testModel, testContext, {
-    apiKey: "sk-mistral-provider",
-    ...options,
-  }).result();
-}
-
-function runSimpleMistralFixture(
-  testContext: Context = context,
-  options: SimpleMistralTestOptions = {},
-  testModel = makeMistralModel(),
-) {
-  return streamSimpleMistral(testModel, testContext, {
     apiKey: "sk-mistral-provider",
     ...options,
   }).result();
@@ -202,38 +168,6 @@ async function runMistralToolFixture(
     parsedChunks,
     toolCalls: result.content.filter((block) => block.type === "toolCall"),
   };
-}
-
-function makeMistralToolResultContext(
-  toolName: string,
-  content: unknown[],
-  options: { toolCallId?: string; includeUser?: boolean; includeToolResultName?: boolean } = {},
-): Context {
-  const toolCallId = options.toolCallId ?? "tool_1";
-  return {
-    messages: [
-      ...(options.includeUser === false
-        ? []
-        : [{ ...requireMistralFixtureValue(context.messages[0]), timestamp: 1 }]),
-      {
-        role: "assistant",
-        provider: "mistral",
-        api: "mistral-conversations",
-        model: "mistral-large-latest",
-        stopReason: "toolUse",
-        timestamp: 0,
-        content: [{ type: "toolCall", id: toolCallId, name: toolName, arguments: {} }],
-      },
-      {
-        role: "toolResult",
-        toolCallId,
-        ...(options.includeToolResultName ? { toolName } : {}),
-        content,
-        isError: false,
-        timestamp: 0,
-      },
-    ],
-  } as unknown as Context;
 }
 
 describe("Mistral provider — fragmented streamed function names", () => {

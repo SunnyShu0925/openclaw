@@ -5,21 +5,34 @@ import { withProviderAcceptanceObserver } from "../transports/transport-stream-s
 import type { Context, Model } from "../types.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../utils/system-prompt-cache-boundary.js";
 
-const mistralMockState = vi.hoisted(() => {
+interface MistralMockState {
+  configs: unknown[];
+  payloads: unknown[];
+  requestOptions: unknown[];
+  randomUUIDs: string[];
+  requestThroughHttpClient: boolean;
+  streamError: unknown;
+  streamResult: unknown;
+}
+
+const mistralMockState = vi.hoisted((): MistralMockState => {
   const key = "__mistralMockState";
   const g = globalThis as Record<string, unknown>;
-  if (!g[key]) {
-    g[key] = {
-      configs: [] as unknown[],
-      payloads: [] as unknown[],
-      requestOptions: [] as unknown[],
-      randomUUIDs: [] as string[],
-      requestThroughHttpClient: false,
-      streamError: new Error("stop before network") as unknown,
-      streamResult: undefined as unknown,
-    };
+  const existing = g[key] as MistralMockState | undefined;
+  if (existing) {
+    return existing;
   }
-  return g[key];
+  const fresh: MistralMockState = {
+    configs: [],
+    payloads: [],
+    requestOptions: [],
+    randomUUIDs: [],
+    requestThroughHttpClient: false,
+    streamError: new Error("stop before network"),
+    streamResult: undefined,
+  };
+  g[key] = fresh;
+  return fresh;
 });
 
 vi.mock("node:crypto", async () => {
