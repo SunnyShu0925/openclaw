@@ -110,6 +110,19 @@ function buildConfiguredAudioCfg() {
   });
 }
 
+function buildLinkCtx(overrides: Partial<MsgContext> = {}): MsgContext {
+  const body = "read https://example.test/page";
+  return buildCtx({
+    Body: body,
+    BodyForAgent: body,
+    RawBody: body,
+    CommandBody: body,
+    BodyForCommands: body,
+    media: undefined,
+    ...overrides,
+  });
+}
+
 function hookEventCall(index: number): [string, string, string, Record<string, unknown>] {
   const call = mocks.createInternalHookEvent.mock.calls[index];
   if (!call) {
@@ -610,15 +623,7 @@ describe("getReplyFromConfig message hooks", () => {
     );
 
     await getReplyFromConfig(
-      buildCtx({
-        Body: body,
-        BodyForAgent: body,
-        RawBody: body,
-        CommandBody: body,
-        BodyForCommands: body,
-        SessionKey: sessionKey,
-        media: undefined,
-      }),
+      buildLinkCtx({ SessionKey: sessionKey }),
       undefined,
       withFastReplyConfig({}),
     );
@@ -630,22 +635,13 @@ describe("getReplyFromConfig message hooks", () => {
 
   it("fails closed before link understanding when the reserved session is missing", async () => {
     const sessionKey = "agent:main:harness:codex:supervision:missing-link";
-    const body = "read https://example.test/page";
     mocks.resolveReplySessionPreprocessingState.mockImplementationOnce(() => {
       throw new Error(AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE);
     });
 
     await expect(
       getReplyFromConfig(
-        buildCtx({
-          Body: body,
-          BodyForAgent: body,
-          RawBody: body,
-          CommandBody: body,
-          BodyForCommands: body,
-          SessionKey: sessionKey,
-          media: undefined,
-        }),
+        buildLinkCtx({ SessionKey: sessionKey }),
         undefined,
         withFastReplyConfig({}),
       ),
@@ -1040,25 +1036,34 @@ describe("getReplyFromConfig message hooks", () => {
     ).toBe(true);
   });
 
+  it("stops reply routing when link preprocessing follows caller cancellation", async () => {
+    const controller = new AbortController();
+    mocks.applyLinkUnderstanding.mockImplementationOnce(async (...args: unknown[]) => {
+      const { signal } = args[0] as { signal?: AbortSignal };
+      controller.abort();
+      signal?.throwIfAborted();
+    });
+
+    await expect(
+      getReplyFromConfig(
+        buildLinkCtx(),
+        { abortSignal: controller.signal },
+        withFastReplyConfig({}),
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(mocks.applyLinkUnderstanding).toHaveBeenCalledOnce();
+    expect(mocks.initSessionState).not.toHaveBeenCalled();
+    expect(mocks.resolveReplyDirectives).not.toHaveBeenCalled();
+    expect(mocks.createInternalHookEvent).not.toHaveBeenCalled();
+  });
+
   it("continues dispatching URL messages when link understanding fails before reply routing", async () => {
     mocks.applyLinkUnderstanding.mockRejectedValueOnce(
       new Error("Cannot find module '/tmp/openclaw/dist/link-understanding/apply.runtime-old.js'"),
     );
 
-    const reply = await getReplyFromConfig(
-      buildCtx({
-        Body: "read https://example.test/page",
-        BodyForAgent: "read https://example.test/page",
-        RawBody: "read https://example.test/page",
-        CommandBody: "read https://example.test/page",
-        BodyForCommands: "read https://example.test/page",
-        media: undefined,
-        Sticker: undefined,
-        StickerMediaIncluded: undefined,
-      }),
-      undefined,
-      withFastReplyConfig({}),
-    );
+    const reply = await getReplyFromConfig(buildLinkCtx(), undefined, withFastReplyConfig({}));
 
     expect(reply).toEqual({ text: "ok" });
     expect(mocks.applyMediaUnderstanding).not.toHaveBeenCalled();

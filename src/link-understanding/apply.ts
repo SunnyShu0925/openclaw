@@ -22,11 +22,7 @@ export async function applyLinkUnderstanding(params: {
     signal: params.signal,
   });
 
-  if (result.outputs.length === 0) {
-    return result;
-  }
-
-  if (params.signal?.aborted) {
+  if (result.outputs.length === 0 || params.signal?.aborted) {
     return result;
   }
 

@@ -145,6 +145,8 @@ async function runCliEntry(params: {
     timeoutMs,
     input: params.content,
     signal: params.signal,
+    // Processor wrappers and their children share the reply's cancellation lifetime.
+    killProcessTree: true,
     env: {
       OPENCLAW_LINK_FINAL_URL: params.finalUrl,
       OPENCLAW_LINK_URL: params.url,
