@@ -398,4 +398,27 @@ describe("pw-session page enumeration", () => {
       expect(fixture.newCDPSession).not.toHaveBeenCalledWith(blockedPage);
     }
   });
+
+  it("removes the abort listener after successful enumeration", async () => {
+    const fixture = makePageEnumerationBrowser([
+      { targetId: "T1", title: "Tab 1", url: "https://example.com" },
+    ]);
+    connectOverCdpSpy.mockResolvedValue(fixture.browser);
+    getChromeWebSocketUrlSpy.mockResolvedValue(null);
+
+    const controller = new AbortController();
+    const addSpy = vi.spyOn(controller.signal, "addEventListener");
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+    await listPagesViaPlaywright({
+      cdpUrl: "http://127.0.0.1:9222",
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    });
+
+    const abortAddCalls = addSpy.mock.calls.filter((c) => c[0] === "abort");
+    expect(abortAddCalls).toHaveLength(1);
+    const abortRemoveCalls = removeSpy.mock.calls.filter((c) => c[0] === "abort");
+    expect(abortRemoveCalls).toHaveLength(1);
+  });
 });

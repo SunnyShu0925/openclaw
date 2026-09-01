@@ -405,6 +405,7 @@ export async function listPagesViaPlaywright(opts: {
   ssrfPolicy?: SsrFPolicy;
   timeoutMs?: number;
   requireCompleteTargetList?: boolean;
+  signal?: AbortSignal;
 }) {
   const timeoutMs =
     typeof opts.timeoutMs === "number" && Number.isFinite(opts.timeoutMs)
@@ -429,14 +430,36 @@ export async function listPagesViaPlaywright(opts: {
     }, timeoutMs);
     timer.unref?.();
   });
+  let abortError: Error | undefined;
+  let abortListener: (() => void) | undefined;
+  const abort = opts.signal
+    ? new Promise<never>((_, reject) => {
+        if (opts.signal!.aborted) {
+          attempt.cancelled = true;
+          abortError = new Error("Playwright page enumeration was aborted.");
+          reject(abortError);
+          return;
+        }
+        abortListener = () => {
+          attempt.cancelled = true;
+          abortError = new Error("Playwright page enumeration was aborted.");
+          reject(abortError);
+        };
+        opts.signal!.addEventListener("abort", abortListener, { once: true });
+      })
+    : null;
   try {
-    const enumeration = await Promise.race([readPagesViaPlaywright(opts, attempt), timeout]);
+    const enumeration = await Promise.race(
+      abort
+        ? [readPagesViaPlaywright(opts, attempt), timeout, abort]
+        : [readPagesViaPlaywright(opts, attempt), timeout],
+    );
     if (enumeration.status === "unavailable") {
       throw new Error("Playwright page target identities are temporarily unavailable.");
     }
     return enumeration.pages;
   } catch (err) {
-    if (err === timeoutError) {
+    if (err === timeoutError || err === abortError) {
       await forceDisconnectPlaywrightForTarget({
         cdpUrl: opts.cdpUrl,
         ssrfPolicy: opts.ssrfPolicy,
@@ -447,6 +470,9 @@ export async function listPagesViaPlaywright(opts: {
   } finally {
     if (timer) {
       clearTimeout(timer);
+    }
+    if (abortListener && opts.signal) {
+      opts.signal.removeEventListener("abort", abortListener);
     }
   }
 }

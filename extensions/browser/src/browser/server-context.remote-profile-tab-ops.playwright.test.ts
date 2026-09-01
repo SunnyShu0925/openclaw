@@ -68,10 +68,12 @@ describe("browser remote profile tab ops via Playwright", () => {
 
     const tabs = await remote.listTabs();
     expect(tabs.map((t) => t.targetId)).toEqual(["T1"]);
+    // Enumeration budget falls back to the action-level timeout, not the
+    // CDP handshake, so a tab-heavy session is not mistaken for a dead relay.
     expect(listPagesViaPlaywright).toHaveBeenCalledWith({
       cdpUrl: "https://1.1.1.1:9222/chrome?token=abc",
       ssrfPolicy: permissiveRemoteCdpPolicy,
-      timeoutMs: 3000,
+      timeoutMs: 60_000,
     });
 
     const opened = await remote.openTab("http://127.0.0.1:3000");
@@ -97,6 +99,61 @@ describe("browser remote profile tab ops via Playwright", () => {
       ssrfPolicy: permissiveRemoteCdpPolicy,
     });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("forwards a caller-supplied enumeration deadline instead of the handshake timeout", async () => {
+    const listPagesViaPlaywright = vi.fn(async () => [
+      { targetId: "T1", title: "Tab 1", url: "https://example.com", type: "page" },
+    ]);
+    vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
+      listPagesViaPlaywright,
+    } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
+    const fetchMock = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            webSocketDebuggerUrl:
+              "wss://1.1.1.1:9222/devtools/browser/REMOTE-BROWSER?auth=fixture-value",
+          }),
+        }) as unknown as Response,
+    );
+    const { remote } = deps.createRemoteRouteHarness(fetchMock);
+
+    await remote.listTabs({ timeoutMs: 45_000 });
+
+    expect(listPagesViaPlaywright).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 45_000 }),
+    );
+  });
+
+  it("keeps the enumeration budget at or above the handshake timeout", async () => {
+    const listPagesViaPlaywright = vi.fn(async () => [
+      { targetId: "T1", title: "Tab 1", url: "https://example.com", type: "page" },
+    ]);
+    vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
+      listPagesViaPlaywright,
+    } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
+    const fetchMock = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            webSocketDebuggerUrl:
+              "wss://1.1.1.1:9222/devtools/browser/REMOTE-BROWSER?auth=fixture-value",
+          }),
+        }) as unknown as Response,
+    );
+    const { state, remote } = deps.createRemoteRouteHarness(fetchMock);
+    // A caller deadline below the handshake must not shrink enumeration below
+    // the time needed to establish the connection in the first place.
+    state.resolved.remoteCdpHandshakeTimeoutMs = 5_000;
+
+    await remote.listTabs({ timeoutMs: 1_000 });
+
+    expect(listPagesViaPlaywright).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 5_000 }),
+    );
   });
 
   it("uses the remote HTTP timeout for the ownership version probe", async () => {
@@ -222,6 +279,48 @@ describe("browser remote profile tab ops via Playwright", () => {
       | { targetId?: unknown }
       | undefined;
     expect(exactFocusCall?.targetId).toBe("B");
+  });
+
+  it("does not focus a tab after cancellation before final I/O", async () => {
+    const listPagesViaPlaywright = vi.fn(async () => [page("A", "https://example.com")]);
+    const focusPageByTargetIdViaPlaywright = vi.fn(async () => {
+      await new Promise<void>(() => {});
+    });
+    vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
+      listPagesViaPlaywright,
+      focusPageByTargetIdViaPlaywright,
+    } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
+
+    const { remote } = deps.createRemoteRouteHarness();
+
+    const controller = new AbortController();
+    const focusing = remote.focusTab("A", { exactTargetId: true, signal: controller.signal });
+
+    controller.abort(new Error("cancelled mid-selection"));
+
+    await expect(focusing).rejects.toThrow(/cancelled/);
+    expect(focusPageByTargetIdViaPlaywright).not.toHaveBeenCalled();
+  });
+
+  it("does not close a tab after cancellation before final I/O", async () => {
+    const listPagesViaPlaywright = vi.fn(async () => [page("A", "https://example.com")]);
+    const closePageByTargetIdViaPlaywright = vi.fn(async () => {
+      await new Promise<void>(() => {});
+    });
+    vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
+      listPagesViaPlaywright,
+      closePageByTargetIdViaPlaywright,
+    } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
+
+    const { remote } = deps.createRemoteRouteHarness();
+
+    const controller = new AbortController();
+    const closing = remote.closeTab("A", { exactTargetId: true, signal: controller.signal });
+
+    controller.abort(new Error("cancelled mid-selection"));
+
+    await expect(closing).rejects.toThrow(/cancelled/);
+    expect(closePageByTargetIdViaPlaywright).not.toHaveBeenCalled();
   });
 
   it("transfers stable aliases across a high-confidence target replacement", async () => {

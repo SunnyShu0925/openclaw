@@ -129,18 +129,38 @@ export function resolveBrowserToolTimeoutMs({
   requestedTimeoutMs,
   action,
   isUserBrowserProfile,
+  usesPersistentPlaywright,
+  isNodeProxy,
   resolvedBrowser,
 }: {
   requestedTimeoutMs?: number;
   action: string;
   isUserBrowserProfile: boolean;
+  usesPersistentPlaywright: boolean;
+  isNodeProxy: boolean;
   resolvedBrowser: ReturnType<typeof resolveBrowserConfig>;
 }) {
-  return (
-    requestedTimeoutMs ??
-    (EXISTING_SESSION_MANAGE_ACTIONS.has(action) &&
+  if (requestedTimeoutMs !== undefined) {
+    return requestedTimeoutMs;
+  }
+  if (
+    EXISTING_SESSION_MANAGE_ACTIONS.has(action) &&
     (isUserBrowserProfile || (action === "profiles" && hasExistingSessionProfile(resolvedBrowser)))
-      ? DEFAULT_EXISTING_SESSION_MANAGE_TIMEOUT_MS
-      : undefined)
-  );
+  ) {
+    return DEFAULT_EXISTING_SESSION_MANAGE_TIMEOUT_MS;
+  }
+  // Persistent-Playwright profiles (e.g. extension relay) enumerate tabs over a
+  // scoped connection that can legitimately take longer than the 3s client
+  // default. Carry the action-level budget so the client does not abort before
+  // the server-side enumeration finishes. A browser-node proxy clears the
+  // profile so the node resolves its own default; the Gateway cannot know
+  // whether that default is persistent-Playwright, so conservatively carry the
+  // action budget for tab-enumeration actions to avoid a 20-second proxy
+  // deadline killing a healthy 20-60s enumeration on the node.
+  const isTabEnumerationAction =
+    action === "tabs" || action === "open" || action === "focus" || action === "close";
+  if (usesPersistentPlaywright || (isNodeProxy && isTabEnumerationAction)) {
+    return resolvedBrowser.actionTimeoutMs;
+  }
+  return undefined;
 }
