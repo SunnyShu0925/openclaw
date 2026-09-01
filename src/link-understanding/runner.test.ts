@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { LinkModelConfig } from "../config/types.tools.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { runCommandWithTimeout } from "../process/exec.js";
+import { applyLinkUnderstanding } from "./apply.js";
 import { runLinkUnderstanding } from "./runner.js";
 
 const mocks = vi.hoisted(() => ({
@@ -239,7 +240,6 @@ describe("runLinkUnderstanding", () => {
   });
 
   it("skips pre-aborted work without changing inbound context", async () => {
-    const { applyLinkUnderstanding } = await import("./apply.js");
     const controller = new AbortController();
     controller.abort();
     const context = ctx("see https://example.com/page");
@@ -291,7 +291,6 @@ describe("runLinkUnderstanding", () => {
     { outcome: "failed exit", code: 1, stdout: "", termination: "exit" },
     { outcome: "signal termination", code: null, stdout: "", termination: "signal" },
   ])("cancellation overrides $outcome without fallback or context changes", async (result) => {
-    const { applyLinkUnderstanding } = await import("./apply.js");
     const controller = new AbortController();
     const reason = new Error("reply canceled");
     mockGuardedFetch("first body", "https://example.com/first");

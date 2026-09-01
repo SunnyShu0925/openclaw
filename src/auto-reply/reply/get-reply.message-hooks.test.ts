@@ -110,8 +110,7 @@ function buildConfiguredAudioCfg() {
   });
 }
 
-function buildLinkCtx(overrides: Partial<MsgContext> = {}): MsgContext {
-  const body = "read https://example.test/page";
+function buildTextCtx(body: string, overrides: Partial<MsgContext> = {}): MsgContext {
   return buildCtx({
     Body: body,
     BodyForAgent: body,
@@ -623,7 +622,7 @@ describe("getReplyFromConfig message hooks", () => {
     );
 
     await getReplyFromConfig(
-      buildLinkCtx({ SessionKey: sessionKey }),
+      buildTextCtx(body, { SessionKey: sessionKey }),
       undefined,
       withFastReplyConfig({}),
     );
@@ -641,7 +640,7 @@ describe("getReplyFromConfig message hooks", () => {
 
     await expect(
       getReplyFromConfig(
-        buildLinkCtx({ SessionKey: sessionKey }),
+        buildTextCtx("read https://example.test/page", { SessionKey: sessionKey }),
         undefined,
         withFastReplyConfig({}),
       ),
@@ -941,16 +940,7 @@ describe("getReplyFromConfig message hooks", () => {
 
   it("skips media and link understanding on plain text without attachments or urls", async () => {
     await getReplyFromConfig(
-      buildCtx({
-        Body: "hello there",
-        BodyForAgent: "hello there",
-        RawBody: "hello there",
-        CommandBody: "hello there",
-        BodyForCommands: "hello there",
-        media: undefined,
-        Sticker: undefined,
-        StickerMediaIncluded: undefined,
-      }),
+      buildTextCtx("hello there", { Sticker: undefined, StickerMediaIncluded: undefined }),
       undefined,
       withFastReplyConfig({}),
     );
@@ -1046,7 +1036,7 @@ describe("getReplyFromConfig message hooks", () => {
 
     await expect(
       getReplyFromConfig(
-        buildLinkCtx(),
+        buildTextCtx("read https://example.test/page"),
         { abortSignal: controller.signal },
         withFastReplyConfig({}),
       ),
@@ -1063,7 +1053,11 @@ describe("getReplyFromConfig message hooks", () => {
       new Error("Cannot find module '/tmp/openclaw/dist/link-understanding/apply.runtime-old.js'"),
     );
 
-    const reply = await getReplyFromConfig(buildLinkCtx(), undefined, withFastReplyConfig({}));
+    const reply = await getReplyFromConfig(
+      buildTextCtx("read https://example.test/page"),
+      undefined,
+      withFastReplyConfig({}),
+    );
 
     expect(reply).toEqual({ text: "ok" });
     expect(mocks.applyMediaUnderstanding).not.toHaveBeenCalled();

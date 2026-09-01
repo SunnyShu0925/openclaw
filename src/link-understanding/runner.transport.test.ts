@@ -171,8 +171,8 @@ describe("runLinkUnderstanding transport cleanup", () => {
 });
 
 it("cancels a streaming response and preserves the unmodified inbound context", async () => {
-  const requestStarted = Promise.withResolvers<void>();
-  const socketClosed = Promise.withResolvers<void>();
+  const requestStarted = deferred();
+  const socketClosed = deferred();
   const requests: string[] = [];
   await withServer(
     (req, res) => {
