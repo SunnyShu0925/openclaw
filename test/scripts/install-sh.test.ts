@@ -22,8 +22,6 @@ import { NODE_RELEASE_VERSION_CASES } from "../helpers/node-version-cases.js";
 import { createInstallGitCommitFixtureScript } from "./install-git-fixtures.js";
 import {
   writeNpmBeforePolicyFixture,
-  writeNpmEexistRecoveryFixture,
-  writeNpmEnotemptyRecoveryFixture,
   writeNpmFreshnessConflictFixture,
   writeNpmInstallRetryFixture,
   writeNpmLifecycleFixture,
@@ -1261,106 +1259,60 @@ EOF
     expect(result.status).toBe(0);
   });
 
-  it("recovers from an EEXIST dangling launcher under the default npm command (no --silent)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-npm-eexist-"));
+  it.each(["EEXIST", "ENOTEMPTY"])("recovers from %s with default npm logging", (code) => {
+    const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-npm-recovery-"));
     const bin = join(tmp, "bin");
     const npmRoot = join(tmp, "lib", "node_modules");
     const packageDir = join(npmRoot, "openclaw");
-    const argsLog = join(tmp, "npm-args.log");
+    const calls = join(tmp, "calls");
+    const conflict = code === "EEXIST" ? join(bin, "openclaw") : join(npmRoot, ".openclaw-stale");
     mkdirSync(bin, { recursive: true });
-    mkdirSync(npmRoot, { recursive: true });
-    linkNodeExecutable(bin);
-    // Dangling launcher left by a prior install: points at a path that no longer exists,
-    // so npm's bin linker lstat fails with EEXIST exactly like a real conflicting file.
-    symlinkSync("/nonexistent/ClawX.app/Contents/Resources/cli/openclaw", join(bin, "openclaw"));
-    writeNpmEexistRecoveryFixture(join(bin, "npm"), argsLog);
-
-    try {
-      const result = runInstallShell(
-        [
-          "set -euo pipefail",
-          `source ${JSON.stringify(SCRIPT_PATH)}`,
-          `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
-          "OPENCLAW_VERSION=latest",
-          "USE_BETA=0",
-          // The default command must not pass --silent: it blanks the captured
-          // log that the EEXIST recovery greps over.
-          `npm_global_bin_dir() { printf '%s\\n' ${JSON.stringify(bin)}; }`,
-          "install_openclaw_npm openclaw@latest",
-        ].join("\n"),
-        {
-          NPM_FAKE_ROOT: npmRoot,
-          NPM_FAKE_PREFIX: tmp,
-          NPM_FAKE_PACKAGE_DIR: packageDir,
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const args = readFileSync(argsLog, "utf8");
-      // The default command must not blank the log with npm's --silent alias.
-      expect(args).not.toContain("--silent");
-      // First attempt failed with EEXIST; the recovery moved the dangling launcher
-      // aside and retried, so npm was invoked twice.
-      expect(args.trim().split("\n")).toHaveLength(2);
-      // Recovery fired: the EEXIST branch reported moving the existing command aside.
-      // Under the pre-fix default (--silent blanked the log) this branch never runs.
-      expect(`${result.stdout}\n${result.stderr}`).toContain(
-        "Moved existing openclaw command aside for npm retry",
-      );
-    } finally {
-      rmSync(tmp, { force: true, recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, "retained"), "existing package data");
+    if (code === "EEXIST") {
+      symlinkSync(join(tmp, "missing-launcher"), conflict);
+    } else {
+      mkdirSync(conflict);
     }
-  });
-
-  it("recovers from an ENOTEMPTY stale rename directory under the default npm command (no --silent)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "openclaw-install-npm-enotempty-"));
-    const bin = join(tmp, "bin");
-    const npmRoot = join(tmp, "lib", "node_modules");
-    const packageDir = join(npmRoot, "openclaw");
-    const argsLog = join(tmp, "npm-args.log");
-    mkdirSync(bin, { recursive: true });
-    mkdirSync(npmRoot, { recursive: true });
     linkNodeExecutable(bin);
-    // Stale rename directory left by an interrupted npm install: cleanup_npm_stale_rename_dirs
-    // removes it before retrying. Under --silent the log is blank, so the ENOTEMPTY grep that
-    // gates this recovery never fires.
-    mkdirSync(join(npmRoot, ".openclaw-stale"));
-    writeNpmEnotemptyRecoveryFixture(join(bin, "npm"), argsLog);
-
+    writeNpmInstallRetryFixture(join(bin, "npm"));
+    const error =
+      code === "EEXIST"
+        ? `npm error File exists: ${conflict}\nnpm error code EEXIST`
+        : `npm error ENOTEMPTY: directory not empty, rename ${packageDir} -> ${conflict}`;
     try {
       const result = runInstallShell(
         [
-          "set -euo pipefail",
           `source ${JSON.stringify(SCRIPT_PATH)}`,
           `PATH=${JSON.stringify(`${bin}:/usr/bin:/bin`)}`,
-          "OPENCLAW_VERSION=latest",
-          "USE_BETA=0",
-          // The default command must not pass --silent: it blanks the captured
-          // log that the ENOTEMPTY recovery greps over.
-          `npm_global_bin_dir() { printf '%s\\n' ${JSON.stringify(bin)}; }`,
           "install_openclaw_npm openclaw@latest",
+          "commit_openclaw_bin_backup",
         ].join("\n"),
         {
           NPM_FAKE_ROOT: npmRoot,
           NPM_FAKE_PREFIX: tmp,
           NPM_FAKE_PACKAGE_DIR: packageDir,
+          NPM_FAKE_CALLS: calls,
+          NPM_FAKE_CONFLICT: conflict,
+          NPM_FAKE_OUTCOME: "transient",
+          NPM_FAKE_ERROR: error,
         },
       );
-
-      expect(result.status).toBe(0);
-      const args = readFileSync(argsLog, "utf8");
-      // The default command must not blank the log with npm's --silent alias.
-      expect(args).not.toContain("--silent");
-      // First attempt failed with ENOTEMPTY; the recovery removed the stale rename
-      // directory and retried, so npm was invoked twice.
-      expect(args.trim().split("\n")).toHaveLength(2);
-      // Recovery fired: the ENOTEMPTY branch reported removing stale directories.
-      // Under the pre-fix default (--silent blanked the log) this branch never runs.
-      expect(`${result.stdout}\n${result.stderr}`).toContain(
-        "Removed interrupted npm rename directories",
-      );
-      // The stale rename directory was cleaned up before the retry.
-      expect(existsSync(join(npmRoot, ".openclaw-stale"))).toBe(false);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+        "openclaw@latest",
+        "openclaw@latest",
+      ]);
+      expect(existsSync(conflict)).toBe(false);
+      expect(readFileSync(join(packageDir, "retained"), "utf8")).toBe("existing package data");
+      if (code === "EEXIST") {
+        expect(() => lstatSync(conflict)).toThrow();
+        const backups = readdirSync(bin).filter((name) =>
+          name.startsWith("openclaw.openclaw-backup."),
+        );
+        expect(backups).toHaveLength(1);
+        expect(lstatSync(join(bin, backups[0]!)).isSymbolicLink()).toBe(true);
+      }
     } finally {
       rmSync(tmp, { force: true, recursive: true });
     }
@@ -3614,9 +3566,10 @@ EOF
       expect(warning.status).toBe(0);
       expect(warning.stdout).toContain(`PATH updated in ${fishRc}`);
       expect(warning.stdout).not.toContain("PATH missing user-local bin dir");
-      const fishVersion = spawnSync("fish", ["--version"], { encoding: "utf8" });
-      if (fishVersion.status === 0) {
-        const fresh = spawnSync("fish", ["-lc", "command -v openclaw"], {
+      // Resolve the executable before restricting the child shell's PATH.
+      const fishPath = runInstallShell("command -v fish");
+      if (fishPath.status === 0) {
+        const fresh = spawnSync(fishPath.stdout.trim(), ["-lc", "command -v openclaw"], {
           encoding: "utf8",
           env: { HOME: home, PATH: "/usr/bin:/bin" },
         });
