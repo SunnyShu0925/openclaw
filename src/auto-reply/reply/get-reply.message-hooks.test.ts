@@ -1019,33 +1019,37 @@ describe("getReplyFromConfig message hooks", () => {
     expect(preprocessed[1]).toBe("preprocessed");
     expect(preprocessed[2]).toBe("agent:main:telegram:-100123");
     expect(preprocessed[3]).toBeTypeOf("object");
-    expect(
-      verboseMessages().some((message) =>
-        message.includes("media understanding failed, proceeding with raw content"),
-      ),
-    ).toBe(true);
+    expect(verboseMessages()).toContainEqual(
+      expect.stringContaining("media understanding failed, proceeding with raw content"),
+    );
   });
 
-  it("stops reply routing when link preprocessing follows caller cancellation", async () => {
+  it.each([false, true])("stops canceled replies when link work resolves: %s", async (resolves) => {
     const controller = new AbortController();
+    const reason = resolves ? new Error("reply canceled") : undefined;
     mocks.applyLinkUnderstanding.mockImplementationOnce(async (...args: unknown[]) => {
       const { signal } = args[0] as { signal?: AbortSignal };
-      controller.abort();
-      signal?.throwIfAborted();
+      controller.abort(reason);
+      if (!resolves) {
+        signal?.throwIfAborted();
+      }
     });
 
-    await expect(
-      getReplyFromConfig(
-        buildTextCtx("read https://example.test/page"),
-        { abortSignal: controller.signal },
-        withFastReplyConfig({}),
-      ),
-    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect
+      .soft(
+        getReplyFromConfig(
+          buildTextCtx("read https://example.test/page"),
+          { abortSignal: controller.signal },
+          withFastReplyConfig({}),
+        ),
+      )
+      .rejects.toMatchObject({ name: "AbortError", ...(reason ? { cause: reason } : {}) });
 
     expect(mocks.applyLinkUnderstanding).toHaveBeenCalledOnce();
-    expect(mocks.initSessionState).not.toHaveBeenCalled();
-    expect(mocks.resolveReplyDirectives).not.toHaveBeenCalled();
-    expect(mocks.createInternalHookEvent).not.toHaveBeenCalled();
+    expect.soft(mocks.initSessionState).not.toHaveBeenCalled();
+    expect.soft(mocks.resolveReplyDirectives).not.toHaveBeenCalled();
+    expect.soft(mocks.createInternalHookEvent).not.toHaveBeenCalled();
+    expect.soft(mocks.triggerInternalHook).not.toHaveBeenCalled();
   });
 
   it("continues dispatching URL messages when link understanding fails before reply routing", async () => {
@@ -1064,10 +1068,8 @@ describe("getReplyFromConfig message hooks", () => {
     expect(mocks.applyLinkUnderstanding).toHaveBeenCalledTimes(1);
     expect(mocks.initSessionState).toHaveBeenCalledTimes(1);
     expect(mocks.resolveReplyDirectives).toHaveBeenCalledTimes(1);
-    expect(
-      verboseMessages().some((message) =>
-        message.includes("link understanding failed, proceeding with raw content"),
-      ),
-    ).toBe(true);
+    expect(verboseMessages()).toContainEqual(
+      expect.stringContaining("link understanding failed, proceeding with raw content"),
+    );
   });
 });

@@ -25,7 +25,7 @@ import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
-import { isAbortError } from "../../infra/abort-signal.js";
+import { createAbortError, isAbortError } from "../../infra/abort-signal.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -612,6 +612,12 @@ export async function getReplyFromConfig(
         signal: internalOptsWithSkillFilter?.abortSignal,
       }),
     );
+  }
+  // Cleanup may resolve after cancellation; hooks must stay inside the reply lifetime.
+  if (internalOptsWithSkillFilter?.abortSignal?.aborted) {
+    throw createAbortError("Reply canceled during preprocessing", {
+      cause: internalOptsWithSkillFilter.abortSignal.reason,
+    });
   }
   emitPreAgentMessageHooks({
     ctx: finalized,
