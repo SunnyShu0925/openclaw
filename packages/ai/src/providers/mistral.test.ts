@@ -1292,3 +1292,5 @@ describe("Mistral provider", () => {
     expect(textBlock?.text).not.toContain("(no tool output)");
   });
 });
+
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
