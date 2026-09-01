@@ -279,7 +279,6 @@ packages/ai/src/providers/anthropic.test.ts
 packages/ai/src/providers/anthropic.ts
 packages/ai/src/providers/google-shared.ts
 packages/ai/src/providers/mistral.ts
-packages/ai/src/providers/mistral.test.ts
 packages/ai/src/providers/openai-chatgpt-responses.ts
 packages/ai/src/providers/openai-completions.test.ts
 packages/ai/src/providers/openai-responses-shared.test.ts
