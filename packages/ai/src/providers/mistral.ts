@@ -757,7 +757,16 @@ async function consumeChatStream(
           // into a name no registered tool will match. This also keeps the
           // explicit-id and idless arms aligned: a repeat is treated as a repeat
           // regardless of how the block was resolved.
+          const previousName = block.name;
           block.name += functionName;
+          // The opening fragment was recorded as the block's durable name
+          // identity at creation. Once the full name is assembled, that stale
+          // fragment must be replaced so a later idless call repeating the
+          // opening fragment (e.g. "get_" while the block is now "get_weather")
+          // cannot resolve to this block via name-match and merge argument
+          // buffers across independent calls.
+          identity.functionNames.delete(previousName);
+          identity.functionNames.add(block.name);
         }
         // New blocks already set block.name at creation; a continuation whose
         // incoming name equals the accumulated name leaves it unchanged.

@@ -841,6 +841,27 @@ describe("Mistral provider", () => {
     ]);
   });
 
+  it("keeps an assembled full name from capturing a later idless call repeating the opening fragment", async () => {
+    // An explicit-id call fragments get_ + weather into "get_weather". The
+    // opening fragment "get_" was recorded as the block's durable name identity
+    // at creation; once the full name is assembled, that stale fragment must be
+    // replaced. Otherwise a later idless call named "get_" (SDK-defaulted index
+    // zero, in its own delta) would resolve to this block via name-match and
+    // merge both argument buffers. The sibling case above uses the tail
+    // fragment "weather" (already excluded by the explicit-id guard); this one
+    // covers the opening fragment, which the guard does not reach.
+    const { toolCalls } = await runMistralToolFixture("response-assembled-name-alias", [
+      [{ id: "call_a", index: 1, function: { name: "get_", arguments: '{"city":' } }],
+      [{ id: "call_a", index: 1, function: { name: "weather", arguments: '"Paris"}' } }],
+      [{ index: 0, function: { name: "get_", arguments: '{"city":2}' } }],
+    ]);
+
+    expect(toolCalls).toMatchObject([
+      { id: "call_a", name: "get_weather", arguments: { city: "Paris" } },
+      { name: "get_", arguments: { city: 2 } },
+    ]);
+  });
+
   it("does not concatenate when a late id adopts a name-matched block", async () => {
     // openclaw deliberately supports id-less Mistral-compatible endpoints. When
     // an idless opening fragment resolves by name and the explicit id arrives
