@@ -59,7 +59,13 @@ export type SecretsPlanTarget = {
 /** Serialized plan produced by `openclaw secrets configure` or supplied manually. */
 export type SecretsApplyPlan = {
   version: 1;
-  protocolVersion: 1;
+  /**
+   * Plan protocol version. `1` = legacy agent-owned auth-profile targets
+   * (released v1 clients). `2` = adds shared auth-profile store ownership
+   * (`authProfileStore: "shared"`); older v1-only clients reject v2 plans
+   * because they require `protocolVersion: 1`.
+   */
+  protocolVersion: 1 | 2;
   generatedAt: string;
   generatedBy: "openclaw secrets configure" | "manual";
   providerUpserts?: Record<string, SecretProviderConfig>;
@@ -134,7 +140,11 @@ export function isSecretsApplyPlan(value: unknown): value is SecretsApplyPlan {
     return false;
   }
   const typed = value as Partial<SecretsApplyPlan>;
-  if (typed.version !== 1 || typed.protocolVersion !== 1 || !Array.isArray(typed.targets)) {
+  if (
+    typed.version !== 1 ||
+    (typed.protocolVersion !== 1 && typed.protocolVersion !== 2) ||
+    !Array.isArray(typed.targets)
+  ) {
     return false;
   }
   for (const target of typed.targets) {
@@ -185,6 +195,14 @@ export function isSecretsApplyPlan(value: unknown): value is SecretsApplyPlan {
         return false;
       }
       if (authProfileStore === "shared") {
+        // Shared targets require protocolVersion 2. A v1 plan carrying a
+        // shared target is contradictory: v1-only clients do not understand
+        // the field and would route by agentId (which shared targets omit),
+        // so they reject the plan anyway — but accepting it here would hide
+        // an incompatible representation behind the old version label.
+        if (typed.protocolVersion !== 2) {
+          return false;
+        }
         // Shared targets must not carry agentId. The generator omits it, but
         // hand-written plans are a supported input — a shared target with
         // agentId is ambiguous: new clients route to the shared store while

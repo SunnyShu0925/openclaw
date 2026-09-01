@@ -243,9 +243,15 @@ export function buildSecretsConfigurePlan(params: {
   providerChanges: ConfigureProviderChanges;
   generatedAt?: string;
 }): SecretsApplyPlan {
+  const hasSharedTarget = [...params.selectedTargets.values()].some(
+    (entry) => entry.authProfileStore === "shared",
+  );
   return {
     version: 1,
-    protocolVersion: 1,
+    // Shared auth-profile targets require protocolVersion 2 so older v1-only
+    // clients reject the plan via the version check instead of silently
+    // routing by agentId (which shared targets omit).
+    protocolVersion: hasSharedTarget ? 2 : 1,
     generatedAt: params.generatedAt ?? new Date().toISOString(),
     generatedBy: "openclaw secrets configure",
     targets: [...params.selectedTargets.values()].map((entry) =>

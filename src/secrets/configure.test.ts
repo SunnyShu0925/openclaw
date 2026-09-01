@@ -324,6 +324,113 @@ describe("runSecretsConfigureInteractive", () => {
       expect(opt?.label).toContain("agent");
     }
   });
+
+  it("drops shared candidates whose profile ID also exists in the agent store (mixed-type collision)", async () => {
+    Object.defineProperty(process.stdin, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+
+    // Same profile ID as api_key in shared store and token in agent store.
+    // Runtime drops the shared profile wholesale by ID, so configure must not
+    // offer any shared candidate for that ID — the operator would migrate a
+    // credential the selected agent does not use.
+    const collisionProfileId = "openai:collision";
+    const sharedOnlyProfileId = "anthropic:shared-only";
+
+    resolveSharedAuthStoreOwnershipMock.mockReturnValue({ location: "state-db" });
+    loadPersistedSharedAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        [collisionProfileId]: {
+          type: "api_key",
+          provider: "openai",
+          key: "shared-key",
+        },
+        [sharedOnlyProfileId]: {
+          type: "api_key",
+          provider: "anthropic",
+          key: "shared-only-key",
+        },
+      },
+    });
+    loadPersistedAuthProfileStoreMock.mockReturnValue({
+      version: 1,
+      profiles: {
+        [collisionProfileId]: {
+          type: "token",
+          provider: "openai",
+          token: "local-token",
+        },
+      },
+    });
+
+    type SelectOption = { value: string; hint?: string; label?: string };
+    const capturedCandidates: SelectOption[] = [];
+    textMock.mockReset();
+    textMock.mockImplementation(async (params: { message?: string }) => {
+      if (params.message?.toLowerCase().includes("provider")) {
+        return "openai";
+      }
+      return "OPENAI_API_KEY";
+    });
+    selectMock.mockImplementation(async (params: { options: SelectOption[] }) => {
+      const authProfileOptions = params.options.filter((opt) => opt.hint === "auth profile store");
+      if (authProfileOptions.length > 0) {
+        capturedCandidates.push(...authProfileOptions);
+        return authProfileOptions[0]!.value;
+      }
+      if (params.options.length > 0 && typeof params.options[0]?.value === "string") {
+        return params.options[0]!.value;
+      }
+      return "__done__";
+    });
+    confirmMock.mockResolvedValue(false);
+
+    createSecretsConfigIOMock.mockReturnValue({
+      readConfigFileSnapshotForWrite: async () => ({
+        snapshot: {
+          valid: true,
+          config: {
+            secrets: {
+              providers: {
+                openai: { source: "env" },
+              },
+            },
+          },
+          resolved: {
+            secrets: {
+              providers: {
+                openai: { source: "env" },
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    await runSecretsConfigureInteractive({
+      providersOnly: false,
+      skipProviderSetup: true,
+      env: { OPENCLAW_STATE_DIR: "/fake", OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+    });
+
+    // The collision profile ID's shared api_key candidate must NOT appear —
+    // the agent store has the same ID as a token, so runtime uses only local.
+    const collisionSharedCandidates = capturedCandidates.filter(
+      (opt) => opt?.label?.includes(collisionProfileId) && opt?.label?.includes("shared"),
+    );
+    expect(collisionSharedCandidates).toHaveLength(0);
+
+    // The shared-only profile (no local override) must still appear as shared.
+    const sharedOnlyCandidates = capturedCandidates.filter((opt) =>
+      opt?.label?.includes(sharedOnlyProfileId),
+    );
+    expect(sharedOnlyCandidates.length).toBeGreaterThan(0);
+    for (const opt of sharedOnlyCandidates) {
+      expect(opt?.label).toContain("shared");
+    }
+  });
 });
 
 it("discovers shared auth-profile candidates under legacy-main ownership", async () => {

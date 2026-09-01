@@ -22,7 +22,9 @@ This page defines the strict contract enforced by `openclaw secrets apply`. If a
 ```json5
 {
   version: 1,
-  protocolVersion: 1,
+  // protocolVersion 2 when the plan includes shared auth-profile targets;
+  // otherwise 1 for legacy agent-owned plans.
+  protocolVersion: 2,
   targets: [
     {
       type: "models.providers.apiKey",
@@ -114,7 +116,8 @@ Each target is validated with all of the following:
 - The normalized path must match the registered path shape for the target type.
 - If `providerId` or `accountId` is set, it must match the id encoded in the path.
 - SQLite auth-profile targets require `agentId` unless `authProfileStore` is `"shared"`.
-- `authProfileStore` is optional (`"shared"` or `"agent"`). When omitted, the target uses the legacy per-agent store. When `"shared"`, the target routes to the shared auth-profile store — the state database after Doctor relocation (`state-db` ownership) or the legacy main-agent database before it (`legacy-main` ownership) — and `agentId` is omitted so older clients that require it reject the plan instead of silently writing to the agent store.
+- `authProfileStore` is optional (`"shared"` or `"agent"`). When omitted, the target uses the legacy per-agent store. When `"shared"`, the target routes to the shared auth-profile store — the state database after Doctor relocation (`state-db` ownership) or the legacy main-agent database before it (`legacy-main` ownership) — and `agentId` is omitted.
+- Plans with any `authProfileStore: "shared"` target must use `protocolVersion: 2`. Older v1-only clients reject `protocolVersion: 2` plans at the version check, preventing silent wrong-store writes. Plans with only agent-owned targets (or no `authProfileStore` field) use `protocolVersion: 1` and remain backward compatible.
 - When creating a new auth-profile mapping, include `authProfileProvider`.
 
 ## Failure behavior

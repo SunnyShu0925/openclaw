@@ -165,8 +165,28 @@ describe("secrets plan validation", () => {
     expect(withAgent).toBe(true);
   });
 
-  it("rejects shared auth-profile targets that carry agentId (v1 fail-closed invariant)", () => {
-    const sharedWithoutAgent = isSecretsApplyPlan({
+  it("accepts shared auth-profile targets under protocolVersion 2 and rejects them under v1", () => {
+    const sharedV2 = isSecretsApplyPlan({
+      version: 1,
+      protocolVersion: 2,
+      generatedAt: "2026-02-28T00:00:00.000Z",
+      generatedBy: "manual",
+      targets: [
+        {
+          type: "auth-profiles.api_key.key",
+          path: "profiles.openai:shared.key",
+          pathSegments: ["profiles", "openai:shared", "key"],
+          authProfileStore: "shared",
+          ref: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+        },
+      ],
+    });
+    expect(sharedV2).toBe(true);
+
+    // A v1 plan carrying a shared target is contradictory: v1-only clients do
+    // not understand authProfileStore and would route by agentId (which shared
+    // targets omit). Reject so the incompatibility is explicit, not hidden.
+    const sharedV1 = isSecretsApplyPlan({
       version: 1,
       protocolVersion: 1,
       generatedAt: "2026-02-28T00:00:00.000Z",
@@ -181,11 +201,14 @@ describe("secrets plan validation", () => {
         },
       ],
     });
-    expect(sharedWithoutAgent).toBe(true);
+    expect(sharedV1).toBe(false);
 
+    // A shared target with agentId is ambiguous: new clients route to the
+    // shared store, but released v1 clients use agentId to route to the agent
+    // store. Reject this contradictory shape even under v2.
     const sharedWithAgent = isSecretsApplyPlan({
       version: 1,
-      protocolVersion: 1,
+      protocolVersion: 2,
       generatedAt: "2026-02-28T00:00:00.000Z",
       generatedBy: "manual",
       targets: [
@@ -199,9 +222,6 @@ describe("secrets plan validation", () => {
         },
       ],
     });
-    // A shared target with agentId is ambiguous: new clients route to the
-    // shared store, but released v1 clients use agentId to route to the agent
-    // store. Reject this contradictory shape.
     expect(sharedWithAgent).toBe(false);
   });
 

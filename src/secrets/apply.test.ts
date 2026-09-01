@@ -195,9 +195,10 @@ function createPlan(params: {
   providerUpserts?: SecretsApplyPlan["providerUpserts"];
   providerDeletes?: SecretsApplyPlan["providerDeletes"];
 }): SecretsApplyPlan {
+  const hasSharedTarget = params.targets.some((t) => t.authProfileStore === "shared");
   return {
     version: 1,
-    protocolVersion: 1,
+    protocolVersion: hasSharedTarget ? 2 : 1,
     generatedAt: new Date().toISOString(),
     generatedBy: "manual",
     targets: params.targets,

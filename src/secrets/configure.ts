@@ -862,9 +862,16 @@ export async function runSecretsConfigureInteractive(
       agentId: configureAgentId,
       env,
     });
-    // Discover candidates from both shared and agent stores. The agent store
-    // is first so duplicate profile ids resolve to the agent-local candidate,
-    // matching runtime's local-overrides-shared precedence.
+    // Discover candidates from both shared and agent stores. Runtime drops an
+    // inherited profile wholesale by ID when the same ID exists locally, so a
+    // shared candidate whose profile ID also appears in the agent store must
+    // not be offered — the operator would migrate a credential the selected
+    // agent does not use.
+    const agentProfileIds = new Set(
+      authProfileScopes
+        .filter((scope) => scope.authProfileStore === "agent")
+        .flatMap((scope) => Object.keys(scope.store.profiles ?? {})),
+    );
     const candidates = authProfileScopes
       .toReversed()
       .flatMap((scope) =>
@@ -878,6 +885,17 @@ export async function runSecretsConfigureInteractive(
           },
         }),
       )
+      .filter((candidate) => {
+        if (
+          candidate.configFile === "auth-profile-store" &&
+          candidate.authProfileStore === "shared" &&
+          candidate.pathSegments[1] !== undefined &&
+          agentProfileIds.has(candidate.pathSegments[1])
+        ) {
+          return false;
+        }
+        return true;
+      })
       .filter(
         (candidate, index, all) =>
           index ===
