@@ -10,7 +10,7 @@ import {
   resetGlobalHookRunner,
 } from "../plugins/hook-runner-global.js";
 import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
-import { setPluginToolMeta } from "../plugins/tools.js";
+import { setPluginToolMeta } from "../plugins/tool-metadata.js";
 import { materializeBundleMcpToolsForRun } from "./agent-bundle-mcp-materialize.js";
 import type { McpToolCatalog, SessionMcpRuntime } from "./agent-bundle-mcp-types.js";
 import { toToolDefinitions } from "./agent-tool-definition-adapter.js";
@@ -21,8 +21,8 @@ import {
 } from "./agent-tools.before-tool-call.js";
 import { resetAdjustedParamsByToolCallIdForTests } from "./agent-tools.before-tool-call.state.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
-import { filterToolsByPolicy } from "./agent-tools.policy.js";
 import { normalizeAgentRuntimeTools } from "./runtime-plan/tools.js";
+import { filterToolsByPolicy } from "./tool-policy-match.js";
 import {
   formatToolExecutionErrorMessage,
   resolveToolExecutionErrorKind,
@@ -1475,6 +1475,34 @@ describe("Tool Search", () => {
     );
   });
 
+  it("revalidates accepted snapshots after executor-side schema mutation", async () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const target = pluginTool("orchard_mutated_schema", "Return a mutable orchard schema");
+    const idSchema = { type: "string" };
+    target.outputSchema = {
+      type: "object",
+      properties: { id: idSchema },
+      required: ["id"],
+      additionalProperties: false,
+    } as never;
+    registerHeadlessToolSearchCatalog({ catalogRef, tools: [target] });
+    const runtime = new ToolSearchRuntime(
+      {
+        catalogRef,
+        executeTool: async (params) => {
+          const accepted = await params.acceptResultBeforeProjection(jsonResult({ id: "P-1" }));
+          idSchema.type = "number";
+          return accepted;
+        },
+      },
+      resolveToolSearchConfig({ tools: { toolSearch: { mode: "tools" } } } as never),
+    );
+
+    await expect(runtime.callValue("orchard_mutated_schema")).rejects.toThrow(
+      "returned details that do not match its declared outputSchema",
+    );
+  });
+
   it("rejects policy blocks outside a declared success output schema", async () => {
     const execute = vi.fn(async () => jsonResult({ id: "should-not-run" }));
     initializeGlobalHookRunner(
@@ -1638,7 +1666,10 @@ describe("Tool Search", () => {
       callCount?: number;
     };
     expect(telemetry.catalogSize).toBe(2);
-    expect(telemetry.counterScope).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    // The lowercase-hex alphabet is a contract: a wider alphabet can emit
+    // credential-shaped scopes (e.g. hf_…) that tool-payload redaction rewrites,
+    // breaking byte-exact persistence of results embedding the telemetry.
+    expect(telemetry.counterScope).toMatch(/^[0-9a-f]{24}$/);
     expect(telemetry.searchCount).toBe(1);
     expect(telemetry.describeCount).toBe(1);
     expect(telemetry.callCount).toBe(1);

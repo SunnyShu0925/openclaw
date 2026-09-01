@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import * as assistantIdentity from "../../app/assistant-identity.ts";
+import { createChatSubmissions } from "../../app/chat-submissions.ts";
 import type { ApplicationContext } from "../../app/context.ts";
-import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
 import { invalidateChatMetadataStore } from "../../lib/chat/chat-metadata-store.ts";
 import {
   buildFallbackSlashCommands,
@@ -13,7 +13,8 @@ import {
 } from "../../lib/chat/commands.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
 import { invalidateModelCatalogCache } from "../../lib/model-catalog-store.ts";
-import { loadChatHistory, type ChatHistoryResult } from "./chat-history.ts";
+import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
+import { loadChatHistory } from "./chat-history.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { ChatStateController } from "./chat-state-controller.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
@@ -922,9 +923,8 @@ describe("canonical session message recovery", () => {
       ]);
       await vi.waitFor(() =>
         expect(request).toHaveBeenCalledWith("chat.history", {
-          agentId: "main",
           sessionKey: state.sessionKey,
-          limit: 100,
+          limit: 800,
         }),
       );
       await vi.waitFor(() => expect(state.chatLoading).toBe(false));
@@ -1302,9 +1302,7 @@ describe("canonical session message recovery", () => {
         },
       });
       expect(state.chatRunId).toBeNull();
-      expect(
-        getChatSessionProjection(state, state.chatMessages).runs[replacementRunId]?.status,
-      ).toBe("completed");
+      expect(getChatSessionProjection(state).runs[replacementRunId]?.status).toBe("completed");
 
       await vi.advanceTimersByTimeAsync(100);
       expect(request).toHaveBeenCalledTimes(1);
@@ -1714,9 +1712,7 @@ describe("canonical session message recovery", () => {
       { role: "assistant", text: "Active reply. Final suffix." },
       { role: "user", text: "Queued follow-up" },
     ]);
-    expect(getChatSessionProjection(state, state.chatMessages).messages).toEqual(
-      state.chatMessages,
-    );
+    expect(getChatSessionProjection(state).messages).toEqual(state.chatMessages);
   });
 
   it("does not rebind an unrelated run from a persisted steer", () => {
@@ -2231,9 +2227,8 @@ describe("canonical session message recovery", () => {
 
     await vi.waitFor(() => {
       expect(request).toHaveBeenCalledWith("chat.history", {
-        agentId: "main",
         sessionKey: state.sessionKey,
-        limit: 100,
+        limit: 800,
       });
     });
     expect(state.chatRunId).toBe("active-run");
@@ -2350,6 +2345,7 @@ describe("ChatStateController render lifecycle", () => {
       assistantAgentId: "main",
       agentsList: { defaultId: "main" },
       chatRunId: null,
+      chatMessages: [],
       observerDigest: null,
       renderLifecycle: { invalidate: requestUpdate },
       requestUpdate,
@@ -2440,7 +2436,7 @@ describe("ChatStateController render lifecycle", () => {
           localMediaPreviewRoots: [],
         },
       },
-      initialUserMessage: createInitialUserMessageHandoff(),
+      chatSubmissions: createChatSubmissions(),
       sessions: {},
     } as unknown as ApplicationContext;
   }
@@ -3381,7 +3377,7 @@ describe("image lightbox lifecycle", () => {
           localMediaPreviewRoots: [],
         },
       },
-      initialUserMessage: createInitialUserMessageHandoff(),
+      chatSubmissions: createChatSubmissions(),
       sessions: {},
     } as unknown as ApplicationContext;
     const state = createPageState(
@@ -3432,7 +3428,7 @@ describe("image lightbox lifecycle", () => {
           localMediaPreviewRoots: [],
         },
       },
-      initialUserMessage: createInitialUserMessageHandoff(),
+      chatSubmissions: createChatSubmissions(),
       sessions: {},
     } as unknown as ApplicationContext;
     const state = createPageState(
@@ -3496,8 +3492,8 @@ describe("loadPageAssistantIdentity", () => {
         },
       },
       gateway: { snapshot: { client, connected: true, hello: null } },
-      initialUserMessage: createInitialUserMessageHandoff(),
-      sessions: {},
+      chatSubmissions: createChatSubmissions(),
+      sessions: { refresh: vi.fn().mockResolvedValue(undefined) },
     } as unknown as ApplicationContext;
     const state = createPageState(
       context,
@@ -3921,28 +3917,39 @@ describe("refreshChatMetadata", () => {
 });
 
 describe("refreshChatModelAuthStatus", () => {
-  it("scopes auth status to the fixed session agent", async () => {
-    const fixedStatus = { ts: 1, providers: [] };
-    const request = vi.fn(async () => fixedStatus);
-    const state = {
-      client: { request },
-      connected: true,
-      connectionEpoch: 1,
-      sessionKey: "agent:work:dashboard:current",
-      assistantAgentId: "main",
-      modelAuthStatusRequestVersion: 0,
-      modelAuthStatusResult: null,
-      modelAuthStatusError: null,
-    } as unknown as ChatPageHost;
+  it.each([
+    undefined,
+    {
+      code: "PREPARED_MODEL_AUTH_UNAVAILABLE" as const,
+      message: "Model authentication status is unavailable. Refresh Models after setup finishes.",
+    },
+  ])(
+    "scopes auth status to the fixed session agent and records unavailable health: %j",
+    async (unavailable) => {
+      const result = { ts: 1, providers: [], ...(unavailable ? { unavailable } : {}) };
+      const request = vi.fn(async () => result);
+      const state = {
+        client: { request },
+        connected: true,
+        connectionEpoch: 1,
+        sessionKey: "agent:work:dashboard:current",
+        assistantAgentId: "main",
+        modelAuthStatusRequestVersion: 0,
+        modelAuthStatusResult: null,
+        modelAuthStatusError: null,
+      } as unknown as ChatPageHost;
 
-    await refreshChatModelAuthStatus(state);
-    applySelectedChatAgent(state, "research");
+      await refreshChatModelAuthStatus(state);
+      applySelectedChatAgent(state, "research");
 
-    expect(request).toHaveBeenCalledWith("models.authStatus", { agentId: "work" });
-    expect(request).toHaveBeenCalledOnce();
-    expect(state.assistantAgentId).toBe("main");
-    expect(state.modelAuthStatusResult).toBe(fixedStatus);
-  });
+      expect(request).toHaveBeenCalledWith("models.authStatus", { agentId: "work" });
+      expect(request).toHaveBeenCalledOnce();
+      expect(state.assistantAgentId).toBe("main");
+      expect(state.modelAuthStatusResult).toBe(result);
+      expect(state.modelAuthStatusError).toBe(unavailable?.message ?? null);
+      expect(state.connected).toBe(true);
+    },
+  );
 
   it.each(["success", "failure"] as const)(
     "rebinds selected-global auth and rejects the superseded Main %s",
@@ -3957,6 +3964,7 @@ describe("refreshChatModelAuthStatus", () => {
       });
       const staleMainStatus = { ts: 1, providers: [] };
       const workStatus = { ts: 2, providers: [] };
+      const refreshSessions = vi.fn().mockResolvedValue(undefined);
       const state = {
         client: { request },
         connected: true,
@@ -3976,6 +3984,7 @@ describe("refreshChatModelAuthStatus", () => {
         sessions: {
           state: { modelOverrides: {} },
           retireModelOverride: vi.fn(),
+          refresh: refreshSessions,
         },
       } as unknown as ChatPageHost;
 
@@ -3989,6 +3998,9 @@ describe("refreshChatModelAuthStatus", () => {
         ["models.authStatus", { agentId: "main" }],
         ["models.authStatus", { agentId: "work" }],
       ]);
+      expect(refreshSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "work", force: true }),
+      );
 
       workResponse.resolve(workStatus);
       await vi.waitFor(() => expect(state.modelAuthStatusResult).toBe(workStatus));

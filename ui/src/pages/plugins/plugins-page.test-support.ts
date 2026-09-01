@@ -82,23 +82,6 @@ export function createResult(plugin = createPlugin()): PluginListResult {
   return { plugins: [plugin], diagnostics: [], mutationAllowed: true };
 }
 
-export function createSearchResult(
-  overrides: Partial<PluginSearchResult> = {},
-  index = 0,
-): PluginSearchResult {
-  return {
-    score: 1,
-    package: {
-      name: `plugin-${index}`,
-      displayName: `Plugin ${index}`,
-      family: "code-plugin",
-      channel: "community",
-      isOfficial: false,
-    },
-    ...overrides,
-  };
-}
-
 export function createInspectResult(
   overrides: Partial<PluginsInspectResult> = {},
 ): PluginsInspectResult {
@@ -331,11 +314,9 @@ export async function mountPage(
   return { page, provider };
 }
 
-export async function mountClawHubSearchPage(
-  client: GatewayBrowserClient,
-): Promise<TestPluginsPage> {
+export async function mountClawHubSearchPage(client: GatewayBrowserClient) {
   const harness = createGateway(client);
-  const { page } = await mountPage(
+  return mountPage(
     createContext(harness.gateway),
     createPluginsRouteData(
       harness.gateway,
@@ -343,7 +324,6 @@ export async function mountClawHubSearchPage(
       createPluginsRouteLocation("/settings/plugins/discover"),
     ),
   );
-  return page;
 }
 
 export function deferred<T>() {

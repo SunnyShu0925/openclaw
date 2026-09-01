@@ -24,7 +24,6 @@ import {
   createPluginsRouteLocation,
   createResult,
   createRuntimeConfigHarness,
-  createSearchResult,
   deferred,
   mountClawHubSearchPage,
   mountPage,
@@ -323,6 +322,52 @@ describe("PluginsPage", () => {
     );
   });
 
+  it.each([0, 1, 3])(
+    "announces %i completed ClawHub search results in the existing status",
+    async (count) => {
+      vi.useFakeTimers();
+      const response = deferred<{ results: PluginSearchResult[] }>();
+      const { client } = createClient(async (method) => {
+        if (method === "plugins.search") {
+          return response.promise;
+        }
+        throw new Error(`Unexpected method ${method}`);
+      });
+      const { page } = await mountClawHubSearchPage(client);
+      const search = page.querySelector<HTMLInputElement>("#plugins-global-search")!;
+      search.value = "calendar";
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(300);
+      const pending = page.querySelector('[role="status"]');
+      expect(pending?.textContent).toContain("Searching ClawHub");
+
+      const results: PluginSearchResult[] = Array.from({ length: count }, (_, index) => ({
+        score: 1,
+        package: {
+          name: `calendar-${index}`,
+          displayName: `Calendar ${index}`,
+          family: "code-plugin",
+          channel: "community",
+          isOfficial: false,
+        },
+      }));
+      response.resolve({ results });
+      await vi.waitFor(() => expect(page.searchResults).toEqual(results));
+      await page.updateComplete;
+
+      const completed = page.querySelector('[role="status"]');
+      expect(completed).toBe(pending);
+      expect(completed?.getAttribute("aria-live")).toBe("polite");
+      expect(completed?.textContent).toContain(
+        count === 0
+          ? "ClawHub has no results for “calendar”."
+          : `${count} result${count === 1 ? "" : "s"}`,
+      );
+      expect(completed?.classList.contains(count === 0 ? "settings-empty" : "sr-only")).toBe(true);
+      expect(page.querySelectorAll("[data-package-name]")).toHaveLength(count);
+    },
+  );
+
   it("commits only the latest ClawHub search result", async () => {
     vi.useFakeTimers();
     const first = deferred<{ results: PluginSearchResult[] }>();
@@ -333,15 +378,7 @@ describe("PluginsPage", () => {
       }
       return (params as { query: string }).query === "first" ? first.promise : second.promise;
     });
-    const harness = createGateway(client);
-    const { page } = await mountPage(
-      createContext(harness.gateway),
-      createPluginsRouteData(
-        harness.gateway,
-        createResult(),
-        createPluginsRouteLocation("/settings/plugins/discover"),
-      ),
-    );
+    const { page } = await mountClawHubSearchPage(client);
     const search = page.querySelector<HTMLInputElement>("#plugins-global-search")!;
     search.value = "first";
     search.dispatchEvent(new Event("input", { bubbles: true }));
@@ -351,7 +388,8 @@ describe("PluginsPage", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(request).toHaveBeenCalledTimes(2);
 
-    const latest = createSearchResult({
+    const latest: PluginSearchResult = {
+      score: 1,
       package: {
         name: "latest-plugin",
         displayName: "Latest Plugin",
@@ -359,50 +397,16 @@ describe("PluginsPage", () => {
         channel: "community",
         isOfficial: false,
       },
-    });
+    };
     second.resolve({ results: [latest] });
     await vi.waitFor(() => expect(page.searchResults).toEqual([latest]));
     first.resolve({ results: [] });
     await Promise.resolve();
 
     expect(page.searchResults).toEqual([latest]);
-    expect(page.querySelector('[role="status"][aria-live="polite"]')?.textContent).toContain(
-      "1 result",
-    );
+    await page.updateComplete;
+    expect(page.querySelector('[role="status"]')?.textContent).toContain("1 result");
   });
-
-  it.each([
-    { resultCount: 0, expectedText: "ClawHub has no results" },
-    { resultCount: 1, expectedText: "1 result" },
-    { resultCount: 3, expectedText: "3 results" },
-  ])(
-    "announces ClawHub search completion with a live region for $resultCount result(s)",
-    async ({ resultCount, expectedText }) => {
-      vi.useFakeTimers();
-      const results = Array.from({ length: resultCount }, (_, index) =>
-        createSearchResult({}, index),
-      );
-      const pending = deferred<{ results: PluginSearchResult[] }>();
-      const { client } = createClient(async (method) =>
-        method === "plugins.search" ? pending.promise : Promise.reject(new Error(method)),
-      );
-      const page = await mountClawHubSearchPage(client);
-      const search = page.querySelector<HTMLInputElement>("#plugins-global-search")!;
-      search.value = resultCount === 0 ? "zzz-no-match" : "workboard";
-      search.dispatchEvent(new Event("input", { bubbles: true }));
-      await vi.advanceTimersByTimeAsync(300);
-      const selector = '[role="status"][aria-live="polite"]';
-      const pendingNode = page.querySelector(selector);
-      pending.resolve({ results });
-      await vi.waitFor(() =>
-        expect(page.querySelector(selector)?.textContent).toContain(expectedText),
-      );
-      expect(page.querySelector(selector)).toBe(pendingNode);
-      expect(page.querySelector(selector)?.getAttribute("class")).toBe(
-        resultCount === 0 ? "settings-empty" : "plugins-search-state",
-      );
-    },
-  );
 
   it("refreshes plugins and runtime config without discarding a pending config draft", async () => {
     const enabledPlugin = createPlugin({ enabled: true, state: "enabled" });
