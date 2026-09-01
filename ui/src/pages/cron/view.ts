@@ -1181,9 +1181,9 @@ function renderEnabledSwitch(
   opts?: { compact?: boolean; testId?: string },
 ) {
   const stateLabel = job.enabled ? t("cron.detail.active") : t("cron.detail.paused");
-  const actionLabel = job.enabled
-    ? t("cron.actions.pauseJob", { name: job.name })
-    : t("cron.actions.resumeJob", { name: job.name });
+  const actionLabel = t(job.enabled ? "cron.actions.pauseJob" : "cron.actions.resumeJob", {
+    name: job.name,
+  });
   return html`
     <span
       class="cron-enabled-toggle"

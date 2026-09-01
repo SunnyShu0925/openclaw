@@ -199,24 +199,25 @@ describe("cron view list pane", () => {
     expect(onSelectJob).not.toHaveBeenCalled();
   });
 
-  it("distinguishes row action aria-labels by job name across multiple jobs", () => {
-    const jobA = createJob("job-a", { name: "Daily backup" });
-    const jobB = createJob("job-b", { name: "Weekly report" });
-    const container = renderView({ jobs: [jobA, jobB], canManage: true });
+  it("gives row actions job-specific accessible names", () => {
+    const jobs = [
+      createJob("job-a", { name: "Daily backup", enabled: true }),
+      createJob("job-b", { name: "Weekly report", enabled: false }),
+    ];
+    const container = renderView({ jobs, canManage: true });
+    const labels = jobs.map((job) => {
+      const row = getElement(container, `[data-test-id="cron-row-${job.id}"]`, HTMLDivElement);
+      return [
+        getElement(row, ".cron-row-run", HTMLButtonElement).getAttribute("aria-label"),
+        getElement(row, ".cron-job-menu__trigger", HTMLButtonElement).getAttribute("aria-label"),
+        getElement(row, "wa-switch", HTMLElement).textContent?.trim(),
+      ];
+    });
 
-    const runLabels = Array.from(container.querySelectorAll('[data-test-id^="cron-row-run-"]')).map(
-      (btn) => (btn as HTMLElement).getAttribute("aria-label"),
-    );
-    expect(runLabels[0]).toContain("Daily backup");
-    expect(runLabels[1]).toContain("Weekly report");
-    expect(runLabels[0]).not.toBe(runLabels[1]);
-
-    const moreLabels = Array.from(container.querySelectorAll(".cron-job-menu__trigger")).map(
-      (btn) => (btn as HTMLElement).getAttribute("aria-label"),
-    );
-    expect(moreLabels[0]).toContain("Daily backup");
-    expect(moreLabels[1]).toContain("Weekly report");
-    expect(moreLabels[0]).not.toBe(moreLabels[1]);
+    expect(labels).toEqual([
+      ["Run now: Daily backup", "More actions for Daily backup", "Pause: Daily backup"],
+      ["Run now: Weekly report", "More actions for Weekly report", "Resume: Weekly report"],
+    ]);
   });
 
   it("opens the create panel from the New task button and suggestions", () => {
