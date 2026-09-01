@@ -96,13 +96,14 @@ async function runMistralToolFixture(
   responseId: string,
   rawChunks: unknown[][],
   randomUUID?: string,
+  tools?: Context["tools"],
 ) {
   if (randomUUID) {
     mistralMockState.randomUUIDs = [randomUUID];
   }
   const parsedChunks = rawChunks.map((chunk) => chunk.map(parseMistralToolCall));
   mistralMockState.streamResult = mistralToolStream(responseId, ...parsedChunks);
-  const result = await runMistralFixture();
+  const result = await runMistralFixture(tools ? ({ ...context, tools } as Context) : undefined);
   return { result, parsedChunks, toolCalls: result.content.filter((b) => b.type === "toolCall") };
 }
 
@@ -729,10 +730,12 @@ describe("Mistral provider — fragmented streamed function names", () => {
   ])(
     "concatenates fragmented function names on a stable-id continuation (%s)",
     async (_label, firstChunk, secondChunk) => {
-      const { toolCalls } = await runMistralToolFixture("response-fragmented-name", [
-        firstChunk,
-        secondChunk,
-      ]);
+      const { toolCalls } = await runMistralToolFixture(
+        "response-fragmented-name",
+        [firstChunk, secondChunk],
+        undefined,
+        [{ ...makeHealthyTool(), name: "get_weather" }] as never,
+      );
       expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
     },
   );
@@ -769,16 +772,24 @@ describe("Mistral provider — fragmented streamed function names", () => {
   });
 
   it("keeps independently identified parallel fragmented names distinct", async () => {
-    const { toolCalls } = await runMistralToolFixture("response-parallel-fragmented", [
+    const { toolCalls } = await runMistralToolFixture(
+      "response-parallel-fragmented",
       [
-        { id: "call_a", index: 0, function: { name: "get_", arguments: '{"a":' } },
-        { id: "call_b", index: 1, function: { name: "set_", arguments: '{"b":' } },
+        [
+          { id: "call_a", index: 0, function: { name: "get_", arguments: '{"a":' } },
+          { id: "call_b", index: 1, function: { name: "set_", arguments: '{"b":' } },
+        ],
+        [
+          { id: "call_a", index: 0, function: { name: "weather", arguments: "1}" } },
+          { id: "call_b", index: 1, function: { name: "status", arguments: "2}" } },
+        ],
       ],
+      undefined,
       [
-        { id: "call_a", index: 0, function: { name: "weather", arguments: "1}" } },
-        { id: "call_b", index: 1, function: { name: "status", arguments: "2}" } },
-      ],
-    ]);
+        { ...makeHealthyTool(), name: "get_weather" },
+        { ...makeHealthyTool(), name: "set_status" },
+      ] as never,
+    );
     expect(toolCalls).toMatchObject([
       { name: "get_weather", arguments: { a: 1 } },
       { name: "set_status", arguments: { b: 2 } },
@@ -786,13 +797,18 @@ describe("Mistral provider — fragmented streamed function names", () => {
   });
 
   it("honors an explicit id when a continuation fragment equals another call's full name", async () => {
-    const { toolCalls } = await runMistralToolFixture("response-explicit-id-collision", [
+    const { toolCalls } = await runMistralToolFixture(
+      "response-explicit-id-collision",
       [
-        { id: "call_a", index: 0, function: { name: "get_", arguments: '{"a":' } },
-        { id: "call_b", index: 1, function: { name: "weather", arguments: '{"b":2}' } },
+        [
+          { id: "call_a", index: 0, function: { name: "get_", arguments: '{"a":' } },
+          { id: "call_b", index: 1, function: { name: "weather", arguments: '{"b":2}' } },
+        ],
+        [{ id: "call_a", index: 0, function: { name: "weather", arguments: "1}" } }],
       ],
-      [{ id: "call_a", index: 0, function: { name: "weather", arguments: "1}" } }],
-    ]);
+      undefined,
+      [{ ...makeHealthyTool(), name: "get_weather" }] as never,
+    );
     expect(toolCalls).toMatchObject([
       { id: "call_a", name: "get_weather", arguments: { a: 1 } },
       { id: "call_b", name: "weather", arguments: { b: 2 } },
@@ -901,6 +917,35 @@ describe("Mistral provider — fragmented streamed function names", () => {
     });
     const toolCalls = result.content.filter((b) => b.type === "toolCall");
     expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
+
+  it("refuses a differing whole name on a stable id when no function tools were sent", async () => {
+    // When the request carries no function tools, the assembly gate has no
+    // requested names to match against. A changed-name continuation is an
+    // identity collision, not a provable fragment, so main's fail-closed
+    // refusal must fire instead of forwarding under an unmatched name.
+    const parsed = [
+      [
+        parseMistralToolCall({
+          id: "call_x",
+          index: 0,
+          function: { name: "get_weather", arguments: '{"city":"Paris"}' },
+        }),
+      ],
+      [
+        parseMistralToolCall({
+          id: "call_x",
+          index: 0,
+          function: { name: "read_file", arguments: "" },
+        }),
+      ],
+    ];
+    mistralMockState.streamResult = mistralToolStream("response-no-tools-collision", ...parsed);
+    const result = await runMistralFixture(context);
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toContain(
+      "continuation changed function name; refusing to merge arguments",
+    );
   });
 
   it("keeps an assembled full name from capturing a later idless call repeating the assembled name", async () => {

@@ -785,9 +785,9 @@ async function consumeChatStream(
           // This makes "fragment vs snapshot" a measured property (the assembled
           // prefix is reachable) instead of a wire-contract assumption.
           const assembled = block.name + functionName;
+          const noRequestedTools = !requestedToolNames || requestedToolNames.size === 0;
           if (
-            requestedToolNames &&
-            requestedToolNames.size > 0 &&
+            noRequestedTools ||
             ![...requestedToolNames].some((name) => name.startsWith(assembled))
           ) {
             throw new Error(
