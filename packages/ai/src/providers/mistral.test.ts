@@ -929,6 +929,105 @@ describe("Mistral provider", () => {
     expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
   });
 
+  it("keeps an assembled full name from capturing a later idless call repeating the assembled name", async () => {
+    // After call_a assembles get_ + weather into "get_weather", the assembled
+    // full name is in the identity set. A later idless index-0 call also named
+    // "get_weather" (the *full* assembled name, not the opening fragment) must
+    // not resolve to call_a via the unique-name shortcut and merge argument
+    // buffers. The assembled block withdraws from name-match; the idless call
+    // starts its own block. (Distinct from the opening-fragment case above: that
+    // one repeats "get_", this one repeats the assembled "get_weather".)
+    const parsed = [
+      [
+        parseMistralToolCall({
+          id: "call_a",
+          index: 1,
+          function: { name: "get_", arguments: '{"city":' },
+        }),
+      ],
+      [
+        parseMistralToolCall({
+          id: "call_a",
+          index: 1,
+          function: { name: "weather", arguments: '"Paris"}' },
+        }),
+      ],
+      [
+        parseMistralToolCall({
+          index: 0,
+          function: { name: "get_weather", arguments: '{"city":2}' },
+        }),
+      ],
+    ];
+    mistralMockState.streamResult = mistralToolStream(
+      "response-assembled-name-no-capture",
+      ...parsed,
+    );
+    const result = await runMistralFixture({
+      ...context,
+      tools: [
+        { ...makeHealthyTool(), name: "get_weather" },
+        { ...makeHealthyTool(), name: "other_tool" },
+      ] as never,
+    });
+    const toolCalls = result.content.filter((block) => block.type === "toolCall");
+
+    expect(toolCalls).toMatchObject([
+      { id: "call_a", name: "get_weather", arguments: { city: "Paris" } },
+      { name: "get_weather", arguments: { city: 2 } },
+    ]);
+  });
+
+  it("gates the append on the tool names actually sent after onPayload replaces them", async () => {
+    // onPayload is contractually allowed to replace the payload, including its
+    // tools. The assembly gate must use the tool names actually sent, not the
+    // set computed before onPayload. Here context declares both get_weather and
+    // get_weatherread_file, but onPayload drops get_weatherread_file. A
+    // differing-name continuation assembling "get_weatherread_file" is a prefix
+    // of the pre-onPayload set but not of the post-onPayload set, so it must be
+    // refused rather than forwarded under the dropped name.
+    const parsed = [
+      [
+        parseMistralToolCall({
+          id: "call_x",
+          index: 0,
+          function: { name: "get_weather", arguments: '{"city":"Paris"}' },
+        }),
+      ],
+      [
+        parseMistralToolCall({
+          id: "call_x",
+          index: 0,
+          function: { name: "read_file", arguments: "" },
+        }),
+      ],
+    ];
+    mistralMockState.streamResult = mistralToolStream("response-onpayload-tools", ...parsed);
+    const result = await runMistralFixture(
+      {
+        ...context,
+        tools: [
+          { ...makeHealthyTool(), name: "get_weather" },
+          { ...makeHealthyTool(), name: "get_weatherread_file" },
+        ] as never,
+      },
+      {
+        onPayload: (payload) => {
+          const p = payload as { tools?: Array<{ function: { name: string } }> };
+          if (p.tools) {
+            p.tools = p.tools.filter((tool) => tool.function.name === "get_weather");
+          }
+          return p;
+        },
+      },
+    );
+
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toContain(
+      "Mistral streamed tool-call continuation changed function name; refusing to merge arguments",
+    );
+  });
+
   it("does not concatenate when a late id adopts a name-matched block", async () => {
     // openclaw deliberately supports id-less Mistral-compatible endpoints. When
     // an idless opening fragment resolves by name and the explicit id arrives

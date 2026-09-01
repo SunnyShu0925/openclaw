@@ -175,17 +175,16 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
         normalizeMistralToolCallId(id),
       );
 
-      const { payload: builtPayload, convertedToolNames } = buildChatPayload(
-        model,
-        context,
-        transformedMessages,
-        options,
-      );
-      let payload = builtPayload;
+      let payload = buildChatPayload(model, context, transformedMessages, options);
       const nextPayload = await options?.onPayload?.(payload, model);
       if (nextPayload !== undefined) {
         payload = nextPayload as ChatCompletionStreamRequest;
       }
+      // Derive the requested tool-name set from the final payload, after onPayload
+      // may have replaced it, so the assembly gate sees the tools actually sent.
+      const requestedToolNames = payload.tools
+        ? new Set(payload.tools.map((tool) => tool.function.name))
+        : undefined;
       const headers = { ...model.headers, ...options?.headers };
       // Mistral infrastructure uses `x-affinity` for KV-cache reuse (prefix caching).
       // Respect explicit caller-provided header values.
@@ -205,7 +204,7 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
         });
       }
       stream.push({ type: "start", partial: output });
-      await consumeChatStream(model, output, stream, mistralStream, convertedToolNames);
+      await consumeChatStream(model, output, stream, mistralStream, requestedToolNames);
 
       if (options?.signal?.aborted) {
         throw transportAbortError(options.signal);
@@ -325,7 +324,7 @@ function buildChatPayload(
   context: Context,
   messages: Message[],
   options?: MistralOptions,
-): { payload: ChatCompletionStreamRequest; convertedToolNames?: Set<string> } {
+): ChatCompletionStreamRequest {
   const payload: ChatCompletionStreamRequest = {
     model: model.id,
     stream: true,
@@ -373,7 +372,7 @@ function buildChatPayload(
     });
   }
 
-  return { payload, convertedToolNames };
+  return payload;
 }
 
 function resolveMistralPromptCacheKey(options?: MistralOptions): string | undefined {
@@ -415,6 +414,11 @@ async function consumeChatStream(
     explicitIds: Set<string>;
     functionNames: Set<string>;
     indexes: Set<number>;
+    // True once a differing-name fragment was appended onto this block. An
+    // assembled block withdraws from name-match resolution: its continuation is
+    // carried by explicit id, and a later idless call repeating the opening
+    // fragment or the assembled full name must not attach to it.
+    assembled?: boolean;
   };
   // Persist every identity fact across chunks. The SDK defaults omitted indexes
   // to zero, so only a unique compatible candidate may receive later arguments.
@@ -501,6 +505,12 @@ async function consumeChatStream(
           if (!identity) {
             return false;
           }
+          // An assembled block withdraws from name-match: its continuation is
+          // carried by explicit id, and a later idless call repeating its
+          // opening fragment or assembled full name must not attach to it.
+          if (identity.assembled) {
+            return false;
+          }
           return !explicitId || identity.explicitIds.size === 0;
         }),
       );
@@ -540,7 +550,9 @@ async function consumeChatStream(
         [...indexCandidates].filter((contentIndex) => {
           const identity = toolBlockIdentities.get(contentIndex);
           return (
-            identity?.functionNames.size === 0 && (!explicitId || identity.explicitIds.size === 0)
+            !identity?.assembled &&
+            identity?.functionNames.size === 0 &&
+            (!explicitId || identity.explicitIds.size === 0)
           );
         }),
       );
@@ -777,14 +789,16 @@ async function consumeChatStream(
           }
           const previousName = block.name;
           block.name = assembled;
-          // The opening fragment was recorded as the block's durable name
-          // identity at creation. Once the full name is assembled, that stale
-          // fragment must be replaced so a later idless call repeating the
-          // opening fragment (e.g. "get_" while the block is now "get_weather")
-          // cannot resolve to this block via name-match and merge argument
-          // buffers across independent calls.
+          // Once the full name is assembled, mark the block so it withdraws from
+          // name-match resolution: a later idless call repeating the opening
+          // fragment ("get_") or the assembled full name ("get_weather") cannot
+          // resolve to this block via name-match and merge argument buffers across
+          // independent calls. Continuation of an assembled explicit-id block is
+          // carried by its explicit id, not by name. The opening fragment is also
+          // removed from the durable name set so it cannot capture an idless call.
           identity.functionNames.delete(previousName);
           identity.functionNames.add(block.name);
+          identity.assembled = true;
         }
         // New blocks already set block.name at creation; a continuation whose
         // incoming name equals the accumulated name leaves it unchanged.
