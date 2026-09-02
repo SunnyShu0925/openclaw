@@ -27,9 +27,9 @@ function isSensitivePath(path: string): boolean {
   return isSensitiveConfigPath(path);
 }
 
-function isEnvVarPlaceholder(value: string): boolean {
+function isConcreteSensitiveString(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed === "" || ENV_VAR_PLACEHOLDER_PATTERN.test(trimmed);
+  return trimmed !== "" && !ENV_VAR_PLACEHOLDER_PATTERN.test(trimmed);
 }
 
 function isWholeObjectSensitivePath(path: string): boolean {
@@ -50,7 +50,7 @@ function hasSensitiveUrlHintPath(hints: ConfigUiHints | undefined, paths: string
 
 function collectSensitiveStrings(value: unknown, values: string[]): void {
   if (typeof value === "string") {
-    if (!isEnvVarPlaceholder(value)) {
+    if (isConcreteSensitiveString(value)) {
       values.push(value);
     }
     return;
@@ -66,9 +66,7 @@ function collectSensitiveStrings(value: unknown, values: string[]): void {
     // SecretRef objects include structural fields like source/provider that are
     // not secret material and may appear widely in config text.
     if (isSecretRefShape(obj)) {
-      if (!isEnvVarPlaceholder(obj.id)) {
-        values.push(obj.id);
-      }
+      collectSensitiveStrings(obj.id, values);
       return;
     }
     for (const item of Object.values(obj)) {
@@ -185,7 +183,7 @@ function redactValue(
     return obj.map((item) => {
       if (
         typeof item === "string" &&
-        !isEnvVarPlaceholder(item) &&
+        isConcreteSensitiveString(item) &&
         (schemaMatched || heuristicSensitive)
       ) {
         values.push(item);
@@ -209,7 +207,10 @@ function redactValue(
       : undefined;
     if (candidate) {
       result[key] = value;
-      if (typeof value === "string" && !isEnvVarPlaceholder(value)) {
+      if (typeof value === "string") {
+        if (!isConcreteSensitiveString(value)) {
+          continue;
+        }
         result[key] = REDACTED_SENTINEL;
         values.push(value);
       } else if (typeof value === "object" && value !== null) {
@@ -220,7 +221,7 @@ function redactValue(
               value: objectValue,
               values,
               redactedSentinel: REDACTED_SENTINEL,
-              isEnvVarPlaceholder,
+              isConcreteSensitiveString,
             });
           } else {
             collectSensitiveStrings(objectValue, values);
@@ -232,8 +233,7 @@ function redactValue(
       } else if (
         context.hints?.[candidate]?.sensitive === true &&
         value !== undefined &&
-        value !== null &&
-        !(typeof value === "string" && isEnvVarPlaceholder(value))
+        value !== null
       ) {
         result[key] = REDACTED_SENTINEL;
       }
@@ -246,7 +246,7 @@ function redactValue(
       typeof value === "string" &&
       !markedNonSensitive &&
       isSensitivePath(path) &&
-      !isEnvVarPlaceholder(value)
+      isConcreteSensitiveString(value)
     ) {
       result[key] = REDACTED_SENTINEL;
       values.push(value);
