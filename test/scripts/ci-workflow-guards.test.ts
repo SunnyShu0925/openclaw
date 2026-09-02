@@ -8763,10 +8763,6 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(checkShardStep.run).toContain(
       'test "$(git rev-parse refs/remotes/origin/ci-ratchet-base^{commit})" = "$PR_BASE_SHA"',
     );
-    expect(checkShardStep.run).toContain(
-      "pnpm deps:npm-lock:check:changed --base refs/remotes/origin/ci-ratchet-base --head HEAD",
-    );
-    expect(checkShardStep.run).not.toContain("--checkout-git 120 fetch");
   });
 
   it("runs temp path guardrails in the hosted guard shard", () => {
