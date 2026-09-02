@@ -28,7 +28,8 @@ function isSensitivePath(path: string): boolean {
 }
 
 function isEnvVarPlaceholder(value: string): boolean {
-  return ENV_VAR_PLACEHOLDER_PATTERN.test(value.trim());
+  const trimmed = value.trim();
+  return trimmed === "" || ENV_VAR_PLACEHOLDER_PATTERN.test(trimmed);
 }
 
 function isWholeObjectSensitivePath(path: string): boolean {
@@ -231,7 +232,8 @@ function redactValue(
       } else if (
         context.hints?.[candidate]?.sensitive === true &&
         value !== undefined &&
-        value !== null
+        value !== null &&
+        !(typeof value === "string" && isEnvVarPlaceholder(value))
       ) {
         result[key] = REDACTED_SENTINEL;
       }

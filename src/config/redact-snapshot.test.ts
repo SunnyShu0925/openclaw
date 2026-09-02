@@ -806,7 +806,9 @@ describe("redactConfigSnapshot", () => {
     const raw = '{ "gateway": { "auth": { "token": "" } }, "other": "" }';
     const snapshot = makeSnapshot(config, raw);
     const result = redactConfigSnapshot(snapshot);
-    expect(result.config.gateway?.auth?.token).toBe(REDACTED_SENTINEL);
+    // Empty strings are not secrets and are not redacted — the UI treats them
+    // as non-sensitive (isSensitiveLeafValue checks value.trim().length > 0).
+    expect(result.config.gateway?.auth?.token).toBe("");
     expect(result.raw).toBe(raw);
     expect((result.raw ?? "").split(REDACTED_SENTINEL).length).toBe(1);
   });
