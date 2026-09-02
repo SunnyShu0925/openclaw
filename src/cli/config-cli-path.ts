@@ -1,9 +1,6 @@
 import { isRecord as isPlainRecord } from "@openclaw/normalization-core/record-coerce";
 import JSON5 from "json5";
-import {
-  rejectConfigNonFiniteNumbers,
-  rejectExcessiveConfigDepth,
-} from "../config/io.read-helpers.js";
+import { rejectConfigNonFiniteNumbers } from "../config/io.read-helpers.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
 import {
   formatConcreteConfigPath,
@@ -60,7 +57,6 @@ export function parseConfigSetValue(raw: string, strictJson: boolean): unknown {
     } catch (err) {
       throw new Error(formatStrictJsonParseFailure({ value: raw, cause: err }), { cause: err });
     }
-    rejectExcessiveConfigDepth(parsed);
     rejectConfigNonFiniteNumbers(parsed);
     return parsed;
   }
@@ -70,7 +66,6 @@ export function parseConfigSetValue(raw: string, strictJson: boolean): unknown {
   } catch {
     return raw;
   }
-  rejectExcessiveConfigDepth(parsed);
   rejectConfigNonFiniteNumbers(parsed);
   return parsed;
 }
@@ -376,11 +371,19 @@ function mergeConfigValue(existing: unknown, patch: unknown, path: PathSegment[]
   }
   if (isPlainRecord(existing) && isPlainRecord(patch)) {
     const next: Record<string, unknown> = { ...existing };
-    for (const [key, value] of Object.entries(patch)) {
-      next[key] =
-        hasOwnPathKey(next, key) && isPlainRecord(next[key]) && isPlainRecord(value)
-          ? mergeConfigValue(next[key], value, [...path, key])
-          : value;
+    const pending = [{ target: next, patch }];
+    while (pending.length > 0) {
+      const frame = pending.pop()!;
+      for (const [key, value] of Object.entries(frame.patch)) {
+        const current = frame.target[key];
+        if (hasOwnPathKey(frame.target, key) && isPlainRecord(current) && isPlainRecord(value)) {
+          const child = { ...current };
+          frame.target[key] = child;
+          pending.push({ target: child, patch: value });
+        } else {
+          frame.target[key] = value;
+        }
+      }
     }
     return next;
   }
