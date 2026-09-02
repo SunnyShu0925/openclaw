@@ -161,9 +161,7 @@ openclaw config set gateway.port 19001 --strict-json
 openclaw config set channels.whatsapp.groups '["*"]' --strict-json
 ```
 
-<Note>
-Windows PowerShell can remove the inner quotes of a single-quoted JSON argument before OpenClaw receives it, so a command like `openclaw config set commands.ownerAllowFrom '["telegram:123"]' --strict-json` can fail with a JSON parse error. Put structured values in a JSON5 patch file and apply it with `openclaw config patch --file ./openclaw.patch.json5` instead.
-</Note>
+For structured values that are awkward to quote in your shell, put a config-shaped JSON5 object in a file and use [`config patch --file <path> --dry-run`](/cli/config#config-patch). The file contains config keys and their values, not a bare array.
 
 `config get <path> --json` prints the redacted value as JSON instead of terminal-formatted text.
 

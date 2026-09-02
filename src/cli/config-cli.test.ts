@@ -1885,20 +1885,6 @@ describe("config cli", () => {
       expect(mockReadConfigFileSnapshot).not.toHaveBeenCalled();
       expectErrorIncludes('Could not parse "{bad" as JSON for --strict-json.');
       expectErrorIncludes("For plain strings, omit --strict-json.");
-      expect(mockError.mock.calls.map((call) => String(call[0])).join("\n")).not.toContain(
-        "openclaw config patch --file",
-      );
-    });
-
-    it("suggests config patch --file for shell-stripped strict JSON values", async () => {
-      await expect(
-        runConfigSet("commands.ownerAllowFrom", "[telegram:123]", "--strict-json"),
-      ).rejects.toThrow(ExitError);
-
-      expect(mockWriteConfigFile).not.toHaveBeenCalled();
-      expectErrorIncludes('Could not parse "[telegram:123]" as JSON for --strict-json.');
-      expectErrorIncludes("Windows PowerShell");
-      expectErrorIncludes("config patch --file");
     });
 
     it("keeps --json as a strict parsing alias", async () => {

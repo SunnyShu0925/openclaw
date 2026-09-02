@@ -55,44 +55,20 @@ export function formatUnsupportedChannelActionMessage(params: {
   )} to inspect supported actions.`;
 }
 
-/** Detect a structured value whose inner quotes were likely removed by the shell. */
-function looksShellStrippedJson(value: string): boolean {
-  const trimmed = value.trim();
-  const balanced =
-    (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
-    (trimmed.startsWith("{") && trimmed.endsWith("}"));
-  if (!balanced) {
-    return false;
-  }
-  // Valid JSON strings always carry quotes; a bare, complete array or object
-  // without any quote character reaching the parser is the classic Windows
-  // PowerShell single-quoted-argument handoff failure. Incomplete values
-  // (e.g. "{bad") are ordinary JSON typos, not shell damage.
-  return !/["']/.test(trimmed);
-}
-
 /** Format strict JSON parsing failures without exposing long untrusted input verbatim. */
 export function formatStrictJsonParseFailure(params: { value: string; cause: unknown }): string {
   const rawCause = params.cause instanceof Error ? params.cause.message : String(params.cause);
   const cause = rawCause.trim().replace(/[.。]+$/u, "");
   const preview =
     params.value.length > 48 ? `${truncateUtf16Safe(params.value, 45).trimEnd()}...` : params.value;
-  const parts = [
+  return [
     `Could not parse ${JSON.stringify(preview)} as JSON for --strict-json.`,
     `${cause}.`,
-    `Use valid JSON, for example ${formatInlineCliCommand(
-      "openclaw config set gateway.port 18789 --strict-json",
+    `Use valid JSON. For structured changes, use a JSON5 config patch object file with ${formatInlineCliCommand(
+      "openclaw config patch --file <path> --dry-run",
     )}.`,
     "For plain strings, omit --strict-json.",
-  ];
-  if (looksShellStrippedJson(params.value)) {
-    parts.push(
-      `The value looks like a JSON array or object without string quotes; Windows PowerShell often removes inner quotes before OpenClaw receives the argument. Put structured values in a JSON5 patch file and apply it with ${formatInlineCliCommand(
-        "openclaw config patch --file ./openclaw.patch.json5",
-      )}.`,
-    );
-  }
-  return parts.join(" ");
+  ].join(" ");
 }
 
 /** Normalize gateway failure text and attach the deep-status recovery command. */
