@@ -272,6 +272,7 @@ export function createProfileSelectionOps({
           cdpUrl: profile.cdpUrl,
           targetId: resolvedTargetId,
           ssrfPolicy: getCdpControlPolicy(),
+          ...(options?.signal ? { signal: options.signal } : {}),
         });
         runtime.lastTargetId = resolvedTargetId;
         return;
@@ -282,7 +283,7 @@ export function createProfileSelectionOps({
     await fetchOk(
       appendCdpPath(cdpHttpBase, `/json/activate/${resolvedTargetId}`),
       undefined,
-      undefined,
+      options?.signal ? { signal: options.signal } : undefined,
       getCdpControlPolicy(),
     );
     runtime.lastTargetId = resolvedTargetId;
@@ -309,6 +310,7 @@ export function createProfileSelectionOps({
             cdpUrl: profile.cdpUrl,
             targetId: resolvedTargetId,
             ssrfPolicy: getCdpControlPolicy(),
+            ...(options?.signal ? { signal: options.signal } : {}),
           });
           closedViaPlaywright = true;
         }
@@ -319,7 +321,7 @@ export function createProfileSelectionOps({
         await fetchOk(
           appendCdpPath(cdpHttpBase, `/json/close/${resolvedTargetId}`),
           undefined,
-          undefined,
+          options?.signal ? { signal: options.signal } : undefined,
           getCdpControlPolicy(),
         );
       }

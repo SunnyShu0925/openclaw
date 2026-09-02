@@ -8,7 +8,11 @@ import {
 const { connectOverCdpSpy, getChromeWebSocketUrlSpy, markPageRefBlocked, markTargetBlocked, pwAi } =
   setupPwSessionConnectionTest();
 
-const { listPagesViaPlaywright } = pwAi;
+const {
+  closePageByTargetIdViaPlaywright,
+  focusPageByTargetIdViaPlaywright,
+  listPagesViaPlaywright,
+} = pwAi;
 
 function makePageEnumerationBrowser(
   specs: Array<{
@@ -399,26 +403,72 @@ describe("pw-session page enumeration", () => {
     }
   });
 
-  it("removes the abort listener after successful enumeration", async () => {
+  it("aborts enumeration without a timeout and retires its connection", async () => {
     const fixture = makePageEnumerationBrowser([
-      { targetId: "T1", title: "Tab 1", url: "https://example.com" },
+      {
+        targetId: "T1",
+        title: "Tab 1",
+        url: "https://example.com",
+        readTargetInfo: () => new Promise(() => {}),
+      },
     ]);
     connectOverCdpSpy.mockResolvedValue(fixture.browser);
     getChromeWebSocketUrlSpy.mockResolvedValue(null);
 
     const controller = new AbortController();
-    const addSpy = vi.spyOn(controller.signal, "addEventListener");
-    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
-
-    await listPagesViaPlaywright({
+    const listing = listPagesViaPlaywright({
       cdpUrl: "http://127.0.0.1:9222",
-      timeoutMs: 60_000,
       signal: controller.signal,
     });
+    controller.abort(new Error("cancelled enumeration"));
 
-    const abortAddCalls = addSpy.mock.calls.filter((c) => c[0] === "abort");
-    expect(abortAddCalls).toHaveLength(1);
-    const abortRemoveCalls = removeSpy.mock.calls.filter((c) => c[0] === "abort");
-    expect(abortRemoveCalls).toHaveLength(1);
+    await expect(listing).rejects.toThrow("cancelled enumeration");
+    await vi.waitFor(() => expect(fixture.browserClose).toHaveBeenCalledOnce());
   });
+
+  it.each([
+    ["focus", focusPageByTargetIdViaPlaywright, "bringToFront"],
+    ["close", closePageByTargetIdViaPlaywright, "close"],
+  ] as const)(
+    "does not %s after cancellation during target resolution",
+    async (_name, run, method) => {
+      let releaseTargetInfo: (() => void) | undefined;
+      let markTargetInfoStarted: (() => void) | undefined;
+      const targetInfoStarted = new Promise<void>((resolve) => {
+        markTargetInfoStarted = resolve;
+      });
+      const targetInfoReleased = new Promise<void>((resolve) => {
+        releaseTargetInfo = resolve;
+      });
+      const fixture = makePageEnumerationBrowser([
+        {
+          targetId: "T1",
+          title: "Tab 1",
+          url: "https://example.com",
+          readTargetInfo: async () => {
+            markTargetInfoStarted?.();
+            await targetInfoReleased;
+            return { targetInfo: { targetId: "T1", title: "Tab 1" } };
+          },
+        },
+      ]);
+      const finalIo = vi.fn(async () => {});
+      Object.assign(fixture.pages[0]!, { [method]: finalIo });
+      connectOverCdpSpy.mockResolvedValue(fixture.browser);
+      getChromeWebSocketUrlSpy.mockResolvedValue(null);
+
+      const controller = new AbortController();
+      const operation = run({
+        cdpUrl: "http://127.0.0.1:9222",
+        targetId: "T1",
+        signal: controller.signal,
+      });
+      await targetInfoStarted;
+      controller.abort(new Error("cancelled target resolution"));
+      releaseTargetInfo?.();
+
+      await expect(operation).rejects.toThrow("cancelled target resolution");
+      expect(finalIo).not.toHaveBeenCalled();
+    },
+  );
 });

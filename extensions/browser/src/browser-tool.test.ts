@@ -5,6 +5,7 @@ import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveBrowserToolTimeoutMs } from "./browser-tool.routing.js";
 import type { BrowserActionPathResult } from "./browser/client-actions-types.js";
+import { resolveBrowserConfig } from "./browser/config.js";
 
 const browserClientMocks = vi.hoisted(() => ({
   browserCloseTab: vi.fn(async (..._args: unknown[]) => ({})),
@@ -5350,27 +5351,7 @@ describe("browser observation actions and tab previews", () => {
 });
 
 describe("resolveBrowserToolTimeoutMs", () => {
-  const resolvedBrowser = {
-    enabled: true,
-    controlPort: 18791,
-    profiles: {},
-    defaultProfile: "openclaw",
-    actionTimeoutMs: 60_000,
-  } as unknown as Parameters<typeof resolveBrowserToolTimeoutMs>[0]["resolvedBrowser"];
-
-  it("gives persistent-Playwright tab listings the action-level budget", () => {
-    // Extension-relay profiles enumerate tabs over a scoped persistent-Playwright
-    // connection; the 3s client default would abort before enumeration finishes.
-    const timeoutMs = resolveBrowserToolTimeoutMs({
-      requestedTimeoutMs: undefined,
-      action: "tabs",
-      isUserBrowserProfile: false,
-      usesPersistentPlaywright: true,
-      isNodeProxy: false,
-      resolvedBrowser,
-    });
-    expect(timeoutMs).toBe(60_000);
-  });
+  const resolvedBrowser = resolveBrowserConfig({ enabled: true });
 
   it("keeps the caller-supplied deadline even for persistent-Playwright profiles", () => {
     const timeoutMs = resolveBrowserToolTimeoutMs({
@@ -5384,59 +5365,23 @@ describe("resolveBrowserToolTimeoutMs", () => {
     expect(timeoutMs).toBe(45_000);
   });
 
-  it("leaves non-persistent-Playwright tab listings on the client default", () => {
-    // Managed/CDP profiles keep the legacy undefined -> 3s client fallback.
-    const timeoutMs = resolveBrowserToolTimeoutMs({
-      requestedTimeoutMs: undefined,
-      action: "tabs",
-      isUserBrowserProfile: false,
-      usesPersistentPlaywright: false,
-      isNodeProxy: false,
-      resolvedBrowser,
-    });
-    expect(timeoutMs).toBeUndefined();
-  });
-
-  it("still resolves existing-session manage actions to the 45s budget", () => {
-    const timeoutMs = resolveBrowserToolTimeoutMs({
-      requestedTimeoutMs: undefined,
-      action: "status",
-      isUserBrowserProfile: true,
-      usesPersistentPlaywright: false,
-      isNodeProxy: false,
-      resolvedBrowser,
-    });
-    expect(timeoutMs).toBe(45_000);
-  });
-
-  it("carries the action budget through a browser-node proxy even when the Gateway default is not persistent-Playwright", () => {
-    // A node proxy clears the profile so the node resolves its own default.
-    // The Gateway cannot know whether that default is persistent-Playwright,
-    // so conservatively carry the action budget to avoid a 20s proxy deadline
-    // killing a healthy 20-60s enumeration on the node.
-    const timeoutMs = resolveBrowserToolTimeoutMs({
-      requestedTimeoutMs: undefined,
-      action: "tabs",
-      isUserBrowserProfile: false,
-      usesPersistentPlaywright: false,
-      isNodeProxy: true,
-      resolvedBrowser,
-    });
-    expect(timeoutMs).toBe(60_000);
-  });
-
-  it("does not extend the proxy budget for non-enumeration actions like status", () => {
-    // Only tab-enumeration actions (tabs, open, focus, close) get the
-    // conservative action budget through a node proxy; status and other
-    // actions keep the legacy 20-second proxy default.
-    const timeoutMs = resolveBrowserToolTimeoutMs({
-      requestedTimeoutMs: undefined,
-      action: "status",
-      isUserBrowserProfile: false,
-      usesPersistentPlaywright: false,
-      isNodeProxy: true,
-      resolvedBrowser,
-    });
-    expect(timeoutMs).toBeUndefined();
-  });
+  it.each([
+    ["persistent tab listing", "tabs", true, false, 60_000],
+    ["persistent lifecycle action", "status", true, false, undefined],
+    ["proxied profile listing", "profiles", false, true, 60_000],
+    ["managed tab listing", "tabs", false, false, undefined],
+  ] as const)(
+    "resolves the %s budget",
+    (_label, action, usesPersistentPlaywright, isNodeProxy, expected) => {
+      const timeoutMs = resolveBrowserToolTimeoutMs({
+        requestedTimeoutMs: undefined,
+        action,
+        isUserBrowserProfile: false,
+        usesPersistentPlaywright,
+        isNodeProxy,
+        resolvedBrowser,
+      });
+      expect(timeoutMs).toBe(expected);
+    },
+  );
 });

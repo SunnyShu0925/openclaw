@@ -308,6 +308,7 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
             cdpUrl: profile.cdpUrl,
             url,
             cdpPolicy,
+            ...(opts?.signal ? { signal: opts.signal } : {}),
             ...ssrfPolicyOpts,
           });
           createdTargetId = page.targetId;

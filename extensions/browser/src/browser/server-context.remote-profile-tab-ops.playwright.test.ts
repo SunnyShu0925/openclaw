@@ -281,48 +281,6 @@ describe("browser remote profile tab ops via Playwright", () => {
     expect(exactFocusCall?.targetId).toBe("B");
   });
 
-  it("does not focus a tab after cancellation before final I/O", async () => {
-    const listPagesViaPlaywright = vi.fn(async () => [page("A", "https://example.com")]);
-    const focusPageByTargetIdViaPlaywright = vi.fn(async () => {
-      await new Promise<void>(() => {});
-    });
-    vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
-      listPagesViaPlaywright,
-      focusPageByTargetIdViaPlaywright,
-    } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
-
-    const { remote } = deps.createRemoteRouteHarness();
-
-    const controller = new AbortController();
-    const focusing = remote.focusTab("A", { exactTargetId: true, signal: controller.signal });
-
-    controller.abort(new Error("cancelled mid-selection"));
-
-    await expect(focusing).rejects.toThrow(/cancelled/);
-    expect(focusPageByTargetIdViaPlaywright).not.toHaveBeenCalled();
-  });
-
-  it("does not close a tab after cancellation before final I/O", async () => {
-    const listPagesViaPlaywright = vi.fn(async () => [page("A", "https://example.com")]);
-    const closePageByTargetIdViaPlaywright = vi.fn(async () => {
-      await new Promise<void>(() => {});
-    });
-    vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
-      listPagesViaPlaywright,
-      closePageByTargetIdViaPlaywright,
-    } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
-
-    const { remote } = deps.createRemoteRouteHarness();
-
-    const controller = new AbortController();
-    const closing = remote.closeTab("A", { exactTargetId: true, signal: controller.signal });
-
-    controller.abort(new Error("cancelled mid-selection"));
-
-    await expect(closing).rejects.toThrow(/cancelled/);
-    expect(closePageByTargetIdViaPlaywright).not.toHaveBeenCalled();
-  });
-
   it("transfers stable aliases across a high-confidence target replacement", async () => {
     let currentPages = [page("A", "https://app.example/form")];
     const listPagesViaPlaywright = vi.fn(async () => currentPages);

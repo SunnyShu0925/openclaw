@@ -322,6 +322,10 @@ describe("browser tab routes", () => {
 
     expect(response.statusCode).toBe(500);
     expect(response.body).toEqual({ error: String(navigationError) });
+    expect(profileCtx.openTab).toHaveBeenCalledWith("https://unresolved.example", {
+      label: undefined,
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("returns browser-not-running for close when the browser is not reachable", async () => {
@@ -771,23 +775,22 @@ describe("browser tab routes", () => {
 
   it("does not focus a tab after cancellation during target resolution", async () => {
     const abort = new AbortController();
+    let markListStarted: (() => void) | undefined;
+    const listStarted = new Promise<void>((resolve) => {
+      markListStarted = resolve;
+    });
     const listTabs = vi.fn(async (options?: { signal?: AbortSignal }) => {
-      // Simulate slow target resolution (e.g. 76-tab relay enumeration).
-      // The route must propagate the abort signal into listTabs so a cancelled
-      // request does not proceed to the focus mutation.
       const signal = options?.signal;
-      if (signal && !signal.aborted) {
-        await new Promise<void>((resolve, reject) => {
-          signal.addEventListener(
-            "abort",
-            () => {
-              const reason = signal.reason;
-              reject(reason instanceof Error ? reason : new Error("aborted"));
-            },
-            { once: true },
-          );
-          // Safety timeout so the test does not hang if abort never fires.
-          setTimeout(resolve, 5_000);
+      markListStarted?.();
+      if (signal) {
+        await new Promise<void>((_resolve, reject) => {
+          const rejectAbort = () =>
+            reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+          if (signal.aborted) {
+            rejectAbort();
+            return;
+          }
+          signal.addEventListener("abort", rejectAbort, { once: true });
         });
       }
       return [
@@ -803,7 +806,7 @@ describe("browser tab routes", () => {
       signal: abort.signal,
     });
 
-    // Abort while listTabs is still resolving the target.
+    await listStarted;
     abort.abort(new Error("cancelled"));
     const response = await pending;
 
