@@ -159,6 +159,12 @@ type CallGatewayBaseOptions = {
   localPortOverride?: number;
   /** Keep a caller-supplied config target authoritative over OPENCLAW_GATEWAY_URL. */
   ignoreEnvUrlOverride?: boolean;
+  /**
+   * Service-derived probe target (e.g. custom bind host or Tailnet address).
+   * Used as the connection URL without classifying it as a caller URL override,
+   * so the explicit-credential guard does not fire.
+   */
+  serviceTargetUrl?: string;
 };
 
 export type CallGatewayCliOptions = CallGatewayBaseOptions & {
@@ -1128,7 +1134,9 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
     env: process.env,
     configPath: context.configPath,
     ignoreEnvUrlOverride:
-      opts.localPortOverride !== undefined || opts.ignoreEnvUrlOverride === true,
+      opts.localPortOverride !== undefined ||
+      opts.ignoreEnvUrlOverride === true ||
+      opts.serviceTargetUrl !== undefined,
     localPortOverride: opts.localPortOverride,
     explicitTlsFingerprint: opts.tlsFingerprint,
     skipImplicitAuth: useStoredDeviceAuth || opts.skipImplicitAuth === true,
@@ -1139,6 +1147,7 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
             "Fix: pass --token or --password with --url (or gatewayToken in tools).",
         }),
     buildConnectionDetails: buildGatewayConnectionDetails,
+    ...(opts.serviceTargetUrl ? { serviceTargetUrl: opts.serviceTargetUrl } : {}),
   });
   ensureRemoteModeUrlConfigured({
     context,
@@ -1261,6 +1270,7 @@ export async function buildGatewayProbeConnectionDetails(
     | "ignoreEnvUrlOverride"
     | "localPortOverride"
     | "password"
+    | "serviceTargetUrl"
     | "tlsFingerprint"
     | "token"
     | "url"
@@ -1278,11 +1288,14 @@ export async function buildGatewayProbeConnectionDetails(
     env: process.env,
     configPath: context.configPath,
     ignoreEnvUrlOverride:
-      opts.localPortOverride !== undefined || opts.ignoreEnvUrlOverride === true,
+      opts.localPortOverride !== undefined ||
+      opts.ignoreEnvUrlOverride === true ||
+      opts.serviceTargetUrl !== undefined,
     localPortOverride: opts.localPortOverride,
     explicitTlsFingerprint: opts.tlsFingerprint,
     skipImplicitAuth: true,
     buildConnectionDetails: buildGatewayConnectionDetails,
+    ...(opts.serviceTargetUrl ? { serviceTargetUrl: opts.serviceTargetUrl } : {}),
   });
   ensureRemoteModeUrlConfigured({
     context,
