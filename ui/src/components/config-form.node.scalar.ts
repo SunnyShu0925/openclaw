@@ -1,6 +1,7 @@
 // Control UI renderers for scalar config form nodes.
 import { formatInternationalPhoneNumberForDisplay } from "@openclaw/normalization-core/phone-presentation";
 import { html, nothing, type TemplateResult } from "lit";
+import { keyed } from "lit/directives/keyed.js";
 import { ref } from "lit/directives/ref.js";
 import { i18n, t } from "../i18n/index.ts";
 import {
@@ -18,6 +19,7 @@ import {
   renderFieldRow,
   renderSchemaDefaultDescription,
   renderSensitiveToggleButton,
+  setControlValidity,
   wrapSensitiveControl,
   type ConfigNodeRenderParams,
 } from "./config-form.node.shared.ts";
@@ -55,17 +57,18 @@ const scalarInputState = new WeakMap<
   }
 >();
 
-function setControlValidity(target: HTMLInputElement, message: string): boolean {
-  target.setCustomValidity(message);
-  target.setAttribute("aria-invalid", String(Boolean(message)));
-  const error = target
-    .closest(".cfg-scalar-input")
-    ?.querySelector<HTMLElement>(".cfg-field__error");
-  if (error) {
-    error.hidden = !message;
-    error.textContent = message;
-  }
-  return !message;
+function wrapScalarControl(control: TemplateResult, errorId: string): TemplateResult {
+  // A new native renderer must replace its alert too; value-only updates keep
+  // the same template and preserve the control's in-progress edit state.
+  return html`${keyed(
+    control.strings,
+    html`
+      <span class="cfg-scalar-input">
+        <span class="cfg-scalar-input__control">${control}</span>
+        <span id=${errorId} class="cfg-field__error" role="alert" hidden></span>
+      </span>
+    `,
+  )}`;
 }
 
 function syncScalarInputIdentity(
@@ -83,19 +86,23 @@ function syncScalarInputIdentity(
   }
   const previous = scalarInputState.get(element);
   if (previous) {
-    if (
-      !Object.is(previous.sourceIdentity, sourceIdentity) ||
+    const identityChanged =
       !Object.is(previous.rowIdentity, rowIdentity) ||
       previous.pathKey !== pathKey ||
-      previous.presentationIdentity !== presentationIdentity ||
+      previous.presentationIdentity !== presentationIdentity;
+    if (
+      !Object.is(previous.sourceIdentity, sourceIdentity) ||
+      identityChanged ||
       previous.renderedValue !== renderedValue
     ) {
-      // A focused input whose DOM value drifted from the last render holds an
-      // in-flight edit the model has not committed yet (mid-keystroke or
-      // mid-automation fill). Resetting it here silently eats that input when
-      // a background config refresh lands; blurred fields keep the
-      // authoritative-reset contract.
-      if (element.matches(":focus") && element.value !== previous.renderedValue) {
+      // Preserve focused drafts through refreshes of the same field only.
+      // A different row, path, or presentation (including redaction) owns a
+      // new edit session and must apply its authoritative value.
+      if (
+        !identityChanged &&
+        element.matches(":focus") &&
+        element.value !== previous.renderedValue
+      ) {
         revalidate(element);
       } else {
         element.value = renderedValue;
@@ -403,13 +410,6 @@ export function renderTextInput(
         </span>
       `
     : wrappedInput;
-  const control = html`
-    <span class="cfg-scalar-input">
-      ${presentedInput}
-      <span id=${errorId} class="cfg-field__error" role="alert" hidden></span>
-    </span>
-  `;
-
   return renderFieldRow({
     label,
     help,
@@ -418,7 +418,7 @@ export function renderTextInput(
       effectiveRedacted || masked ? nothing : renderSchemaDefaultDescription(schema, value),
     tags,
     showLabel,
-    control,
+    control: wrapScalarControl(presentedInput, errorId),
   });
 }
 
@@ -560,7 +560,7 @@ export function renderNumberInput(params: ConfigNodeRenderParams): TemplateResul
     defaultDescription: renderSchemaDefaultDescription(schema, value),
     tags,
     showLabel,
-    control,
+    control: wrapScalarControl(control, errorId),
   });
 }
 

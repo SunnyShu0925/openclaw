@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ConfigUiHint, ConfigUiHints } from "../api/types.ts";
 import { configHintTranslationKey } from "../i18n/lib/config-hint-translation.ts";
 import { translateActive } from "../i18n/lib/translate.ts";
+import { preserveConfigArrayRowIdentities } from "../components/config-form-array-identity.ts";
 
 export function isSensitiveLeafValue(value: unknown): boolean {
   if (typeof value === "string") {
@@ -143,8 +144,10 @@ export function humanize(raw: string) {
     .replace(/^./, (m) => m.toUpperCase());
 }
 
-export function cloneConfigObject<T>(value: T): T {
-  return structuredClone(value);
+export function cloneConfigObject<T>(value: T, previous: unknown = value): T {
+  const cloned = structuredClone(value);
+  preserveConfigArrayRowIdentities(previous, cloned);
+  return cloned;
 }
 
 export function serializeConfigForm(form: Record<string, unknown>): string {

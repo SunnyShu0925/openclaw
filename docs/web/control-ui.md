@@ -152,6 +152,7 @@ in the grouped sidebar or contribute to activity summaries, except that the open
 conversation remains visible so direct links keep a selected row. When a main session
 is absent from the window, its agent's most recent session supplies the preview.
 
+
 ## What each page covers
 
 - [Connect and pair](/web/control-ui/connect-and-pair) — pair a browser or phone, reach the UI over Tailscale, and fix a blank page.
