@@ -774,7 +774,12 @@ async function consumeChatStream(
         identity.explicitIds.add(providedCallId);
       }
       if (functionName) {
-        if (existingIndex !== undefined && block.name !== functionName) {
+        if (existingIndex !== undefined && !block.name) {
+          // A nameless block adopting its first name is not an assembled
+          // fragment — set it directly without the prefix gate or assembled flag.
+          block.name = functionName;
+          identity.functionNames.add(functionName);
+        } else if (existingIndex !== undefined && block.name !== functionName) {
           // Continuation of an existing block with a differing name. Append only
           // when the assembled name could still be a requested tool name: the
           // concatenation must be a prefix of (or equal to) one of the tool names

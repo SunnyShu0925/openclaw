@@ -1040,4 +1040,52 @@ describe("Mistral provider — fragmented streamed function names", () => {
       { id: "call_late", name: "get_weather", arguments: { city: "Paris" } },
     ]);
   });
+
+  it.each([
+    [
+      "with explicit id",
+      [{ id: "call_x", index: 0, function: { name: "", arguments: '{"city":' } }],
+    ],
+    ["without explicit id", [{ index: 0, function: { name: "", arguments: '{"city":' } }]],
+  ])(
+    "adopts a first name on a nameless opening block without assembly gate (%s)",
+    async (_label, firstChunk) => {
+      const { toolCalls } = await runMistralToolFixture(
+        "response-nameless-opening",
+        [
+          firstChunk,
+          [{ id: "call_x", index: 0, function: { name: "get_weather", arguments: '"Paris"}' } }],
+        ],
+        undefined,
+        [{ ...makeHealthyTool(), name: "get_weather" }] as never,
+      );
+      expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+    },
+  );
+
+  it("adopts a first name on a nameless opening block when no function tools were sent", async () => {
+    const { result, toolCalls } = await runMistralToolFixture(
+      "response-nameless-opening-no-tools",
+      [
+        [{ id: "call_x", index: 0, function: { name: "", arguments: '{"city":' } }],
+        [{ id: "call_x", index: 0, function: { name: "get_weather", arguments: '"Paris"}' } }],
+      ],
+    );
+    expect(result.stopReason).not.toBe("error");
+    expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
+
+  it("does not set assembled flag on nameless opening adoption", async () => {
+    const { toolCalls } = await runMistralToolFixture(
+      "response-nameless-opening-no-capture",
+      [
+        [{ index: 0, function: { name: "", arguments: '{"city":' } }],
+        [{ index: 0, function: { name: "get_weather", arguments: "" } }],
+        [{ function: { name: "get_weather", arguments: '"Paris"}' } }],
+      ],
+      undefined,
+      [{ ...makeHealthyTool(), name: "get_weather" }] as never,
+    );
+    expect(toolCalls).toMatchObject([{ name: "get_weather", arguments: { city: "Paris" } }]);
+  });
 });
