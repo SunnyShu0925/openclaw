@@ -2,8 +2,10 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "../agents/tool-policy.js";
+import { createInvalidConfigError, throwInvalidConfig } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SecretRef } from "../config/types.secrets.js";
+import { createDedupeCache } from "../infra/dedupe.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { loggingState } from "../logging/state.js";
 import { resolveInstalledPluginIndexPolicyHash } from "./installed-plugin-index-policy.js";
@@ -3495,6 +3497,95 @@ describe("resolvePluginTools optional tools", () => {
     const tools = resolvePluginTools(createResolveToolsParams({ toolAllowlist: ["*"] }));
 
     expectResolvedToolNames(tools, ["optional_tool"]);
+  });
+
+  it("does not misattribute or duplicate logged invalid-config errors to the current plugin (#137694)", () => {
+    const logger = { error: vi.fn() };
+    const loggedConfigPaths = createDedupeCache({ ttlMs: 0, maxSize: 4096 });
+    const configError = (() => {
+      try {
+        throwInvalidConfig({
+          configPath: "plugins.entries.codex.config.appServer",
+          issues: [
+            {
+              path: "plugins.entries.codex.config.appServer",
+              message:
+                'invalid config: must not have additional properties: "turnCompletionIdleTimeoutMs"',
+            },
+          ],
+          logger,
+          loggedConfigPaths,
+        });
+      } catch (err) {
+        return err as Error;
+      }
+    })();
+
+    setRegistry([
+      {
+        pluginId: "memory-wiki",
+        optional: false,
+        source: "/tmp/memory-wiki.js",
+        names: ["memory_wiki_tool"],
+        factory: () => {
+          throw configError;
+        },
+      },
+    ]);
+
+    const errorSpy = vi.fn();
+    loggingState.rawConsole = {
+      log: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: errorSpy,
+    };
+    setLoggerOverride({ level: "silent", consoleLevel: "error" });
+
+    const tools = resolvePluginTools(createResolveToolsParams({ toolAllowlist: ["*"] }));
+
+    expectResolvedToolNames(tools, []);
+    // throwInvalidConfig already logged the path-specific diagnostic, so the
+    // resolver must not re-log or re-attribute the invalid-config error.
+    expect(logger.error).toHaveBeenCalledOnce();
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("still logs unlogged invalid-config errors from plugin factories (#137694)", () => {
+    const configError = createInvalidConfigError(
+      "plugins.entries.codex.config.appServer",
+      'invalid config: must not have additional properties: "turnCompletionIdleTimeoutMs"',
+    );
+    setRegistry([
+      {
+        pluginId: "memory-wiki",
+        optional: false,
+        source: "/tmp/memory-wiki.js",
+        names: ["memory_wiki_tool"],
+        factory: () => {
+          throw configError;
+        },
+      },
+    ]);
+
+    const errorSpy = vi.fn();
+    loggingState.rawConsole = {
+      log: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: errorSpy,
+    };
+    setLoggerOverride({ level: "silent", consoleLevel: "error" });
+
+    const tools = resolvePluginTools(createResolveToolsParams({ toolAllowlist: ["*"] }));
+
+    expectResolvedToolNames(tools, []);
+    // createInvalidConfigError does not log, so the resolver must still emit
+    // a diagnostic to avoid silently swallowing a failed plugin factory.
+    expect(errorSpy).toHaveBeenCalledOnce();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("plugin tool failed (memory-wiki)"),
+    );
   });
 });
 

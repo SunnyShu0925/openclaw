@@ -36,7 +36,8 @@ function logInvalidConfigOnce(params: {
   params.logger.error(formatInvalidConfigLogMessage(params.configPath, params.details));
 }
 
-/** Creates the tagged error shape used by callers that need details after catch. */
+/** Creates the tagged error shape used by callers that need details after catch.
+ * Does not log — callers that want a diagnostic must use {@link throwInvalidConfig} or log themselves. */
 export function createInvalidConfigError(
   configPath: string,
   details: string,
@@ -49,10 +50,15 @@ export function createInvalidConfigError(
     code?: "INVALID_CONFIG";
     details?: string;
     recovery?: "doctor" | "manual";
+    diagnosticEmitted?: boolean;
   };
   tagged.code = "INVALID_CONFIG";
   tagged.details = details;
   tagged.recovery = options.recovery ?? "doctor";
+  // Default: no diagnostic has been emitted for this error. Only throwInvalidConfig
+  // (which logs before throwing) sets this to true, letting downstream catch blocks
+  // distinguish already-logged errors from silent ones.
+  tagged.diagnosticEmitted = false;
   return error;
 }
 
@@ -60,6 +66,7 @@ export function isInvalidConfigError(err: unknown): err is Error & {
   code: "INVALID_CONFIG";
   details?: string;
   recovery?: "doctor" | "manual";
+  diagnosticEmitted?: boolean;
 } {
   return extractErrorCode(err) === "INVALID_CONFIG";
 }
@@ -82,5 +89,7 @@ export function throwInvalidConfig(params: {
     logger: params.logger,
     loggedConfigPaths: params.loggedConfigPaths,
   });
-  throw createInvalidConfigError(params.configPath, details);
+  const error = createInvalidConfigError(params.configPath, details);
+  (error as { diagnosticEmitted?: boolean }).diagnosticEmitted = true;
+  throw error;
 }
