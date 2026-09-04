@@ -3614,7 +3614,7 @@ describe("resolvePluginTools optional tools", () => {
     const loggedConfigPaths = createDedupeCache({ ttlMs: 0, maxSize: 4096 });
     const configError = (() => {
       try {
-        throwInvalidConfig({
+        return throwInvalidConfig({
           configPath: "plugins.entries.codex.config.appServer",
           issues: [
             {

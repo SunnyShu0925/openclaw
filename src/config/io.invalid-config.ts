@@ -90,6 +90,7 @@ export function throwInvalidConfig(params: {
     loggedConfigPaths: params.loggedConfigPaths,
   });
   const error = createInvalidConfigError(params.configPath, details);
+  // SAFETY: createInvalidConfigError constructs the error with this optional field; mutating it here is safe.
   (error as { diagnosticEmitted?: boolean }).diagnosticEmitted = true;
   throw error;
 }
