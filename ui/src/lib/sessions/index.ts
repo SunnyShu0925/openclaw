@@ -83,7 +83,12 @@ function isSessionStateEvent(event: GatewayEventFrame): boolean {
   return event.event === "sessions.changed" || event.event === "session.message";
 }
 
-export function createSessionCapability(gateway: SessionGateway): SessionCapability {
+export function createSessionCapability(
+  gateway: SessionGateway,
+  capabilityOptions: {
+    onSessionLifecycleReset?: (key: string, agentId?: string | null) => void;
+  } = {},
+): SessionCapability {
   let state: SessionState = {
     result: null,
     agentId: null,
@@ -249,6 +254,7 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
     clearThink: (key, agentId) => thinkingLevelClaims.delete(sessionClaimKey(key, agentId)),
     claimPermissionProjection,
     retirePullRequestSummary,
+    onSessionLifecycleReset: capabilityOptions.onSessionLifecycleReset,
   });
 
   const deletions = createSessionDeletions({

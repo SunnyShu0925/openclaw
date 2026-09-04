@@ -17,6 +17,8 @@ import type {
 import {
   GatewayProtocolRequestError,
   GatewayProtocolRequestTimeoutError,
+  isGatewayProtocolResponseError,
+  retainGatewayResponsePayload,
   type GatewayProtocolRequestOptions,
 } from "./protocol-request.js";
 import { clearGatewayConnectTimeout, startGatewayConnectTimeout } from "./timeouts.js";
@@ -24,6 +26,8 @@ import { clearGatewayConnectTimeout, startGatewayConnectTimeout } from "./timeou
 export {
   GatewayProtocolRequestError,
   GatewayProtocolRequestTimeoutError,
+  isGatewayProtocolResponseError,
+  retainGatewayResponsePayload,
   type GatewayProtocolRequestOptions,
   type GatewayProtocolRequestTiming,
 };

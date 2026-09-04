@@ -1,3 +1,4 @@
+import { isGatewayProtocolResponseError } from "@openclaw/gateway-client/browser";
 import type {
   SessionOwner,
   SessionsAssignOwnerParams,
@@ -43,6 +44,11 @@ type SessionMutationsHost = {
   clearThink: (key: string, agentId?: string | null) => void;
   claimPermissionProjection: (key: string, agentId?: string | null) => () => boolean;
   retirePullRequestSummary: (key: string) => void;
+  // A reset replaces the observer lifecycle; the prior critical-notice revision
+  // floor for that session must be retired so the new lifecycle's revision 1 is
+  // not rejected as stale. Optional because the UI tracker lives outside this
+  // module; injected by the app layer that owns the tracker singleton.
+  onSessionLifecycleReset?: (key: string, agentId?: string | null) => void;
 };
 
 function createOptimisticRowPatches<T>(
@@ -572,12 +578,27 @@ export function createSessionMutations(host: SessionMutationsHost) {
     }
     try {
       await requestSessionReset(scope.client, key, options);
+      // Reset is destructive once issued: the observer lifecycle is replaced
+      // even when completion is uncertain, so retire the prior revision floor
+      // before the new lifecycle's first digest arrives. Forgetting when the
+      // RPC did not commit at worst re-announces a still-valid notice (the
+      // old lifecycle's next revision exceeds the floor anyway); the silent
+      // suppression we are fixing is strictly worse.
+      host.onSessionLifecycleReset?.(key, options.agentId);
       return host.connection.isCurrent(scope) ? "completed" : "uncertain";
     } catch (error) {
       if (host.connection.isCurrent(scope)) {
         host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
       }
-      // Reset can commit before awaited lifecycle work rejects; never infer safe retry.
+      // A Gateway response error (ok: false) means the reset was definitely
+      // rejected — the lifecycle was not replaced, so keep the revision floor.
+      // Transport-ambiguous errors (timeout, disconnect) may have committed
+      // after the client lost the response; retire the floor there because
+      // reset is destructive once issued and re-announcing a still-valid
+      // notice is strictly better than the silent suppression being fixed.
+      if (!isGatewayProtocolResponseError(error)) {
+        host.onSessionLifecycleReset?.(key, options.agentId);
+      }
       return "uncertain";
     }
   };

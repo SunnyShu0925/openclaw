@@ -270,7 +270,16 @@ export function bootstrapApplication(): ApplicationRuntime {
       password: startup.password ?? "",
     },
   });
-  const sessions = createSessionCapability(gateway);
+  const sessions = createSessionCapability(gateway, {
+    // /clear replaces the observer lifecycle; retire the prior critical-notice
+    // revision floor so the new lifecycle's revision 1 is not silently dropped
+    // as stale. Lazy import keeps the critical-notice module off the startup chunk.
+    onSessionLifecycleReset: (key, agentId) => {
+      void import("../pages/chat/critical-observer-notice.runtime.ts").then((runtime) =>
+        runtime.forgetCriticalObserverTracker({ sessionKey: key, agentId: agentId ?? undefined }),
+      );
+    },
+  });
   const workboard = createWorkboardCapability();
   const runtimeConfig = createRuntimeConfigCapability(gateway);
   const overlays = createApplicationOverlays(gateway, {
