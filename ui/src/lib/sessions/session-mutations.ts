@@ -44,6 +44,11 @@ type SessionMutationsHost = {
   clearThink: (key: string, agentId?: string | null) => void;
   claimPermissionProjection: (key: string, agentId?: string | null) => () => boolean;
   retirePullRequestSummary: (key: string) => void;
+  // A reset replaces the observer lifecycle; the prior critical-notice revision
+  // floor for that session must be retired so the new lifecycle's revision 1 is
+  // not rejected as stale. Optional because the UI tracker lives outside this
+  // module; injected by the app layer that owns the tracker singleton.
+  onSessionLifecycleReset?: (key: string, agentId?: string | null) => void;
 };
 
 function createOptimisticRowPatches<T>(
@@ -571,14 +576,39 @@ export function createSessionMutations(host: SessionMutationsHost) {
     if (!scope) {
       return "not-started";
     }
+    // Track whether the reset request reached the transport so the catch
+    // path only retires the floor when the lifecycle may actually have been
+    // replaced. A local no-socket rejection rejects before send — the
+    // lifecycle is unchanged, so retiring there would permit a duplicate.
+    let requestSent = false;
     try {
-      await requestSessionReset(scope.client, key, options);
+      await requestSessionReset(scope.client, key, options, {
+        onSent: () => {
+          requestSent = true;
+        },
+      });
+      // Reset is destructive once issued: the observer lifecycle is replaced
+      // even when completion is uncertain, so retire the prior revision floor
+      // before the new lifecycle's first digest arrives. Forgetting when the
+      // RPC did not commit at worst re-announces a still-valid notice (the
+      // old lifecycle's next revision exceeds the floor anyway); the silent
+      // suppression we are fixing is strictly worse.
+      host.onSessionLifecycleReset?.(key, options.agentId);
       return host.connection.isCurrent(scope) ? "completed" : "uncertain";
     } catch (error) {
       if (host.connection.isCurrent(scope)) {
         host.publish({ ...host.readState(), error: formatUiError(error) }, "operation");
       }
-      // Reset can commit before awaited lifecycle work rejects; never infer safe retry.
+      // A correlated Gateway error (ok:false) does not prove the reset was
+      // uncommitted — the Gateway writes the new lifecycle before awaited hooks
+      // and unbinding can fail and return ok:false. Once the request reached the
+      // transport, the lifecycle may have been replaced, so retire the floor;
+      // re-announcing a still-valid notice is strictly better than the silent
+      // suppression being fixed. A before-send rejection (no socket) has
+      // requestSent=false, so the floor is retained there.
+      if (requestSent) {
+        host.onSessionLifecycleReset?.(key, options.agentId);
+      }
       return "uncertain";
     }
   };

@@ -1,5 +1,5 @@
 import type { SessionCatalogPullRequestSummary } from "../../../../packages/gateway-protocol/src/schema/sessions-catalog.js";
-import { GatewayRequestError, type GatewayEventFrame } from "../../api/gateway.ts";
+import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { formatUiError } from "../format-error.ts";
 import { createGatewayConnectionLifecycle } from "../gateway-connection-lifecycle.ts";
@@ -78,10 +78,6 @@ function sessionRetryDelayMs(error: unknown): number | null {
   return Math.min(Math.max(requested, SESSION_RETRY_MIN_MS), SESSION_RETRY_MAX_MS);
 }
 
-function isSessionStateEvent(event: GatewayEventFrame): boolean {
-  return event.event === "sessions.changed" || event.event === "session.message";
-}
-
 type SessionAgentSelection = {
   readonly state: { readonly selectedId: string | null };
   subscribe: (listener: () => void) => () => void;
@@ -90,6 +86,9 @@ type SessionAgentSelection = {
 export function createSessionCapability(
   gateway: SessionGateway,
   agentSelection: SessionAgentSelection,
+  capabilityOptions: {
+    onSessionLifecycleReset?: (key: string, agentId?: string | null) => void;
+  } = {},
 ): SessionCapability {
   let state: SessionState = {
     result: null,
@@ -172,9 +171,8 @@ export function createSessionCapability(
   };
 
   const retirePullRequestSummary = (key: string) => {
-    const normalizedKey = key.trim();
-    pullRequestEpochs.delete(normalizedKey);
-    pullRequestSummaries.delete(normalizedKey);
+    pullRequestEpochs.delete(key.trim());
+    pullRequestSummaries.delete(key.trim());
   };
 
   // Canonical Gateway rows are the source of truth for everything except the
@@ -265,6 +263,7 @@ export function createSessionCapability(
     clearThink: (key, agentId) => thinkingLevelClaims.delete(sessionClaimKey(key, agentId)),
     claimPermissionProjection,
     retirePullRequestSummary,
+    onSessionLifecycleReset: capabilityOptions.onSessionLifecycleReset,
   });
 
   const deletions = createSessionDeletions({
@@ -293,8 +292,7 @@ export function createSessionCapability(
 
   const capturePullRequestEpoch = (key: string): object => {
     const epoch = {};
-    pullRequestEpochs.set(key.trim(), epoch);
-    return epoch;
+    return (pullRequestEpochs.set(key.trim(), epoch), epoch);
   };
 
   const setPullRequestSummary = (
@@ -578,7 +576,7 @@ export function createSessionCapability(
   });
 
   const stopEvents = gateway.subscribeEvents((event) => {
-    if (!isSessionStateEvent(event)) {
+    if (event.event !== "sessions.changed" && event.event !== "session.message") {
       return;
     }
     if (swarmActivity.observe(event.payload)) {
