@@ -99,10 +99,10 @@ Grant this plugin access to conversation hooks in `openclaw.json`:
 }
 ```
 
-Merge that entry into your existing config, then restart and inspect:
+Merge that entry into your existing config, then let the default hybrid reload
+mode apply it and inspect:
 
 ```bash
-openclaw gateway restart
 openclaw plugins inspect hook-demo --runtime --json
 ```
 
@@ -118,7 +118,8 @@ the field is only the sender's raw text.
 
 Hook registration does not bypass plugin loading rules. The plugin must be
 loaded and enabled; `plugins.enabled`, `plugins.allow`, and `plugins.deny` still
-apply. Restart the Gateway after changing plugin code or hook configuration.
+apply. Restart the Gateway after changing plugin code. With the default hybrid
+reload mode, hook policy changes hot-reload the existing plugin runtime.
 
 - Non-bundled plugins need explicit
   `plugins.entries.<id>.hooks.allowConversationAccess: true` for
@@ -699,7 +700,7 @@ harness-native shell. It receives:
 - `event.sessionKey`
 - `event.toolName`, currently always `"exec"`
 - `event.host`, one of `"gateway"`, `"sandbox"`, or `"node"`
-- context fields such as `ctx.agentId`, `ctx.sessionKey`,
+- context fields such as `ctx.agentId`, `ctx.sessionKey`, `ctx.sessionId`,
   `ctx.messageProvider`, and `ctx.channelId`
 
 Return a `Record<string, string>` to merge into the exec environment. Handlers
@@ -997,6 +998,10 @@ saw it: a later failure can prevent submission. This is the right seam for
 approval resumes, policy summaries, background monitor
 deltas, and command continuations that should be visible to the model on the
 next turn but should not become permanent system prompt text.
+
+Pass `agentId` with an unscoped `sessionKey`, such as `global`, when multiple
+agents are configured. Enqueueing, consumption, and plugin session state stay in
+that agent's store; the owner selector is not part of the persisted injection.
 
 Cleanup semantics are part of the contract. Session extension cleanup and
 runtime lifecycle cleanup callbacks receive `reset`, `delete`, `disable`, or

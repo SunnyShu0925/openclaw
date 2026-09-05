@@ -1,6 +1,11 @@
-import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type { ChatAttachment, ChatQueueItem, HumanMention } from "../../lib/chat/chat-types.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
-import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
+import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
+import {
+  captureChatOutboxAdmission,
+  storedChatOutboxScopeKey,
+  type StoredChatOutboxScope,
+} from "../../lib/chat/outbox-store.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { visibleSessionMatches } from "../../lib/sessions/index.ts";
 import { generateUUID } from "../../lib/uuid.ts";
@@ -23,7 +28,6 @@ import {
 } from "./chat-send-support.ts";
 import { recordChatSendTiming, schedulePendingSendPaintTiming } from "./chat-send-timing.ts";
 import { getPendingChatPickerPatch } from "./chat-session.ts";
-import { storedChatOutboxScopeKey, type StoredChatOutboxScope } from "./composer-persistence.ts";
 import {
   captureOutboxPayloadOwner,
   failOutboxPayload,
@@ -56,10 +60,11 @@ export function createPendingSendMessage(
   queueMode?: ChatQueueItem["queueMode"],
   intent?: ChatQueueItem["intent"],
   expectedLeafEntryId?: string | null,
+  mentions?: readonly HumanMention[],
 ): { item: ChatQueueItem; admission: ReturnType<typeof captureChatOutboxAdmission> } | null {
-  const trimmed = text.trim();
+  const submitted = trimHumanMentions(text, mentions);
   const hasAttachments = Boolean(attachments && attachments.length > 0);
-  if (!trimmed && !hasAttachments) {
+  if (!submitted.text && !hasAttachments) {
     return null;
   }
   const admission = captureChatOutboxAdmission(host, host.sessionKey);
@@ -68,7 +73,8 @@ export function createPendingSendMessage(
   // retired by the write that admits this replacement, not here.
   const pending: ChatQueueItem = {
     id: generateUUID(),
-    text: intent ? text : trimmed,
+    text: intent ? text : submitted.text,
+    ...(submitted.mentions ? { mentions: submitted.mentions } : {}),
     createdAt: Date.now(),
     ...(resumedOrderKey !== undefined ? { orderKey: resumedOrderKey } : {}),
     attachments: hasAttachments ? attachments : undefined,

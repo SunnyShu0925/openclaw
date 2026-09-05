@@ -171,6 +171,11 @@ can overstate the live context window. Context displays and diagnostics use
 the latest prompt snapshot (`promptTokens`, or the last model call when no
 prompt snapshot is available) for `context.used`.
 
+Native Codex turn usage sums the reported counts from each unique completed
+model response, including responses before a retry or cancellation. Missing
+response counts stay unknown; they do not erase already observed usage. A
+missing final response snapshot leaves context usage unavailable.
+
 ## Cost estimation (when shown)
 
 Costs are estimated from your model pricing config:
@@ -206,11 +211,16 @@ Explicit flat or all-zero model prices do not inherit a catalog tier schedule.
 Omitted flat-rate fields can still inherit catalog defaults. An explicit
 `tieredPricing` schedule takes precedence over the catalog schedule.
 
-Pricing updates ship in the hosted model catalog alongside model metadata.
-OpenClaw does not fetch OpenRouter or LiteLLM directly. Set
-`models.catalogRefresh.enabled: false` to disable hosted catalog traffic on
-offline or restricted networks; bundled pricing and explicit
-`models.providers.*.models[].cost` entries still drive local cost estimates.
+Pricing updates ship in the hosted model catalog alongside model metadata. Its
+publisher reads public pricing sources, including OpenCode's official catalog
+and Venice's public model API when the provider declares the native source.
+Base rates and context tiers come from the same source; usage rendering makes no
+network requests. Hosted updates activate after
+the next Gateway restart. Set `models.catalogRefresh.enabled: false` to disable
+hosted catalog traffic on offline or restricted networks; bundled pricing still
+works. Agent-local `models.json` prices take precedence over explicit
+`models.providers.*.models[].cost` entries, and both override catalog estimates,
+including explicit flat and zero rates.
 
 ## Cache TTL and pruning impact
 

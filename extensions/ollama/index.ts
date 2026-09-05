@@ -32,7 +32,10 @@ import type {
 import { buildOpenAICompatibleReplayPolicy } from "openclaw/plugin-sdk/provider-model-shared";
 import { buildProviderToolCompatFamilyHooks } from "openclaw/plugin-sdk/provider-tools";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
-import { resolveThinkingProfile as resolveOllamaThinkingProfile } from "./provider-policy-api.js";
+import {
+  normalizeResolvedModel,
+  resolveThinkingProfile as resolveOllamaThinkingProfile,
+} from "./provider-policy-api.js";
 import {
   DEFAULT_OLLAMA_EMBEDDING_MODEL,
   OLLAMA_CLOUD_BASE_URL,
@@ -87,10 +90,6 @@ const loadOllamaMemoryEmbeddingProviderAdapter = createLazyRuntimeModule(
   async () =>
     (await import("./src/memory-embedding-adapter.js")).ollamaMemoryEmbeddingProviderAdapter,
 );
-const loadOllamaMediaUnderstandingProvider = createLazyRuntimeModule(
-  async () =>
-    (await import("./src/media-understanding-provider.js")).ollamaMediaUnderstandingProvider,
-);
 
 const lazyOllamaMemoryEmbeddingProviderAdapter: MemoryEmbeddingProviderAdapter = {
   id: OLLAMA_PROVIDER_ID,
@@ -101,23 +100,11 @@ const lazyOllamaMemoryEmbeddingProviderAdapter: MemoryEmbeddingProviderAdapter =
     await (await loadOllamaMemoryEmbeddingProviderAdapter()).create(options),
 };
 
-const lazyOllamaMediaUnderstandingProvider: MediaUnderstandingProvider = {
+const ollamaMediaUnderstandingProvider: MediaUnderstandingProvider = {
   id: OLLAMA_PROVIDER_ID,
   capabilities: ["image"],
-  describeImage: async (request) => {
-    const provider = await loadOllamaMediaUnderstandingProvider();
-    if (!provider.describeImage) {
-      throw new Error("Ollama media understanding provider missing describeImage");
-    }
-    return await provider.describeImage(request);
-  },
-  describeImages: async (request) => {
-    const provider = await loadOllamaMediaUnderstandingProvider();
-    if (!provider.describeImages) {
-      throw new Error("Ollama media understanding provider missing describeImages");
-    }
-    return await provider.describeImages(request);
-  },
+  describeImage: undefined,
+  describeImages: undefined,
 };
 
 async function checkWsl2CrashLoopRiskLazily(api: OpenClawPluginApi): Promise<void> {
@@ -306,12 +293,14 @@ async function discoverAppGuidedOllamaModel(
     ) {
       continue;
     }
-    model = capLocalOllamaModelContext({
-      ...candidate,
-      contextWindow,
-      contextTokens: contextWindow,
-      compat: { ...candidate.compat, supportsTools: true },
-    });
+    model = capLocalOllamaModelContext(
+      {
+        ...candidate,
+        contextWindow,
+        compat: { ...candidate.compat, supportsTools: true },
+      },
+      provider.baseUrl,
+    );
     break;
   }
   if (!model) {
@@ -633,7 +622,9 @@ async function resolveRequestedDynamicOllamaModel(params: {
     showInfo.contextWindow,
     showInfo.capabilities,
   );
-  const model = params.capContextTokens ? capLocalOllamaModelContext(definition) : definition;
+  const model = params.capContextTokens
+    ? capLocalOllamaModelContext(definition, showBaseUrl)
+    : definition;
   return toDynamicOllamaModel({
     provider: params.provider,
     providerConfig: params.providerConfig,
@@ -742,6 +733,7 @@ const createOllamaSharedProviderHooks = (api: OpenClawPluginApi) =>
         : buildOpenAICompatibleReplayPolicy(modelApi),
     resolveReasoningOutputMode: () => "native",
     resolveThinkingProfile: resolveOllamaThinkingProfile,
+    normalizeResolvedModel,
     wrapStreamFn: createConfiguredOllamaCompatStreamWrapper,
     matchesContextOverflowError: ({ errorMessage }) =>
       matchesOllamaContextOverflowError(errorMessage),
@@ -754,6 +746,7 @@ const createOllamaSharedProviderHooks = (api: OpenClawPluginApi) =>
     | "buildReplayPolicy"
     | "resolveReasoningOutputMode"
     | "resolveThinkingProfile"
+    | "normalizeResolvedModel"
     | "wrapStreamFn"
     | "matchesContextOverflowError"
     | "classifyFailoverReason"
@@ -770,7 +763,7 @@ export default definePluginEntry({
       void checkWsl2CrashLoopRiskLazily(api);
     }
     api.registerEmbeddingProvider(lazyOllamaMemoryEmbeddingProviderAdapter);
-    api.registerMediaUnderstandingProvider(lazyOllamaMediaUnderstandingProvider);
+    api.registerMediaUnderstandingProvider(ollamaMediaUnderstandingProvider);
     if (startupPluginConfig.nodeInference?.enabled !== false) {
       for (const command of createLazyOllamaNodeHostCommands()) {
         api.registerNodeHostCommand(command);

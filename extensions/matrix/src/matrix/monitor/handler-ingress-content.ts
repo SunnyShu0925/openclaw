@@ -60,7 +60,6 @@ export async function resolveMatrixIngressContent(config: {
   const {
     client,
     core,
-    cfg,
     accountId,
     accountConfig,
     logger,
@@ -72,6 +71,8 @@ export async function resolveMatrixIngressContent(config: {
   } = handler;
 
   const {
+    cfg,
+    liveDmAllowFrom,
     content: accessContent,
     messageId,
     audioPreflightMode,
@@ -152,7 +153,6 @@ export async function resolveMatrixIngressContent(config: {
     isDirectMessage,
     dmSessionScope,
     threadId: thread.threadId,
-    eventTs: eventTs ?? undefined,
     resolveAgentRoute: core.channel.routing.resolveAgentRoute,
   });
   const hasExplicitSessionBinding = _configuredBinding !== null || _runtimeBindingId !== null;
@@ -498,6 +498,8 @@ export async function resolveMatrixIngressContent(config: {
   const triggerSnapshot = preparedTrigger;
 
   return {
+    cfg,
+    liveDmAllowFrom,
     messageIngress,
     resolveMessageIngress,
     route: _route,

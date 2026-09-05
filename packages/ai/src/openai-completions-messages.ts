@@ -153,19 +153,13 @@ export function convertMessages(
         content: compat.requiresAssistantAfterToolResult ? "" : null,
       };
 
-      const assistantTextParts = msg.content
+      const assistantTexts = msg.content
         .filter(isTextContentBlock)
         .filter((block) => block.text.trim().length > 0)
-        .map(
-          (block) =>
-            ({
-              type: "text",
-              text: sanitizeSurrogates(block.text),
-            }) satisfies ChatCompletionContentPartText,
-        );
+        .map((block) => sanitizeSurrogates(block.text));
       // Separate content blocks are distinct utterances, so replay them the way
       // the string-content flattener does rather than running them together.
-      const assistantText = assistantTextParts.map((part) => part.text).join("\n");
+      const assistantText = assistantTexts.join("\n");
 
       const nonEmptyThinkingBlocks = msg.content
         .filter(isThinkingContentBlock)
@@ -175,7 +169,13 @@ export function convertMessages(
           const thinkingText = nonEmptyThinkingBlocks
             .map((block) => sanitizeSurrogates(block.thinking))
             .join("\n\n");
-          assistantMsg.content = [{ type: "text", text: thinkingText }, ...assistantTextParts];
+          assistantMsg.content = [
+            { type: "text", text: thinkingText },
+            ...assistantTexts.map((text): ChatCompletionContentPartText => ({
+              type: "text",
+              text,
+            })),
+          ];
         } else {
           // String content is the interoperable Chat Completions replay shape;
           // content-part arrays make some compatible servers mirror JSON.
@@ -253,7 +253,7 @@ export function convertMessages(
 
         const textResult = extractToolResultText(toolMsg.content);
         const mediaPlaceholder = describeToolResultMediaPlaceholder(toolMsg.content);
-        const hasImages = toolMsg.content.some(isImageWithMediaPayload);
+        const images = toolMsg.content.filter(isImageWithMediaPayload);
         const content = sanitizeToolResultText(
           textResult,
           mediaPlaceholder ?? EMPTY_TOOL_RESULT_TEXT,
@@ -268,24 +268,18 @@ export function convertMessages(
         }
         params.push(toolResultMsg);
 
-        if (hasImages && model.input.includes("image")) {
+        if (images.length > 0 && model.input.includes("image")) {
           const boundedToolName = sanitizeSurrogates(truncateUtf16Safe(toolMsg.toolName ?? "", 64));
-          const boundedCallId = sanitizeSurrogates(truncateUtf16Safe(toolMsg.toolCallId, 64));
-          const label = boundedToolName
-            ? `Image(s) from ${boundedToolName} (call ${boundedCallId}):`
-            : `Image(s) from tool call ${boundedCallId}:`;
-          let pushedLabel = false;
-          for (const block of toolMsg.content) {
-            if (isImageWithMediaPayload(block)) {
-              if (!pushedLabel) {
-                imageContentParts.push({ type: "text", text: label });
-                pushedLabel = true;
-              }
-              imageContentParts.push({
-                type: "image_url",
-                image_url: { url: `data:${block.mimeType};base64,${block.data}` },
-              });
-            }
+          // Count text-only replies too: names and bounded call IDs can collide.
+          imageContentParts.push({
+            type: "text",
+            text: `Image(s) from tool result #${j - i + 1}${boundedToolName ? ` (${boundedToolName})` : ""}:`,
+          });
+          for (const block of images) {
+            imageContentParts.push({
+              type: "image_url",
+              image_url: { url: `data:${block.mimeType};base64,${block.data}` },
+            });
           }
         }
         j += 1;

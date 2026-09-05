@@ -3,7 +3,7 @@ import type { ApplicationContext } from "../../app/context.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/gateway.ts";
 import { UI_COMMAND_EVENT } from "../../components/panel-toggle-contract.ts";
 import { t } from "../../i18n/index.ts";
-import type { ChatHistoryResult } from "../../pages/chat/chat-history.ts";
+import type { ChatHistoryResult } from "../../pages/chat/chat-history-snapshot.ts";
 import { buildChatMarkdown } from "../../pages/chat/export.ts";
 import type { SessionSplitHost } from "../../pages/chat/split-layout-types.ts";
 import { nativeHistoryMessageIdentity } from "../chat/history-message-identity.ts";
@@ -181,14 +181,26 @@ export async function runSessionNavigationAction<TRouteId extends string>(
       params.session.key,
       params.agentId,
     );
+    const gateway = params.context.gateway;
+    // Shared links belong to the Gateway; the UI document may be a local SSH
+    // tunnel or a dev server with a different mount path. New windows stay local.
+    const linkBase =
+      kind === "copy-session-link"
+        ? (gateway.snapshot.hello?.controlUiUrl ??
+          gateway.snapshot.client?.gatewayUrl ??
+          gateway.connection.gatewayUrl)
+        : undefined;
+    const url = new URL(linkBase || window.location.href);
+    url.protocol = url.protocol.replace(/^ws/u, "http");
     const navigation = sessionNavigationTarget({
       context: params.context,
+      basePath: linkBase ? url.pathname : undefined,
       face,
       sessionKey: params.session.key,
       agentId: params.agentId,
       exactKey: true,
     });
-    const href = new URL(navigation.href, window.location.href).href;
+    const href = new URL(navigation.href, url.origin).href;
     if (kind === "copy-session-link") {
       const copied = await copyToClipboard(href);
       showToast({ message: t(copied ? "common.copied" : "common.copyFailed") });

@@ -25,7 +25,7 @@ import { isSignalTimeoutReason } from "../../failover-error.js";
 import { runAgentEndSideEffects } from "../../harness/agent-end-side-effects.js";
 import { finalizeHarnessContextEngineTurn } from "../../harness/context-engine-lifecycle.js";
 import type { AgentMessage } from "../../runtime/index.js";
-import type { AgentSession, SessionManager } from "../../sessions/index.js";
+import type { AgentSession, SessionManager, SessionMessageEntry } from "../../sessions/index.js";
 import type { NormalizedUsage } from "../../usage.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { log } from "../logger.js";
@@ -207,6 +207,7 @@ type CompleteEmbeddedAttemptAfterTurnInput = {
     messagesSnapshot: AgentMessage[];
     nestedToolActivities?: readonly NestedToolActivity[];
     prePromptMessageCount: number;
+    transcriptLeafId: string | null;
     contextEngineAfterTurnCheckpoint: number | null;
     lastCallUsage?: NormalizedUsage;
     promptCache?: PromptCacheInfo;
@@ -245,57 +246,6 @@ export async function completeEmbeddedAttemptAfterTurn(
   // rewrite callback reacquires the synchronous session write boundary.
   if (activeContextEngine && !state.beforeAgentFinalizeRevisionReason) {
     const lifecycleState = input.readLifecycleState();
-    const afterTurnRuntimeContext = buildAfterTurnRuntimeContextFromUsage({
-      attempt,
-      workspaceDir: runtime.effectiveWorkspace,
-      agentDir: runtime.agentDir,
-      tokenBudget: attempt.contextTokenBudget,
-      lastCallUsage: state.lastCallUsage,
-      promptCache: state.promptCache,
-      activeAgentId: runtime.sessionAgentId,
-      contextEnginePluginId: runtime.resolveActiveContextEnginePluginId(),
-    });
-    const finalizeTurn = async (transcript: {
-      messagesSnapshot: AgentMessage[];
-      prePromptMessageCount: number;
-      sessionManager?: SessionManager;
-      withSessionManagerRewriteLock: WithOwnedTranscriptWrite;
-    }) => {
-      await finalizeHarnessContextEngineTurn({
-        contextEngine: activeContextEngine,
-        promptError: Boolean(state.promptError),
-        aborted: lifecycleState.aborted,
-        yieldAborted: state.yieldAborted,
-        sessionIdUsed,
-        sessionKey: attempt.sessionKey,
-        sessionTarget: attempt.sessionTarget,
-        sessionFile: attempt.sessionFile,
-        messagesSnapshot: transcript.messagesSnapshot,
-        prePromptMessageCount: transcript.prePromptMessageCount,
-        tokenBudget: attempt.contextTokenBudget,
-        runtimeContext: afterTurnRuntimeContext,
-        contextEngineHostSupport: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
-        providerId: attempt.provider,
-        requestedModelId: attempt.requestedModelId,
-        modelId: attempt.modelId,
-        fallbackReason: attempt.fallbackReason,
-        degradedReason: attempt.degradedReason,
-        runMaintenance: async (contextParams) =>
-          await runContextEngineMaintenance({
-            ...contextParams,
-            contextEngine: contextParams.contextEngine as never,
-            sessionManager: contextParams.sessionManager as never,
-            withSessionManagerRewriteLock: transcript.withSessionManagerRewriteLock,
-            config: attempt.config,
-            agentId: runtime.sessionAgentId,
-            contextEngineAgentId: attempt.contextEngineAgentId,
-          }),
-        sessionManager: transcript.sessionManager,
-        config: attempt.config,
-        warn: (message) => log.warn(message),
-        isHeartbeat: isHeartbeatLifecycleRunKind(attempt.bootstrapContextRunKind),
-      });
-    };
     if (attempt.onContextEngineTurnCandidate) {
       const admission = attempt.userTurnTranscriptRecorder?.getAdmissionReceipt();
       const terminalEntryId = sessionManager.getLeafId() ?? undefined;
@@ -315,29 +265,57 @@ export async function completeEmbeddedAttemptAfterTurn(
           sessionIdUsed,
           sessionKey: attempt.sessionKey,
           sessionTarget: attempt.sessionTarget,
-          sessionFile: attempt.sessionFile,
           promptError: Boolean(state.promptError),
           aborted: lifecycleState.aborted,
           yieldAborted: state.yieldAborted,
-          tokenBudget: attempt.contextTokenBudget,
-          runtimeContext: afterTurnRuntimeContext,
-          contextEngineHostSupport: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
-          providerId: attempt.provider,
-          requestedModelId: attempt.requestedModelId,
-          modelId: attempt.modelId,
-          fallbackReason: attempt.fallbackReason,
-          degradedReason: attempt.degradedReason,
-          config: attempt.config,
           isHeartbeat: isHeartbeatLifecycleRunKind(attempt.bootstrapContextRunKind),
         });
       }
     } else {
-      await finalizeTurn({
+      const afterTurnRuntimeContext = buildAfterTurnRuntimeContextFromUsage({
+        attempt,
+        workspaceDir: runtime.effectiveWorkspace,
+        agentDir: runtime.agentDir,
+        tokenBudget: attempt.contextTokenBudget,
+        lastCallUsage: state.lastCallUsage,
+        promptCache: state.promptCache,
+        activeAgentId: runtime.sessionAgentId,
+        contextEnginePluginId: runtime.resolveActiveContextEnginePluginId(),
+      });
+      await finalizeHarnessContextEngineTurn({
+        contextEngine: activeContextEngine,
+        promptError: Boolean(state.promptError),
+        aborted: lifecycleState.aborted,
+        yieldAborted: state.yieldAborted,
+        sessionIdUsed,
+        sessionKey: attempt.sessionKey,
+        sessionTarget: attempt.sessionTarget,
+        sessionFile: attempt.sessionFile,
         messagesSnapshot: state.messagesSnapshot,
         prePromptMessageCount:
           state.contextEngineAfterTurnCheckpoint ?? state.prePromptMessageCount,
+        tokenBudget: attempt.contextTokenBudget,
+        runtimeContext: afterTurnRuntimeContext,
+        contextEngineHostSupport: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
+        providerId: attempt.provider,
+        requestedModelId: attempt.requestedModelId,
+        modelId: attempt.modelId,
+        fallbackReason: attempt.fallbackReason,
+        degradedReason: attempt.degradedReason,
+        runMaintenance: async (contextParams) =>
+          await runContextEngineMaintenance({
+            ...contextParams,
+            contextEngine: contextParams.contextEngine as never,
+            sessionManager: contextParams.sessionManager as never,
+            withSessionManagerRewriteLock: input.withOwnedTranscriptWrite,
+            config: attempt.config,
+            agentId: runtime.sessionAgentId,
+            contextEngineAgentId: attempt.contextEngineAgentId,
+          }),
         sessionManager,
-        withSessionManagerRewriteLock: input.withOwnedTranscriptWrite,
+        config: attempt.config,
+        warn: (message) => log.warn(message),
+        isHeartbeat: isHeartbeatLifecycleRunKind(attempt.bootstrapContextRunKind),
       });
     }
   }
@@ -393,7 +371,24 @@ export async function completeEmbeddedAttemptAfterTurn(
       state.promptError && !lifecycleForAgentEnd.aborted
         ? formatErrorMessage(state.promptError)
         : undefined;
+    const sourceTarget = sessionManager.getSessionTarget();
+    let terminalEntry: SessionMessageEntry | undefined;
+    let entry = sessionManager.getLeafEntry();
+    // Suppressed writes can leave the previous turn as the tail. Partial current
+    // turns remain useful, but review must never cross the pre-prompt boundary.
+    while (entry && entry.id !== state.transcriptLeafId) {
+      if (!terminalEntry && entry.type === "message") {
+        terminalEntry = entry;
+      }
+      entry = entry.parentId ? sessionManager.getEntry(entry.parentId) : undefined;
+    }
+    const reachedPromptBoundary =
+      state.transcriptLeafId === null || entry?.id === state.transcriptLeafId;
     runAgentEndSideEffects({
+      skillExperienceReviewSource:
+        sourceTarget && terminalEntry && reachedPromptBoundary
+          ? { ...sourceTarget, entryId: terminalEntry.id }
+          : undefined,
       event: {
         messages: projectNestedToolActivityForHooks(
           state.messagesSnapshot,

@@ -6,10 +6,12 @@ import {
   isMovableChatQueueItem,
   reorderChatQueueItems,
 } from "../../lib/chat/chat-queue-order.ts";
-import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type { ChatAttachment, ChatQueueItem, HumanMention } from "../../lib/chat/chat-types.ts";
+import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
 import { hasUiSessionDefaults } from "../../lib/sessions/session-key.ts";
 import { generateUUID } from "../../lib/uuid.ts";
-import { loadChatBranches, loadChatHistory, type ChatState } from "./chat-history.ts";
+import { loadChatBranches } from "./chat-history-branches.ts";
+import { loadChatHistory } from "./chat-history.ts";
 import {
   flushStoredChatOutbox,
   resumeStoredChatOutboxes as resumeStoredChatOutboxesDrain,
@@ -37,6 +39,7 @@ import {
   resolveDisplayedLeafEntryId,
 } from "./chat-send-request.ts";
 import { OFFLINE_QUEUE_STORAGE_ERROR } from "./chat-send-support.ts";
+import type { ChatState } from "./chat-state-contract.ts";
 import { storedChatOutboxScopeKey } from "./composer-persistence.ts";
 import { formatConnectError } from "./connect-error.ts";
 import {
@@ -67,13 +70,14 @@ export async function sendChatMessageWithGeneratedRunId(
   options: {
     canApplyError?: () => boolean;
     expectedLeafEntryId?: string | null;
+    mentions?: readonly HumanMention[];
     queueMode?: QueueMode;
     replyToId?: string;
     runId?: string;
   } = {},
 ) {
-  const msg = message.trim();
-  if (!state.client || !state.connected || (!msg && !attachments?.length)) {
+  const submitted = trimHumanMentions(message, options.mentions);
+  if (!state.client || !state.connected || (!submitted.text && !attachments?.length)) {
     return null;
   }
   const canApplyError = options.canApplyError ?? (() => true);
@@ -85,7 +89,8 @@ export async function sendChatMessageWithGeneratedRunId(
   const expectedLeafEntryId = resolveDisplayedLeafEntryId(state);
   try {
     return await requestChatSend(state, {
-      message: msg,
+      message: submitted.text,
+      mentions: submitted.mentions,
       attachments,
       runId,
       ...(options.queueMode !== "steer" && options.expectedLeafEntryId !== undefined

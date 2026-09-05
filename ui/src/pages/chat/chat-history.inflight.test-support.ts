@@ -1,7 +1,9 @@
 import { vi } from "vitest";
-import type { ChatHistoryResult, ChatState } from "./chat-history.ts";
+import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
-import type { handleAgentEvent, ToolStreamEntry } from "./tool-stream.ts";
+import type { ChatState } from "./chat-state-contract.ts";
+import type { ToolStreamEntry } from "./tool-stream-contract.ts";
+import type { handleAgentEvent } from "./tool-stream.ts";
 
 export type TestState = ChatState & Parameters<typeof handleAgentEvent>[0];
 type TestSessions = NonNullable<ChatState["sessions"]> &
@@ -13,7 +15,7 @@ export function createState(result: ChatHistoryResult): TestState {
     sessionKey: "main",
   });
   const sessions: TestSessions = {
-    refreshReplacement: vi.fn(async () => undefined),
+    refreshReplacement: vi.fn(async () => null),
     reconcileRunTerminal: vi.fn(),
   };
   return {

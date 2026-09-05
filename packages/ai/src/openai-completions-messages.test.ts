@@ -85,6 +85,48 @@ describe("convertMessages assistant text replay", () => {
     expect(replayed?.content).toBe("Let me check the file.\nThe file contains X.");
   });
 
+  it.each([false, true])(
+    "preserves sanitized block positions with thinking-as-text %s",
+    (requiresThinkingAsText) => {
+      const assistant: AssistantMessage = {
+        role: "assistant",
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        content: [
+          { type: "thinking", thinking: "reason\ud800" },
+          { type: "text", text: " \t" },
+          { type: "text", text: "first\ud800" },
+          { type: "text", text: "\udc00" },
+          { type: "thinking", thinking: "next😀" },
+          { type: "text", text: "last😀" },
+        ],
+        usage: emptyUsage,
+        stopReason: "stop",
+        timestamp: 2,
+      };
+      const converted = convertMessages(
+        model,
+        { messages: [assistant] },
+        { ...resolveOpenAICompletionsCompat(model), requiresThinkingAsText },
+      );
+
+      expect(converted).toEqual([
+        {
+          role: "assistant",
+          content: requiresThinkingAsText
+            ? [
+                { type: "text", text: "reason\n\nnext😀" },
+                { type: "text", text: "first" },
+                { type: "text", text: "" },
+                { type: "text", text: "last😀" },
+              ]
+            : "first\n\nlast😀",
+        },
+      ]);
+    },
+  );
+
   it("keeps paired OpenAI tool call ids UTF-16 safe when truncating", () => {
     const prefix = "a".repeat(39);
     const oversizedId = `${prefix}🐱`;
@@ -224,9 +266,9 @@ describe("convertMessages parallel tool-result image ownership", () => {
       image_url?: { url: string };
     }>;
     expect(contentP).toEqual([
-      { type: "text", text: "Image(s) from screenshot (call call_a):" },
+      { type: "text", text: "Image(s) from tool result #1 (screenshot):" },
       { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
-      { type: "text", text: "Image(s) from camera (call call_b):" },
+      { type: "text", text: "Image(s) from tool result #2 (camera):" },
       { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
       { type: "image_url", image_url: { url: "data:image/png;base64,CCCC" } },
     ]);
@@ -238,15 +280,15 @@ describe("convertMessages parallel tool-result image ownership", () => {
       image_url?: { url: string };
     }>;
     expect(contentQ).toEqual([
-      { type: "text", text: "Image(s) from screenshot (call call_a):" },
+      { type: "text", text: "Image(s) from tool result #1 (screenshot):" },
       { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
       { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
-      { type: "text", text: "Image(s) from camera (call call_b):" },
+      { type: "text", text: "Image(s) from tool result #2 (camera):" },
       { type: "image_url", image_url: { url: "data:image/png;base64,CCCC" } },
     ]);
   });
 
-  it("labels single tool-result images with tool name and call id", () => {
+  it("labels single tool-result images with result position and tool name", () => {
     const context: Context = {
       messages: [
         makeToolCallAssistant(["call_x"], ["screenshot"]),
@@ -262,10 +304,60 @@ describe("convertMessages parallel tool-result image ownership", () => {
 
     const userMsg = converted.find((m) => m.role === "user" && Array.isArray(m.content));
     expect(userMsg?.content).toEqual([
-      { type: "text", text: "Image(s) from screenshot (call call_x):" },
+      { type: "text", text: "Image(s) from tool result #1 (screenshot):" },
       { type: "image_url", image_url: { url: "data:image/png;base64,aW1n" } },
     ]);
   });
+
+  it.each(["screenshot", ""])(
+    "counts every reply when labeling sparse images from tool %j",
+    (toolName) => {
+      const prefix = "x".repeat(64);
+      const callIds: [string, string, string, string] = [
+        `${prefix}a`,
+        `${prefix}b`,
+        `${prefix}c`,
+        `${prefix}d`,
+      ];
+      const context: Context = {
+        messages: [
+          makeToolCallAssistant(
+            callIds,
+            callIds.map(() => toolName),
+          ),
+          {
+            role: "toolResult",
+            toolCallId: callIds[0],
+            toolName,
+            content: [{ type: "text", text: "No image from this call" }],
+            isError: false,
+            timestamp: 2,
+          },
+          makeImageToolResult(callIds[1], toolName, [{ mimeType: "image/png", data: "AAAA" }]),
+          makeImageToolResult(callIds[2], toolName, []),
+          makeImageToolResult(callIds[3], toolName, [{ mimeType: "image/png", data: "BBBB" }]),
+        ],
+      };
+      const converted = convertMessages(
+        imageModel,
+        context,
+        resolveOpenAICompletionsCompat(imageModel),
+      );
+
+      expect(
+        converted
+          .filter((message) => message.role === "tool")
+          .map((message) => message.tool_call_id),
+      ).toEqual(callIds);
+      const nameSuffix = toolName ? ` (${toolName})` : "";
+      expect(converted.find((message) => message.role === "user")?.content).toEqual([
+        { type: "text", text: `Image(s) from tool result #2${nameSuffix}:` },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        { type: "text", text: `Image(s) from tool result #4${nameSuffix}:` },
+        { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
+      ]);
+    },
+  );
 
   it("does not emit a user message when tool results have no images", () => {
     const context: Context = {
@@ -335,14 +427,15 @@ describe("convertMessages parallel tool-result image ownership", () => {
     // User message gets the labeled image
     const userMsg = converted.find((m) => m.role === "user" && Array.isArray(m.content));
     expect(userMsg?.content).toEqual([
-      { type: "text", text: "Image(s) from screenshot (call call_a):" },
+      { type: "text", text: "Image(s) from tool result #1 (screenshot):" },
       { type: "image_url", image_url: { url: "data:image/png;base64,aW1n" } },
     ]);
   });
 
-  it("bounds oversized tool name and call ID in provenance labels", () => {
-    const longName = "x".repeat(200);
-    const longCallId = "y".repeat(200);
+  it("bounds tool names without changing full call identifiers", () => {
+    const namePrefix = "x".repeat(63);
+    const longName = `${namePrefix}🙂tail`;
+    const longCallId = `${"y".repeat(200)}🙂`;
     const context: Context = {
       messages: [
         makeToolCallAssistant([longCallId], [longName]),
@@ -360,10 +453,9 @@ describe("convertMessages parallel tool-result image ownership", () => {
     const content = userMsg?.content as Array<{ type: string; text?: string }>;
     const labelText = content[0]?.text ?? "";
 
-    // Label must not contain the full 200-char strings
-    expect(labelText).not.toContain(longName);
-    expect(labelText).not.toContain(longCallId);
-    // Label must be bounded
-    expect(labelText.length).toBeLessThan(200);
+    expect(labelText).toBe(`Image(s) from tool result #1 (${namePrefix}):`);
+    expect(labelText).not.toMatch(/[\uD800-\uDFFF]/u);
+    const toolMessage = converted.find((message) => message.role === "tool");
+    expect(toolMessage?.role === "tool" && toolMessage.tool_call_id).toBe(longCallId);
   });
 });
