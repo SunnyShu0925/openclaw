@@ -14,7 +14,10 @@ import { GatewayProtocolRequestError } from "@openclaw/gateway-client/browser";
 // handleCriticalObserverDigest -> showCriticalSessionObserverNotice -> showToast).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSessionCapability } from "../../lib/sessions/index.ts";
-import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
+import {
+  resolveUiConversationIdentity,
+  type UiSessionDefaultsHost,
+} from "../../lib/sessions/session-key.ts";
 import * as criticalObserverRuntime from "./critical-observer-notice.runtime.ts";
 import { resetCriticalObserverTracker } from "./critical-observer-notice.runtime.ts";
 
@@ -412,10 +415,10 @@ describe("reset -> runtime singleton forget -> observer toast (#137125 integrati
     };
     // Cleared sessionHost — what the completion path would see if the socket
     // disconnected and hello/agentsList were cleared on reconnect.
-    const clearedSessionHost = {};
+    const clearedSessionHost: UiSessionDefaultsHost = {};
 
     let resolveCallCount = 0;
-    let resolveHost: unknown = sessionHostWithDefaults;
+    let resolveHost: UiSessionDefaultsHost = sessionHostWithDefaults;
 
     // Gateway fires onSent (request reached transport), then simulates a
     // socket close by clearing the session host (as the client would on
