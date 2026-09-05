@@ -1,7 +1,6 @@
-import { resolveAvailableAgentHarnessPolicy } from "../../agents/harness/availability.js";
-import { resolveAutoAgentHarnessId } from "../../agents/harness/support.js";
+import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
+import { isCliProvider } from "../../agents/model-selection-cli.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
-import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -36,9 +35,15 @@ export function resolveWorkerPlacementExecutionMode(
 
 /**
  * Resolves placement capabilities for the model a session would use after a
- * patch, using projection-mode runtime resolution. Unlike {@link resolveWorkerPlacementSessionRuntime},
- * this does not concretize "auto" to "openclaw", so a model whose effective
- * runtime is undetermined is not falsely treated as placement-compatible.
+ * patch. Reuses the canonical runtime resolution path
+ * ({@link resolveEffectiveAgentRuntime}) instead of duplicating its
+ * override/projection/auto-harness/fallback sequence, and consults the same
+ * CLI-execution classifier the dispatch path uses
+ * ({@link resolveCliRuntimeExecutionProvider} + {@link isCliProvider}, mirroring
+ * `inference-route.ts` / `agent-handler-helpers.ts`). A model whose dispatch
+ * runs as a local CLI process has no cloud placement capability, so it is
+ * rejected before persistence instead of being misread as the built-in
+ * `openclaw` worker-turn runtime.
  */
 export function resolveWorkerPlacementSessionRuntimeCapabilities(params: {
   cfg: OpenClawConfig;
@@ -50,34 +55,29 @@ export function resolveWorkerPlacementSessionRuntimeCapabilities(params: {
   devicePlacement?: NonNullable<GatewayAgentRuntime["devicePlacement"]>;
 } {
   const selectedModel = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
-  const sessionRuntimeOverride = resolveSessionRuntimeOverrideForProvider({
+  // CLI-backed providers execute as local processes (runCliFallbackCandidate) and
+  // cannot claim an active cloud worker placement. Resolve the execution provider
+  // through the same auth-profile-aware aliasing the dispatch path applies, so the
+  // reported CLI-backend case is rejected rather than misread as embedded openclaw.
+  const cliExecutionProvider = resolveCliRuntimeExecutionProvider({
     provider: selectedModel.provider,
-    entry: params.entry,
     cfg: params.cfg,
+    agentId: params.agentId,
+    modelId: selectedModel.model,
   });
-  const policy = resolveAvailableAgentHarnessPolicy({
-    mode: "projection",
+  const executionProvider = cliExecutionProvider ?? selectedModel.provider;
+  if (isCliProvider(executionProvider, params.cfg)) {
+    return {};
+  }
+  const runtime = resolveEffectiveAgentRuntime({
+    cfg: params.cfg,
     provider: selectedModel.provider,
     modelId: selectedModel.model,
-    config: params.cfg,
     agentId: params.agentId,
     sessionKey: params.sessionKey,
-    ...(sessionRuntimeOverride ? { agentHarnessRuntimeOverride: sessionRuntimeOverride } : {}),
+    sessionEntry: params.entry,
   });
-  // When the policy is "auto", the actual execution path resolves a registered
-  // supporting harness via resolveAutoAgentHarnessId before falling back to
-  // "openclaw". Mirror that here so a model routed to a placement-capable
-  // harness is not falsely rejected. An unclaimed "auto" (no supporting
-  // harness) stays unsupported, matching the original bug fix.
-  if (policy.runtime === "auto") {
-    const autoHarnessId = resolveAutoAgentHarnessId({
-      provider: selectedModel.provider,
-      modelId: selectedModel.model,
-      config: params.cfg,
-    });
-    return autoHarnessId ? resolveWorkerPlacementCapabilities(autoHarnessId) : {};
-  }
-  return resolveWorkerPlacementCapabilities(policy.runtime);
+  return resolveWorkerPlacementCapabilities(runtime);
 }
 
 export function projectWorkerPlacementAgentRuntime(

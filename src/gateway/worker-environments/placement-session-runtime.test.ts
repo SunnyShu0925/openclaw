@@ -238,20 +238,54 @@ describe("resolveWorkerPlacementSessionRuntimeCapabilities", () => {
     expect(caps.devicePlacement).toBeDefined();
   });
 
-  it("does not treat an undetermined (auto) runtime as placement-compatible", () => {
-    // A provider with no configured runtime policy and no registered harness
-    // resolves to "auto" in projection mode. The capabilities must NOT report
-    // worker-turn — this is the core bug fix: "auto" is not "openclaw".
+  it("uses openclaw fallback capabilities for an undetermined (auto) runtime", () => {
+    // A provider with no configured runtime policy, no registered harness, and no
+    // CLI backend registration resolves to "auto" in projection mode. Canonical
+    // execution falls back to the built-in openclaw harness (selection.ts
+    // auto_openclaw), so the capabilities mirror that — the guard must not
+    // falsely reject a model whose execution will use the placement-capable
+    // built-in runtime. (A CLI-backed provider is covered separately below.)
     const caps = resolveWorkerPlacementSessionRuntimeCapabilities({
       cfg: {},
       entry: {
         sessionId: "s2",
         updatedAt: 0,
+        providerOverride: "embedded-auto-provider",
+        modelOverride: "embedded-auto-model",
+      },
+      agentId: "main",
+      sessionKey: "agent:main:s2",
+    });
+    expect(caps.executionMode).toBe("worker-turn");
+    expect(caps.devicePlacement).toBeDefined();
+  });
+
+  it("rejects a CLI-backed provider whose dispatch runs as a local process", () => {
+    // The reported #136611 case: Claude CLI is registered as a CLI backend
+    // (registerCliBackend), not an agent harness. Its dispatch runs
+    // runCliFallbackCandidate locally, so it cannot claim an active cloud
+    // worker-turn placement. The guard must reject it via the same
+    // CLI-execution classifier the dispatch path uses, instead of misreading
+    // the unclaimed "auto" as the built-in openclaw worker-turn runtime.
+    const registry = getActivePluginRegistry();
+    if (registry) {
+      registry.cliBackends.push({
+        pluginId: "test-cli-plugin",
+        pluginName: "test-cli-plugin",
+        backend: { id: "claude-cli", config: { command: "claude" } },
+        source: "test",
+      });
+    }
+    const caps = resolveWorkerPlacementSessionRuntimeCapabilities({
+      cfg: {},
+      entry: {
+        sessionId: "s-cli",
+        updatedAt: 0,
         providerOverride: "claude-cli",
         modelOverride: "claude-fable-5-1",
       },
       agentId: "main",
-      sessionKey: "agent:main:s2",
+      sessionKey: "agent:main:s-cli",
     });
     expect(caps.executionMode).toBeUndefined();
     expect(caps.devicePlacement).toBeUndefined();
@@ -341,9 +375,11 @@ describe("resolveWorkerPlacementSessionRuntimeCapabilities", () => {
     });
   });
 
-  it("reports no placement support for an unclaimed auto model with no supporting harness", () => {
-    // "auto" with no registered supporting harness must not be treated as
-    // placement-compatible — this is the original bug fix behavior.
+  it("falls back to built-in openclaw placement capabilities for an unclaimed auto model", () => {
+    // "auto" with no registered supporting harness falls back to the built-in
+    // openclaw harness (selection.ts auto_openclaw), which supports worker-turn
+    // placement. Rejecting it would block valid model switches for sessions
+    // with an active worker placement.
     registerAgentHarness({
       id: "unrelated-harness",
       label: "unrelated-harness",
@@ -371,13 +407,27 @@ describe("resolveWorkerPlacementSessionRuntimeCapabilities", () => {
       agentId: "main",
       sessionKey: "agent:main:s5",
     });
-    expect(caps.executionMode).toBeUndefined();
-    expect(caps.devicePlacement).toBeUndefined();
+    expect(caps.executionMode).toBe("worker-turn");
+    expect(caps.devicePlacement).toEqual({
+      requiredNodeCommands: [],
+      consumesWorkerSlot: true,
+    });
   });
 
   it("sessions.patch boundary: rejects an incompatible model change for an active worker-turn placement", () => {
     // An active worker-turn placement must reject a model whose effective
-    // runtime has no cloud placement support.
+    // runtime is a CLI harness with no cloud placement support. The harness
+    // claims the provider via autoSelection so resolveAutoAgentHarnessId
+    // returns it (not the openclaw fallback).
+    registerAgentHarness({
+      id: "claude-cli",
+      label: "claude-cli",
+      autoSelection: { providerIds: ["claude-cli"] },
+      supports: () => ({ supported: true }),
+      async runAttempt() {
+        throw new Error("not used");
+      },
+    });
     const sessionId = "s6";
     const placement = {
       sessionId,
@@ -474,6 +524,55 @@ describe("resolveWorkerPlacementSessionRuntimeCapabilities", () => {
       key: "agent:main:s7",
       patch: { key: "agent:main:s7", model: "anthropic/claude-test" } as never,
       sessionKey: "agent:main:s7",
+      validateModelRuntime: true,
+    });
+    expect(error).toBeUndefined();
+  });
+
+  it("sessions.patch boundary: allows an unclaimed auto model with openclaw fallback for an active worker-turn placement", () => {
+    // An "auto" model with no registered supporting harness falls back to the
+    // built-in openclaw runtime, which supports worker-turn placement. The
+    // guard must not reject it — this is the compatibility regression fixed
+    // in this round (ClawSweeper P1).
+    const sessionId = "s8";
+    const placement = {
+      sessionId,
+      state: "active" as const,
+      executionMode: "worker-turn" as const,
+      generation: 1,
+      environmentId: "env-1",
+      runnerId: "runner-1",
+      runnerStatus: "available" as const,
+      recoveryError: null,
+      terminalReason: null,
+      terminalAtMs: null,
+      transitionGeneration: 1,
+      ownerId: "worker",
+      ownerEpoch: 1,
+      turnClaim: null,
+      workspace: null,
+      retirement: null,
+      createdAtMs: 0,
+      updatedAtMs: 0,
+    };
+    const context = {
+      workerSessionPlacementService: {
+        getMany: () => new Map([[sessionId, placement]]),
+      },
+    };
+    const error = resolveSessionWorkerPlacementPatchError({
+      agentId: "main",
+      cfg: {} as never,
+      context: context as never,
+      entry: {
+        sessionId,
+        updatedAt: 0,
+        providerOverride: "some-provider",
+        modelOverride: "some-model",
+      } as never,
+      key: "agent:main:s8",
+      patch: { key: "agent:main:s8", model: "some-provider/some-model" } as never,
+      sessionKey: "agent:main:s8",
       validateModelRuntime: true,
     });
     expect(error).toBeUndefined();
