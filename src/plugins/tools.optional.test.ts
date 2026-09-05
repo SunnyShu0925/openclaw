@@ -3608,90 +3608,58 @@ describe("resolvePluginTools optional tools", () => {
 
     expectResolvedToolNames(tools, ["optional_tool"]);
   });
-
-  it("does not misattribute or duplicate logged invalid-config errors to the current plugin (#137694)", () => {
+  it("reports changed config diagnostics once without blaming the dependent plugin (#137694)", () => {
     const logger = { error: vi.fn() };
     const loggedConfigPaths = createDedupeCache({ ttlMs: 0, maxSize: 4096 });
-    const configError = (() => {
-      try {
-        return throwInvalidConfig({
-          configPath: "plugins.entries.codex.config.appServer",
-          issues: [
-            {
-              path: "plugins.entries.codex.config.appServer",
-              message:
-                'invalid config: must not have additional properties: "turnCompletionIdleTimeoutMs"',
-            },
-          ],
-          logger,
-          loggedConfigPaths,
-        });
-      } catch (err) {
-        return err as Error;
-      }
-    })();
-
+    let message = "first error";
     setRegistry([
-      {
-        pluginId: "memory-wiki",
-        optional: false,
-        source: "/tmp/memory-wiki.js",
-        names: ["memory_wiki_tool"],
-        factory: () => {
-          throw configError;
-        },
-      },
+      createNamedToolEntry("memory-wiki", "memory_wiki_tool", {
+        factory: () =>
+          throwInvalidConfig({
+            configPath: "/tmp/openclaw.json",
+            issues: [{ path: "plugins.entries.owner.config", message }],
+            logger,
+            loggedConfigPaths,
+          }),
+      }),
     ]);
-
     const errorSpy = vi.fn();
-    loggingState.rawConsole = {
-      log: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: errorSpy,
-    };
+    loggingState.rawConsole = { log: vi.fn(), info: vi.fn(), warn: vi.fn(), error: errorSpy };
     setLoggerOverride({ level: "silent", consoleLevel: "error" });
 
-    const tools = resolvePluginTools(createResolveToolsParams({ toolAllowlist: ["*"] }));
-
-    expectResolvedToolNames(tools, []);
-    // throwInvalidConfig already logged the path-specific diagnostic, so the
-    // resolver must not re-log or re-attribute the invalid-config error.
-    expect(logger.error).toHaveBeenCalledOnce();
+    for (const nextMessage of ["first error", "first error", "second error", "second error"]) {
+      message = nextMessage;
+      expectResolvedToolNames(
+        resolvePluginTools(createResolveToolsParams({ toolAllowlist: ["*"] })),
+        [],
+      );
+    }
+    expect(logger.error.mock.calls).toEqual([
+      ["Invalid config at /tmp/openclaw.json:\n- plugins.entries.owner.config: first error"],
+      ["Invalid config at /tmp/openclaw.json:\n- plugins.entries.owner.config: second error"],
+    ]);
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it("still logs unlogged invalid-config errors from plugin factories (#137694)", () => {
-    const configError = createInvalidConfigError(
-      "plugins.entries.codex.config.appServer",
-      'invalid config: must not have additional properties: "turnCompletionIdleTimeoutMs"',
-    );
+  it.each([
+    ["unlogged invalid-config", createInvalidConfigError("/tmp/openclaw.json", "invalid property")],
+    ["ordinary factory", new Error("factory unavailable")],
+  ])("still logs %s errors from plugin factories (#137694)", (_kind, error) => {
     setRegistry([
-      {
-        pluginId: "memory-wiki",
-        optional: false,
-        source: "/tmp/memory-wiki.js",
-        names: ["memory_wiki_tool"],
+      createNamedToolEntry("memory-wiki", "memory_wiki_tool", {
         factory: () => {
-          throw configError;
+          throw error;
         },
-      },
+      }),
     ]);
-
     const errorSpy = vi.fn();
-    loggingState.rawConsole = {
-      log: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: errorSpy,
-    };
+    loggingState.rawConsole = { log: vi.fn(), info: vi.fn(), warn: vi.fn(), error: errorSpy };
     setLoggerOverride({ level: "silent", consoleLevel: "error" });
 
-    const tools = resolvePluginTools(createResolveToolsParams({ toolAllowlist: ["*"] }));
-
-    expectResolvedToolNames(tools, []);
-    // createInvalidConfigError does not log, so the resolver must still emit
-    // a diagnostic to avoid silently swallowing a failed plugin factory.
+    expectResolvedToolNames(
+      resolvePluginTools(createResolveToolsParams({ toolAllowlist: ["*"] })),
+      [],
+    );
     expect(errorSpy).toHaveBeenCalledOnce();
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("plugin tool failed (memory-wiki)"),

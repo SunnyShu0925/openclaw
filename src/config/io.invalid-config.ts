@@ -17,57 +17,30 @@ export function formatInvalidConfigDetails(issues: ConfigValidationIssueLike[]):
   return formatConfigIssueLines(issues, "-", { normalizeRoot: true }).join("\n");
 }
 
-/** Builds the one-line invalid-config prefix plus preformatted validation details. */
-function formatInvalidConfigLogMessage(configPath: string, details: string): string {
-  return `Invalid config at ${configPath}:\n${details}`;
-}
-
-/** Logs an invalid config message once per path during a load sequence. */
-function logInvalidConfigOnce(params: {
-  configPath: string;
-  details: string;
-  logger: Pick<typeof console, "error">;
-  loggedConfigPaths: DedupeCache;
-}): void {
-  if (params.loggedConfigPaths.check(params.configPath)) {
-    // Avoid repeating the same invalid config block when multiple callers observe the same path.
-    return;
-  }
-  params.logger.error(formatInvalidConfigLogMessage(params.configPath, params.details));
-}
-
-/** Creates the tagged error shape used by callers that need details after catch.
- * Does not log — callers that want a diagnostic must use {@link throwInvalidConfig} or log themselves. */
-export function createInvalidConfigError(
-  configPath: string,
-  details: string,
-  options: { recovery?: "doctor" | "manual" } = {},
-): Error {
-  const error = new Error(`Invalid config at ${configPath}:\n${details}`);
-  // Keep metadata non-class-based so cross-module callers can inspect plain Error instances.
-  error.name = "InvalidConfigError";
-  const tagged = error as {
-    code?: "INVALID_CONFIG";
-    details?: string;
-    recovery?: "doctor" | "manual";
-    diagnosticEmitted?: boolean;
-  };
-  tagged.code = "INVALID_CONFIG";
-  tagged.details = details;
-  tagged.recovery = options.recovery ?? "doctor";
-  // Default: no diagnostic has been emitted for this error. Only throwInvalidConfig
-  // (which logs before throwing) sets this to true, letting downstream catch blocks
-  // distinguish already-logged errors from silent ones.
-  tagged.diagnosticEmitted = false;
-  return error;
-}
-
-export function isInvalidConfigError(err: unknown): err is Error & {
+type InvalidConfigError = Error & {
   code: "INVALID_CONFIG";
   details?: string;
   recovery?: "doctor" | "manual";
   diagnosticEmitted?: boolean;
-} {
+};
+
+/** Creates a tagged error without logging; throwInvalidConfig owns diagnostic emission. */
+export function createInvalidConfigError(
+  configPath: string,
+  details: string,
+  options: { recovery?: "doctor" | "manual" } = {},
+): InvalidConfigError {
+  // Keep metadata non-class-based so cross-module callers can inspect plain Error instances.
+  return Object.assign(new Error(`Invalid config at ${configPath}:\n${details}`), {
+    name: "InvalidConfigError",
+    code: "INVALID_CONFIG" as const,
+    details,
+    recovery: options.recovery ?? "doctor",
+    diagnosticEmitted: false,
+  });
+}
+
+export function isInvalidConfigError(err: unknown): err is InvalidConfigError {
   return extractErrorCode(err) === "INVALID_CONFIG";
 }
 
@@ -83,14 +56,13 @@ export function throwInvalidConfig(params: {
   loggedConfigPaths: DedupeCache;
 }): never {
   const details = formatInvalidConfigDetails(params.issues);
-  logInvalidConfigOnce({
-    configPath: params.configPath,
-    details,
-    logger: params.logger,
-    loggedConfigPaths: params.loggedConfigPaths,
-  });
   const error = createInvalidConfigError(params.configPath, details);
-  // SAFETY: createInvalidConfigError constructs the error with this optional field; mutating it here is safe.
-  (error as { diagnosticEmitted?: boolean }).diagnosticEmitted = true;
+  // Dedupe the full diagnostic: a later invalid config at the same path may need a different repair.
+  // Record only after logging succeeds so a failed logger cannot silence a subsequent attempt.
+  if (!params.loggedConfigPaths.peek(error.message)) {
+    params.logger.error(error.message);
+  }
+  params.loggedConfigPaths.check(error.message);
+  error.diagnosticEmitted = true;
   throw error;
 }
