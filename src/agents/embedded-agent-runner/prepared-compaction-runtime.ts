@@ -6,6 +6,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { isAcpRuntimeSpawnAvailable } from "../../acp/runtime/availability.js";
 import {
+  buildBootstrapBudgetState,
+  buildBootstrapInjectionStats,
+  buildBootstrapPromptWarningNotice,
+} from "../../bootstrap-budget.js";
+import {
   formatActiveNodeContextLabel,
   getCurrentActiveNodeContext,
 } from "../../infra/active-node-context.js";
@@ -162,9 +167,9 @@ export async function buildPreparedCompactionRuntime(prepared: DirectCompactionP
     const sessionLabel = params.sessionKey ?? params.sessionId;
     const resolvedMessageProvider = params.messageChannel ?? params.messageProvider;
     const contextInjectionMode = resolveContextInjectionMode(params.config, sessionAgentId);
-    const { contextFiles } =
+    const { bootstrapFiles, contextFiles } =
       contextInjectionMode === "never"
-        ? { contextFiles: [] }
+        ? { bootstrapFiles: [], contextFiles: [] }
         : await resolveBootstrapContextForRun({
             workspaceDir: effectiveWorkspace,
             config: params.config,
@@ -177,6 +182,22 @@ export async function buildPreparedCompactionRuntime(prepared: DirectCompactionP
               warn: (message) => log.warn(message),
             }),
           });
+    // Mirror ordinary-turn bootstrap disclosure so compaction summaries do not
+    // silently omit later workspace files when the aggregate budget is spent.
+    // Resolved once per prepared attempt so thinking-level retries reuse the same
+    // admitted files and notice.
+    const bootstrapInjectionStats = buildBootstrapInjectionStats({
+      bootstrapFiles,
+      injectedFiles: contextFiles,
+    });
+    const bootstrapBudget = buildBootstrapBudgetState({
+      config: params.config,
+      agentId: sessionAgentId,
+      files: bootstrapInjectionStats,
+    });
+    const bootstrapTruncationNotice = buildBootstrapPromptWarningNotice(
+      bootstrapBudget.bootstrapPromptWarning.lines,
+    );
     // Apply contextTokens cap to model so session runtime's auto-compaction
     // threshold uses the effective limit, not the native context window.
     const runtimeModelWithContext = runtimeModel as ProviderRuntimeModel;
@@ -563,6 +584,7 @@ export async function buildPreparedCompactionRuntime(prepared: DirectCompactionP
         userTimezone,
         userDate,
         contextFiles,
+        bootstrapTruncationNotice,
         activeProjectKeys,
         preparedMemoryPrompt,
         preparedWatchedSessions,

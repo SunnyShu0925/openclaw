@@ -907,7 +907,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
   vi.doMock("../bootstrap-files.js", () => ({
     makeBootstrapWarn: vi.fn(() => () => {}),
     resolveContextInjectionMode: vi.fn(() => "always"),
-    resolveBootstrapContextForRun: vi.fn(async () => ({ contextFiles: [] })),
+    resolveBootstrapContextForRun: vi.fn(async () => ({ bootstrapFiles: [], contextFiles: [] })),
   }));
 
   vi.doMock("../agent-bundle-mcp-tools.js", () => ({
