@@ -65,6 +65,7 @@ async function safeReturnIterator(iterator: AsyncIterator<unknown>): Promise<voi
 async function* observeModelCallIterator<T>(
   iterator: AsyncIterator<T>,
   lifecycle: ModelCallLifecycle,
+  hasResult: boolean,
 ): AsyncIterable<T> {
   // Tracks whether the underlying iterator terminated on its own (done or threw).
   // This is independent of state.terminalEventEmitted: result() can emit the
@@ -81,7 +82,16 @@ async function* observeModelCallIterator<T>(
       lifecycle.observer.maybeEmitStreamProgress(lifecycle.eventBase);
       yield next.value;
     }
-    lifecycle.emitCompleted();
+    // A bare-EOF stream (no terminal done/error chunk) leaves terminalError unset.
+    // When the stream exposes result(), the resolved/rejected result is the
+    // authoritative terminal — defer to the result observer so a rejected result()
+    // publishes model.call.error instead of being deduped away by an early
+    // model.call.completed. Iterator-only streams (no result()) have no later
+    // terminal signal, so they complete here as before. A terminalError already
+    // captured from a streamed error event stays authoritative via emitCompleted.
+    if (!hasResult || lifecycle.observer.state.terminalError) {
+      lifecycle.emitCompleted();
+    }
   } catch (err) {
     iteratorSettled = true;
     lifecycle.emitError(err);
@@ -93,6 +103,8 @@ async function* observeModelCallIterator<T>(
       // Close the underlying iterator for provider cleanup (idle-timeout abort
       // listeners, SSE readers) even when result() already emitted the terminal
       // event; lifecycle completion self-dedupes via state.terminalEventEmitted.
+      // The consumer abandoned the iterator, so result() will not settle the
+      // terminal; emit completion here to avoid leaving the call without one.
       await safeReturnIterator(iterator);
       lifecycle.emitCompleted();
     }
@@ -138,9 +150,11 @@ function observeModelCallStream<T extends AsyncIterable<unknown>>(
   createIterator: () => AsyncIterator<unknown>,
   lifecycle: ModelCallLifecycle,
 ): T {
-  const observedIterator = () =>
-    observeModelCallIterator(createIterator(), lifecycle)[Symbol.asyncIterator]();
   const observedResult = createObservedResultFunction(stream, lifecycle);
+  const observedIterator = () =>
+    observeModelCallIterator(createIterator(), lifecycle, observedResult !== undefined)[
+      Symbol.asyncIterator
+    ]();
   let hasNonConfigurableIterator;
   try {
     hasNonConfigurableIterator =

@@ -562,4 +562,169 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents stream proxy", () => {
     expectNumberField(completedEvent, "durationMs");
     expect(events[1]).not.toHaveProperty("errorCategory");
   });
+
+  it.each([
+    {
+      name: "rejected result after bare EOF",
+      result: vi.fn(async () => {
+        throw new Error("connection reset");
+      }),
+      terminalType: "model.call.error",
+    },
+    {
+      name: "error stopReason result after bare EOF",
+      result: vi.fn(async () => ({
+        role: "assistant",
+        content: "partial",
+        stopReason: "error",
+        errorMessage: "connection reset",
+      })),
+      terminalType: "model.call.error",
+    },
+    {
+      name: "successful result after bare EOF",
+      result: vi.fn(async () => ({
+        role: "assistant",
+        content: "ok",
+        stopReason: "stop",
+      })),
+      terminalType: "model.call.completed",
+    },
+  ])("defers the terminal to result() after bare EOF: $name", async ({ result, terminalType }) => {
+    // A bare-EOF stream ends its iterator without a terminal done/error chunk.
+    // The stream contract lets result() carry the authoritative terminal: a
+    // rejected result() or an error stopReason must publish model.call.error
+    // instead of an early model.call.completed that dedupes the real failure.
+    const stream = {
+      [Symbol.asyncIterator]() {
+        let emitted = false;
+        return {
+          async next() {
+            if (!emitted) {
+              emitted = true;
+              return { value: { type: "start" }, done: false };
+            }
+            return { value: undefined, done: true };
+          },
+          async return() {
+            return { value: undefined, done: true };
+          },
+        };
+      },
+      result,
+    };
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+      (() => stream) as unknown as StreamFn,
+      {
+        runId: "run-bare-eof",
+        provider: "anthropic",
+        model: "sonnet-4.6",
+        trace: createDiagnosticTraceContext(),
+        nextCallId: () => "call-bare-eof",
+      },
+    );
+
+    const events = await collectModelCallEvents(async () => {
+      const wrappedStream = wrapped({} as never, {} as never, {} as never) as unknown as {
+        [Symbol.asyncIterator](): AsyncIterator<unknown>;
+        result(): Promise<unknown>;
+      };
+      for await (const _ of wrappedStream) {
+        // drain to bare EOF
+      }
+      // result() may resolve (success or error stopReason) or reject; either
+      // way it is the authoritative terminal after a bare-EOF iterator.
+      await wrappedStream.result().catch(() => undefined);
+    });
+
+    expect(result).toHaveBeenCalledOnce();
+    expect(events.map((event) => event.type)).toEqual(["model.call.started", terminalType]);
+  });
+
+  it("completes iterator-only bare EOF streams without a result() method", async () => {
+    // An iterator-only stream has no result(): bare EOF has no later terminal
+    // signal, so the diagnostic must still emit exactly one terminal (completed).
+    async function* stream() {
+      yield { type: "start" };
+    }
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+      (() => stream()) as unknown as StreamFn,
+      {
+        runId: "run-iterator-only",
+        provider: "openai",
+        model: "gpt-5.4",
+        trace: createDiagnosticTraceContext(),
+        nextCallId: () => "call-iterator-only",
+      },
+    );
+
+    const events = await collectModelCallEvents(async () => {
+      await drain(wrapped({} as never, {} as never, {} as never) as AsyncIterable<unknown>);
+    });
+
+    expect(events.map((event) => event.type)).toEqual([
+      "model.call.started",
+      "model.call.completed",
+    ]);
+  });
+
+  it("emits error from a streamed terminal error chunk even when result() is exposed", async () => {
+    // A streamed {type:"error"} chunk sets terminalError during iteration. When
+    // the stream also exposes result(), the iterator's natural done must still
+    // publish model.call.error immediately (terminalError is authoritative) and
+    // exactly once — a later result() must not add a second terminal.
+    const assistant = {
+      role: "assistant",
+      content: "partial",
+      stopReason: "aborted",
+      errorMessage: "caller aborted",
+    };
+    let resultCalls = 0;
+    const stream = {
+      [Symbol.asyncIterator]() {
+        let emitted = false;
+        return {
+          async next() {
+            if (!emitted) {
+              emitted = true;
+              return { value: { type: "error", reason: "aborted", error: assistant }, done: false };
+            }
+            return { value: undefined, done: true };
+          },
+          async return() {
+            return { value: undefined, done: true };
+          },
+        };
+      },
+      result: vi.fn(async () => {
+        resultCalls += 1;
+        return assistant;
+      }),
+    };
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+      (() => stream) as unknown as StreamFn,
+      {
+        runId: "run-streamed-error",
+        provider: "anthropic",
+        model: "sonnet-4.6",
+        trace: createDiagnosticTraceContext(),
+        nextCallId: () => "call-streamed-error",
+      },
+    );
+
+    const events = await collectModelCallEvents(async () => {
+      const wrappedStream = wrapped({} as never, {} as never, {} as never) as unknown as {
+        [Symbol.asyncIterator](): AsyncIterator<unknown>;
+        result(): Promise<unknown>;
+      };
+      for await (const _ of wrappedStream) {
+        // drain past the streamed error chunk to natural done
+      }
+      await wrappedStream.result().catch(() => undefined);
+    });
+
+    expect(resultCalls).toBe(1);
+    // Exactly one terminal, and it is error — not completed, not duplicated.
+    expect(events.map((event) => event.type)).toEqual(["model.call.started", "model.call.error"]);
+  });
 });
