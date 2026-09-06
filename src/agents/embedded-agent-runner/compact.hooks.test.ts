@@ -49,6 +49,7 @@ import {
   buildEmbeddedExtensionFactoriesMock,
   buildAgentRuntimePlanMock,
   buildEmbeddedSystemPromptMock,
+  resolveBootstrapContextForRunMock,
   contextEngineCompactMock,
   createAgentSessionMock,
   createPreparedEmbeddedAgentSettingsManagerMock,
@@ -1263,6 +1264,54 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         runtimeCwd: join(TEST_WORKSPACE_DIR, "task-repo"),
         promptSurface: "subagent",
         nativeCommandGuidanceLines: ["Subagent compact command guidance."],
+      }),
+    );
+  });
+
+  it("threads the aggregate bootstrap-truncation notice into the compaction prompt when the budget omits a later file", async () => {
+    // Two valid bootstrap files; only the first is admitted into context, so the
+    // second is fully omitted with no per-file inline marker. The aggregate
+    // budget chain must surface the canonical partial-context notice.
+    resolveBootstrapContextForRunMock.mockResolvedValueOnce({
+      bootstrapFiles: [
+        { name: "AGENTS.md", path: "/ws/AGENTS.md", content: "a".repeat(100), missing: false },
+        { name: "IDENTITY.md", path: "/ws/IDENTITY.md", content: "b".repeat(100), missing: false },
+      ],
+      contextFiles: [{ path: "/ws/AGENTS.md", content: "a".repeat(100) }],
+    });
+
+    await compactEmbeddedAgentSessionDirect({
+      sessionId: "session-1",
+      sessionKey: "agent:main:session-1",
+      sessionFile: TEST_SESSION_KEY,
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+    });
+
+    expect(buildEmbeddedSystemPromptMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bootstrapTruncationNotice: expect.stringContaining("Treat Project Context as partial"),
+      }),
+    );
+  });
+
+  it("omits the bootstrap-truncation notice when the budget admits every file", async () => {
+    resolveBootstrapContextForRunMock.mockResolvedValueOnce({
+      bootstrapFiles: [
+        { name: "AGENTS.md", path: "/ws/AGENTS.md", content: "a".repeat(10), missing: false },
+      ],
+      contextFiles: [{ path: "/ws/AGENTS.md", content: "a".repeat(10) }],
+    });
+
+    await compactEmbeddedAgentSessionDirect({
+      sessionId: "session-1",
+      sessionKey: "agent:main:session-1",
+      sessionFile: TEST_SESSION_KEY,
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+    });
+
+    expect(buildEmbeddedSystemPromptMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bootstrapTruncationNotice: undefined,
       }),
     );
   });
