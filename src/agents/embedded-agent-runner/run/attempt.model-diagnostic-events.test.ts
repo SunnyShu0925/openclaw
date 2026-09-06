@@ -727,4 +727,75 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents stream proxy", () => {
     // Exactly one terminal, and it is error — not completed, not duplicated.
     expect(events.map((event) => event.type)).toEqual(["model.call.started", "model.call.error"]);
   });
+
+  it.each([
+    {
+      name: "rejected result",
+      result: vi.fn(async () => {
+        throw new Error("connection reset");
+      }),
+      terminalType: "model.call.error",
+    },
+    {
+      name: "successful result",
+      result: vi.fn(async () => ({
+        role: "assistant",
+        content: "ok",
+        stopReason: "stop",
+      })),
+      terminalType: "model.call.completed",
+    },
+  ])(
+    "observes the deferred result for consumers that never call result(): $name",
+    async ({ result, terminalType }) => {
+      // Mirrors src/gateway/worker-environments/inference-runtime.ts: it drains
+      // the stream but returns without calling events.result(). A bare-EOF
+      // stream exposes result(), so the wrapper must observe it itself to avoid
+      // leaving only model.call.started with no terminal timeline or hook event.
+      let resultCalls = 0;
+      const originalResult = result;
+      const instrumentedResult = vi.fn(async () => {
+        resultCalls += 1;
+        return originalResult();
+      });
+      const stream = {
+        [Symbol.asyncIterator]() {
+          let emitted = false;
+          return {
+            async next() {
+              if (!emitted) {
+                emitted = true;
+                return { value: { type: "start" }, done: false };
+              }
+              return { value: undefined, done: true };
+            },
+            async return() {
+              return { value: undefined, done: true };
+            },
+          };
+        },
+        result: instrumentedResult,
+      };
+      const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+        (() => stream) as unknown as StreamFn,
+        {
+          runId: "run-worker-eof",
+          provider: "anthropic",
+          model: "sonnet-4.6",
+          trace: createDiagnosticTraceContext(),
+          nextCallId: () => "call-worker-eof",
+        },
+      );
+
+      const events = await collectModelCallEvents(async () => {
+        // Consumer drains to bare EOF and returns WITHOUT calling result().
+        await drain(wrapped({} as never, {} as never, {} as never) as AsyncIterable<unknown>);
+      });
+
+      // The wrapper observed result() itself exactly once, and emitted exactly
+      // one terminal event driven by that result.
+      expect(resultCalls).toBe(1);
+      expect(events.map((event) => event.type)).toEqual(["model.call.started", terminalType]);
+    },
+  );
 });
