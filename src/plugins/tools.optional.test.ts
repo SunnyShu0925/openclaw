@@ -2969,6 +2969,92 @@ describe("resolvePluginTools optional tools", () => {
     expect(factory).toHaveBeenCalledOnce();
   });
 
+  it("does not drop a non-restricted sibling tool when the manifest contract also declares feishu_chat", () => {
+    // A non-bundled Feishu registration whose factory produces feishu_doc (not
+    // host-restricted) must survive delegated resolution even when the plugin's
+    // manifest contract still declares feishu_chat. The host-restricted gate
+    // must consider only the names the registration actually produces, not the
+    // full declared contract, or it collaterally drops unrelated tools.
+    const context = createConfiguredFeishuToolContext("delegated");
+    const factory = vi.fn(() => makeTool("feishu_doc"));
+    setRegistry(
+      [
+        {
+          pluginId: "feishu",
+          optional: false,
+          origin: "workspace",
+          source: "/tmp/feishu.js",
+          names: ["feishu_doc"],
+          declaredNames: ["feishu_doc", "feishu_chat"],
+          factory,
+        },
+      ],
+      context.config,
+    );
+
+    const tools = resolvePluginTools(createResolveToolsParams({ context }));
+
+    expectResolvedToolNames(tools, ["feishu_doc"]);
+    expect(factory).toHaveBeenCalledOnce();
+  });
+
+  it("blocks a host-restricted tool returned by a non-bundled factory in delegated runs", () => {
+    // A non-bundled Feishu registration produces feishu_doc (names), but its
+    // factory returns feishu_chat — a host-restricted conversation-read tool
+    // declared in the manifest contract. The pre-factory gate allows the
+    // registration through (names has no feishu_chat), but the post-factory
+    // check must block the returned feishu_chat in delegated runs so the
+    // restriction cannot be bypassed by factory output.
+    const context = createConfiguredFeishuToolContext("delegated");
+    const factory = vi.fn(() => [makeTool("feishu_doc"), makeTool("feishu_chat")]);
+    setRegistry(
+      [
+        {
+          pluginId: "feishu",
+          optional: false,
+          origin: "workspace",
+          source: "/tmp/feishu.js",
+          names: ["feishu_doc"],
+          declaredNames: ["feishu_doc", "feishu_chat"],
+          factory,
+        },
+      ],
+      context.config,
+    );
+
+    const tools = resolvePluginTools(createResolveToolsParams({ context }));
+
+    expectResolvedToolNames(tools, ["feishu_doc"]);
+    expect(factory).toHaveBeenCalledOnce();
+  });
+
+  it("allows a host-restricted tool returned by a bundled factory in delegated runs", () => {
+    // Bundled Feishu registrations are trusted for conversation-read tools.
+    // The post-factory check must not block feishu_chat from a bundled factory
+    // even in delegated runs, preserving bundled behavior.
+    const context = createConfiguredFeishuToolContext("delegated");
+    const factory = vi.fn(() => makeTool("feishu_chat"));
+    setRegistry(
+      [
+        {
+          pluginId: "feishu",
+          optional: false,
+          origin: "bundled",
+          source: "/tmp/bundled-feishu.js",
+          names: ["feishu_chat"],
+          declaredNames: ["feishu_chat"],
+          factory,
+        },
+      ],
+      context.config,
+    );
+
+    const tools = resolvePluginTools(createResolveToolsParams({ context }));
+
+    expectResolvedToolNames(tools, ["feishu_chat"]);
+    expect(factory).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { assembled: false, warm: false },
     { assembled: true, warm: false },

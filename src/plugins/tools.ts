@@ -1017,6 +1017,24 @@ function resolvePluginToolsFromRegistry(
         continue;
       }
       const tool = toolRaw as AnyAgentTool;
+      // The pre-factory gate narrows on registration names, but a factory can
+      // return any tool in its declared contract. Re-check actual factory
+      // output so a non-bundled factory returning a host-restricted
+      // conversation-read tool (e.g. feishu_chat) is blocked in delegated
+      // runs, mirroring the pre-factory denial.
+      if (
+        blocksHostRestrictedConversationReadTool({
+          pluginId: entry.pluginId,
+          toolNames: [tool.name],
+          bundledOwner: isBundledConversationReadToolRegistration({
+            entry,
+            manifestPlugin,
+          }),
+          ctx: params.context,
+        })
+      ) {
+        continue;
+      }
       const undeclared = entry.declaredNames
         ? findUndeclaredPluginToolNames({
             declaredNames: entry.declaredNames,
