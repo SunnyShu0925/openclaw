@@ -1,6 +1,9 @@
+import { Buffer } from "node:buffer";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import type { Message } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   readPersistedAuthProfileStateRaw,
@@ -65,7 +68,10 @@ import {
   replaceSessionEntrySync,
 } from "./session-accessor.sqlite-entry.js";
 import { forkSessionEntryFromParentTarget } from "./session-accessor.sqlite-parent-session.js";
-import { loadTranscriptEventsSync } from "./session-accessor.sqlite-read.js";
+import {
+  loadTranscriptEventsSync,
+  readTranscriptStatsSync,
+} from "./session-accessor.sqlite-read.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import type { InternalSessionEntry, SessionCompactionCheckpoint, SessionEntry } from "./types.js";
@@ -2707,5 +2713,278 @@ describe("sqlite session normalization", () => {
     ]);
     expect(fs.existsSync(path.join(paths.tempDir, `${result.entry.sessionId}.jsonl`))).toBe(false);
   });
+});
+
+describe("SQLite transcript reader byte budget", () => {
+  let tempDir: string;
+  let storePath: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-transcript-byte-"));
+    storePath = path.join(tempDir, "sessions.json");
+  });
+
+  afterEach(() => {
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function userMessage(content: string): Message {
+    return { role: "user", content, timestamp: 1 };
+  }
+
+  it("counts JSONL row separators in the transcript byte budget", async () => {
+    const sessionId = "session-transcript-separator";
+    const sessionKey = "agent:main:session-transcript-separator";
+    await replaceTranscriptEvents({ agentId: "main", sessionId, sessionKey, storePath }, [
+      {
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2026-04-01T05:46:39.000Z",
+        cwd: tempDir,
+      },
+      {
+        type: "message",
+        id: "entry-separator-0",
+        parentId: null,
+        timestamp: "2026-04-01T05:46:40.000Z",
+        message: userMessage("separator-row-0"),
+      },
+      {
+        type: "message",
+        id: "entry-separator-1",
+        parentId: null,
+        timestamp: "2026-04-01T05:46:41.000Z",
+        message: userMessage("separator-row-1"),
+      },
+    ]);
+    const stats = readTranscriptStatsSync({
+      agentId: "main",
+      sessionId,
+      sessionKey,
+      storePath,
+    });
+    expect(() =>
+      loadTranscriptEventsSync({
+        agentId: "main",
+        sessionId,
+        sessionKey,
+        storePath,
+        maxEventBytes: stats.sizeBytes - 1,
+      }),
+    ).toThrow(/transcript store is too large to export/u);
+    expect(
+      loadTranscriptEventsSync({
+        agentId: "main",
+        sessionId,
+        sessionKey,
+        storePath,
+        maxEventBytes: stats.sizeBytes,
+      }).length,
+    ).toBe(3);
+  });
+
+  // OCTET_LENGTH measures the database encoding, so a UTF-16 store would otherwise
+  // reject an ASCII transcript near half the documented UTF-8 cap and undercount
+  // CJK-heavy text. Admission must measure the UTF-8 byte budget across encodings.
+  it.each([
+    { encoding: "UTF-8" as const, payload: "a".repeat(200), label: "ascii" },
+    { encoding: "UTF-16le" as const, payload: "a".repeat(200), label: "ascii" },
+    { encoding: "UTF-16be" as const, payload: "a".repeat(200), label: "ascii" },
+    { encoding: "UTF-8" as const, payload: "日本語🦞".repeat(40), label: "cjk" },
+    { encoding: "UTF-16le" as const, payload: "日本語🦞".repeat(40), label: "cjk" },
+    { encoding: "UTF-16be" as const, payload: "日本語🦞".repeat(40), label: "cjk" },
+  ])(
+    "measures the UTF-8 byte budget in $encoding for $label payloads",
+    async ({ encoding, payload, label }) => {
+      const sessionId = `session-transcript-${encoding}-${label}`;
+      const sessionKey = `agent:main:${sessionId}`;
+      if (encoding !== "UTF-8") {
+        storePath = path.join(tempDir, `${encoding}.sqlite`);
+        const seed = new DatabaseSync(storePath);
+        try {
+          seed.exec(
+            `PRAGMA encoding = '${encoding}'; CREATE TABLE encoding_seed (id INTEGER); DROP TABLE encoding_seed;`,
+          );
+        } finally {
+          seed.close();
+        }
+        await replaceSessionEntry(
+          { agentId: "main", sessionKey, storePath },
+          { sessionId, updatedAt: 10 },
+        );
+      }
+      const events = [
+        {
+          type: "session",
+          version: 3,
+          id: sessionId,
+          timestamp: "2026-04-01T05:46:39.000Z",
+          cwd: tempDir,
+        },
+        {
+          type: "message",
+          id: "entry-utf16-0",
+          parentId: null,
+          timestamp: "2026-04-01T05:46:40.000Z",
+          message: userMessage(payload),
+        },
+        {
+          type: "message",
+          id: "entry-utf16-1",
+          parentId: null,
+          timestamp: "2026-04-01T05:46:41.000Z",
+          message: userMessage(payload),
+        },
+      ];
+      await replaceTranscriptEvents({ agentId: "main", sessionId, sessionKey, storePath }, events);
+      const jsonlSize = events.reduce(
+        (total, event, index) =>
+          total + Buffer.byteLength(JSON.stringify(event), "utf8") + (index > 0 ? 1 : 0),
+        0,
+      );
+      // Budget equals the true UTF-8 size: admission must accept it in every encoding.
+      expect(
+        loadTranscriptEventsSync({
+          agentId: "main",
+          sessionId,
+          sessionKey,
+          storePath,
+          maxEventBytes: jsonlSize,
+        }).length,
+      ).toBe(events.length);
+      // One byte below the UTF-8 size must reject in every encoding.
+      expect(() =>
+        loadTranscriptEventsSync({
+          agentId: "main",
+          sessionId,
+          sessionKey,
+          storePath,
+          maxEventBytes: jsonlSize - 1,
+        }),
+      ).toThrow(/transcript store is too large to export/u);
+    },
+  );
+
+  // A single UTF-16 row whose UTF-8 size exceeds the budget must be rejected
+  // via metadata-only precheck (octet_length / 2 > budget) before the text is
+  // fetched and decoded into JavaScript memory.
+  it.each([
+    { encoding: "UTF-16le" as const, label: "le" },
+    { encoding: "UTF-16be" as const, label: "be" },
+  ])(
+    "rejects a single oversized $encoding transcript row before decoding",
+    async ({ encoding }) => {
+      const sessionId = `session-transcript-huge-${encoding}`;
+      const sessionKey = `agent:main:${sessionId}`;
+      storePath = path.join(tempDir, `${encoding}-huge.sqlite`);
+      const seed = new DatabaseSync(storePath);
+      try {
+        seed.exec(
+          `PRAGMA encoding = '${encoding}'; CREATE TABLE encoding_seed (id INTEGER); DROP TABLE encoding_seed;`,
+        );
+      } finally {
+        seed.close();
+      }
+      await replaceSessionEntry(
+        { agentId: "main", sessionKey, storePath },
+        { sessionId, updatedAt: 10 },
+      );
+      const hugePayload = "a".repeat(5000);
+      const sessionEvent = {
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2026-04-01T05:46:39.000Z",
+        cwd: tempDir,
+      };
+      const messageEvent = {
+        type: "message",
+        id: "entry-huge-0",
+        parentId: null,
+        timestamp: "2026-04-01T05:46:40.000Z",
+        message: userMessage(hugePayload),
+      };
+      await replaceTranscriptEvents({ agentId: "main", sessionId, sessionKey, storePath }, [
+        sessionEvent,
+        messageEvent,
+      ]);
+      const messageUtf8Size = Buffer.byteLength(JSON.stringify(messageEvent), "utf8");
+      // Budget below the message row's UTF-8 size: metadata precheck (stored_bytes/2)
+      // must reject it without fetching the text.
+      expect(() =>
+        loadTranscriptEventsSync({
+          agentId: "main",
+          sessionId,
+          sessionKey,
+          storePath,
+          maxEventBytes: messageUtf8Size - 1,
+        }),
+      ).toThrow(/transcript store is too large to export/u);
+    },
+  );
+
+  // A UTF-16 source whose stored bytes exceed the budget but whose UTF-8 size
+  // is within the budget must NOT be rejected (the metadata precheck uses
+  // stored_bytes / 2 as a lower bound, not stored_bytes directly).
+  it.each([
+    { encoding: "UTF-16le" as const, label: "le" },
+    { encoding: "UTF-16be" as const, label: "be" },
+  ])(
+    "admits a $encoding transcript source whose stored bytes exceed but UTF-8 fits the budget",
+    async ({ encoding }) => {
+      const sessionId = `session-transcript-admit-${encoding}`;
+      const sessionKey = `agent:main:${sessionId}`;
+      storePath = path.join(tempDir, `${encoding}-admit.sqlite`);
+      const seed = new DatabaseSync(storePath);
+      try {
+        seed.exec(
+          `PRAGMA encoding = '${encoding}'; CREATE TABLE encoding_seed (id INTEGER); DROP TABLE encoding_seed;`,
+        );
+      } finally {
+        seed.close();
+      }
+      await replaceSessionEntry(
+        { agentId: "main", sessionKey, storePath },
+        { sessionId, updatedAt: 10 },
+      );
+      const payload = "a".repeat(200);
+      const sessionEvent = {
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2026-04-01T05:46:39.000Z",
+        cwd: tempDir,
+      };
+      const messageEvent = {
+        type: "message",
+        id: "entry-admit-0",
+        parentId: null,
+        timestamp: "2026-04-01T05:46:40.000Z",
+        message: userMessage(payload),
+      };
+      await replaceTranscriptEvents({ agentId: "main", sessionId, sessionKey, storePath }, [
+        sessionEvent,
+        messageEvent,
+      ]);
+      const jsonlSize =
+        Buffer.byteLength(JSON.stringify(sessionEvent), "utf8") +
+        1 +
+        Buffer.byteLength(JSON.stringify(messageEvent), "utf8");
+      // In UTF-16, stored bytes ~= 2x UTF-8 for ASCII, so stored bytes > jsonlSize.
+      // Budget = jsonlSize (exact UTF-8 size): must admit despite stored bytes exceeding it.
+      expect(
+        loadTranscriptEventsSync({
+          agentId: "main",
+          sessionId,
+          sessionKey,
+          storePath,
+          maxEventBytes: jsonlSize,
+        }).length,
+      ).toBe(2);
+    },
+  );
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -74,6 +74,7 @@ type SessionSqliteDatabase = Pick<
   | "transcript_events"
 > & {
   sqlite_schema: { name: string | null; type: string };
+  pragma_encoding: { encoding: string };
 };
 
 export type ResolvedSqliteScope = {

@@ -12,6 +12,7 @@ import {
   iterateSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../infra/sqlite-number.js";
+import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
@@ -44,7 +45,12 @@ export type SqliteTrajectoryRuntimeScope = {
 type SqliteTrajectoryRuntimeReadScope = Omit<
   SqliteTrajectoryRuntimeScope,
   "maxGlobalRuntimeBytes" | "maxRuntimeBytes"
->;
+> & {
+  /** Byte budget enforced via SQL before parsing rows; ignored for tail-bounded reads. */
+  maxEventBytes?: number;
+  /** Row-count budget enforced via SQL before parsing rows; ignored for tail-bounded reads. */
+  maxEventCount?: number;
+};
 
 type SqliteTrajectoryRuntimeEventRow = {
   event: TrajectoryEvent;
@@ -151,33 +157,83 @@ export function loadSqliteTrajectoryRuntimeEventRowsSync(
         scope.tailEvents !== undefined && Number.isFinite(scope.tailEvents)
           ? Math.max(0, Math.floor(scope.tailEvents))
           : undefined;
-      let query = db
-        .selectFrom("trajectory_runtime_events")
-        .select(["seq", "event_json"])
-        .where("session_id", "=", scope.sessionId)
-        .orderBy("seq", tailEvents === undefined ? "asc" : "desc");
       const afterSeq = scope.afterSeq;
-      if (afterSeq !== undefined && Number.isFinite(afterSeq)) {
-        query = query.where("seq", ">", Math.floor(afterSeq));
-      }
-      const normalizedMaxEvents =
-        scope.maxEvents !== undefined && Number.isFinite(scope.maxEvents)
-          ? Math.max(0, Math.floor(scope.maxEvents))
-          : undefined;
-      const maxEvents =
-        tailEvents === undefined
-          ? normalizedMaxEvents
-          : normalizedMaxEvents === undefined
-            ? tailEvents
-            : Math.min(tailEvents, normalizedMaxEvents);
-      if (maxEvents !== undefined && Number.isFinite(maxEvents)) {
-        query = query.limit(Math.max(0, Math.floor(maxEvents)));
-      }
-      const rows = executeSqliteQuerySync(database.db, query).rows.map((row) => ({
-        event: JSON.parse(row.event_json) as TrajectoryEvent,
-        seq: row.seq,
-      }));
-      return tailEvents === undefined ? rows : rows.toReversed();
+      // Budget checks and payload reads must share one snapshot so a concurrent
+      // writer cannot cross the budget between admission and materialization.
+      return runSqliteDeferredTransactionSync(
+        database.db,
+        () => {
+          if (
+            tailEvents === undefined &&
+            scope.maxEventCount !== undefined &&
+            Number.isFinite(scope.maxEventCount) &&
+            scope.maxEventCount >= 0
+          ) {
+            const eventLimit = Math.floor(scope.maxEventCount);
+            const countRow: { event_count: number | null } | undefined =
+              executeSqliteQueryTakeFirstSync(
+                database.db,
+                db
+                  .selectFrom("trajectory_runtime_events")
+                  .select((eb) => [eb.fn.countAll<number>().as("event_count")])
+                  .where("session_id", "=", scope.sessionId)
+                  .$if(afterSeq !== undefined && Number.isFinite(afterSeq), (query) =>
+                    query.where("seq", ">", Math.floor(afterSeq!)),
+                  ),
+              );
+            const eventCount = countRow?.event_count ?? 0;
+            if (eventCount > eventLimit) {
+              throw new Error(
+                `Trajectory runtime store has too many events to export (${eventCount}; limit ${eventLimit})`,
+              );
+            }
+          }
+          if (
+            scope.maxEventBytes !== undefined &&
+            Number.isFinite(scope.maxEventBytes) &&
+            scope.maxEventBytes >= 0 &&
+            tailEvents === undefined
+          ) {
+            const budget = Math.floor(scope.maxEventBytes);
+            rejectTrajectoryRuntimeJsonlIfOverBudgetSync(
+              database,
+              scope.sessionId,
+              budget,
+              afterSeq,
+            );
+          }
+          let query = db
+            .selectFrom("trajectory_runtime_events")
+            .select(["seq", "event_json"])
+            .where("session_id", "=", scope.sessionId)
+            .orderBy("seq", tailEvents === undefined ? "asc" : "desc");
+          if (afterSeq !== undefined && Number.isFinite(afterSeq)) {
+            query = query.where("seq", ">", Math.floor(afterSeq));
+          }
+          const normalizedMaxEvents =
+            scope.maxEvents !== undefined && Number.isFinite(scope.maxEvents)
+              ? Math.max(0, Math.floor(scope.maxEvents))
+              : undefined;
+          const maxEvents =
+            tailEvents === undefined
+              ? normalizedMaxEvents
+              : normalizedMaxEvents === undefined
+                ? tailEvents
+                : Math.min(tailEvents, normalizedMaxEvents);
+          if (maxEvents !== undefined && Number.isFinite(maxEvents)) {
+            query = query.limit(Math.max(0, Math.floor(maxEvents)));
+          }
+          const rows = executeSqliteQuerySync(database.db, query).rows.map((row) => ({
+            event: JSON.parse(row.event_json) as TrajectoryEvent,
+            seq: row.seq,
+          }));
+          return tailEvents === undefined ? rows : rows.toReversed();
+        },
+        {
+          databaseLabel: database.path,
+          operationLabel: "trajectory runtime budget read",
+        },
+      );
     },
     toDatabaseOptions(resolveSqliteReadScope(scope)),
   );
@@ -301,6 +357,115 @@ function readNextTrajectorySeq(database: OpenClawAgentDatabase, sessionId: strin
     return 0;
   }
   return sqliteNumber(row.max_seq) + 1;
+}
+
+/**
+ * Rejects export admission when stored runtime events exceed the UTF-8 JSONL byte
+ * budget. For UTF-8 stores, OCTET_LENGTH matches the budget directly. For UTF-16
+ * stores, the admission runs in two passes inside the same deferred snapshot:
+ *
+ *   1. Metadata-only pass: select octet_length without selecting the text. If
+ *      stored_bytes / 2 exceeds the budget, the UTF-8 size must also exceed it,
+ *      so the row is rejected before node:sqlite materializes its text payload.
+ *   2. Bounded-text pass: rows that pass the precheck are fetched for exact
+ *      Buffer.byteLength UTF-8 accounting.
+ *
+ * This prevents a single oversized UTF-16 row from being fully decoded while
+ * preserving exact UTF-8 accounting. Mirrors rejectTranscriptJsonlIfOverBudgetSync.
+ */
+function rejectTrajectoryRuntimeJsonlIfOverBudgetSync(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+  budget: number,
+  afterSeq?: number,
+): void {
+  const db = getTrajectoryKysely(database.db);
+  const encoding = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db.selectFrom("pragma_encoding").select("encoding"),
+  )?.encoding;
+  const isUtf8 = encoding === "UTF-8";
+
+  if (isUtf8) {
+    // UTF-8 fast path: octet_length matches the budget, no text decode needed.
+    const rows = iterateSqliteQuerySync(
+      database.db,
+      db
+        .selectFrom("trajectory_runtime_events")
+        .select([(eb) => eb.fn<number>("octet_length", ["event_json"]).as("event_bytes")])
+        .where("session_id", "=", sessionId)
+        .$if(afterSeq !== undefined && Number.isFinite(afterSeq), (query) =>
+          query.where("seq", ">", Math.floor(afterSeq!)),
+        )
+        .orderBy("seq", "asc"),
+    );
+    let totalBytes = 0;
+    let rowIndex = 0;
+    for (const row of rows) {
+      totalBytes += sqliteNumber(row.event_bytes) + (rowIndex > 0 ? 1 : 0);
+      if (totalBytes > budget) {
+        throw new Error(
+          `Trajectory runtime store is too large to export (at least ${totalBytes} bytes; limit ${budget})`,
+        );
+      }
+      rowIndex += 1;
+    }
+    return;
+  }
+
+  // UTF-16 two-pass admission.
+  // Pass 1: metadata-only — reject rows whose stored bytes prove UTF-8 overflow.
+  // UTF-8 size >= stored_bytes / 2, so stored_bytes / 2 > budget => UTF-8 > budget.
+  const metadataRows = iterateSqliteQuerySync(
+    database.db,
+    db
+      .selectFrom("trajectory_runtime_events")
+      .select((eb) => [
+        eb.fn<number>("octet_length", ["event_json"]).as("stored_bytes"),
+        eb.ref("seq").as("seq"),
+      ])
+      .where("session_id", "=", sessionId)
+      .$if(afterSeq !== undefined && Number.isFinite(afterSeq), (query) =>
+        query.where("seq", ">", Math.floor(afterSeq!)),
+      )
+      .orderBy("seq", "asc"),
+  );
+  let metadataTotal = 0;
+  let metaRowIndex = 0;
+  for (const row of metadataRows) {
+    const storedBytes = sqliteNumber(row.stored_bytes);
+    metadataTotal += Math.ceil(storedBytes / 2) + (metaRowIndex > 0 ? 1 : 0);
+    if (metadataTotal > budget) {
+      throw new Error(
+        `Trajectory runtime store is too large to export (at least ${metadataTotal} bytes; limit ${budget})`,
+      );
+    }
+    metaRowIndex += 1;
+  }
+
+  // Pass 2: bounded-text — exact UTF-8 accounting on rows that passed precheck.
+  const textRows = iterateSqliteQuerySync(
+    database.db,
+    db
+      .selectFrom("trajectory_runtime_events")
+      .select((eb) => [eb.ref("event_json").as("event_json")])
+      .where("session_id", "=", sessionId)
+      .$if(afterSeq !== undefined && Number.isFinite(afterSeq), (query) =>
+        query.where("seq", ">", Math.floor(afterSeq!)),
+      )
+      .orderBy("seq", "asc"),
+  );
+  let totalBytes = 0;
+  let rowIndex = 0;
+  for (const row of textRows) {
+    totalBytes += Buffer.byteLength(row.event_json, "utf8") + (rowIndex > 0 ? 1 : 0);
+    if (totalBytes > budget) {
+      throw new Error(
+        `Trajectory runtime store is too large to export (at least ${totalBytes} bytes; limit ${budget})`,
+      );
+    }
+    rowIndex += 1;
+  }
 }
 
 function trimSqliteTrajectoryRuntimeWindow(
