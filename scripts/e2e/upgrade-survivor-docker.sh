@@ -46,7 +46,20 @@ source "$HARNESS_ROOT_DIR/scripts/lib/docker-e2e-image.sh"
 source "$HARNESS_ROOT_DIR/scripts/lib/docker-e2e-package.sh"
 source "$HARNESS_ROOT_DIR/scripts/lib/upgrade-survivor-diagnostics.sh"
 source "$HARNESS_ROOT_DIR/scripts/lib/openclaw-e2e-instance.sh"
+source "$HARNESS_ROOT_DIR/scripts/lib/frozen-target-compat.sh"
 source "$HARNESS_ROOT_DIR/scripts/e2e/lib/prepublish-plugin-registry.sh"
+
+UPGRADE_SCENARIO_ARGS=()
+UPGRADE_RUNNER="$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/run.sh"
+UPGRADE_SCENARIO_DIR="$(openclaw_resolve_frozen_target_file \
+  "$ROOT_DIR" scripts/e2e/lib/upgrade-survivor)"
+if [ -n "$UPGRADE_SCENARIO_DIR" ]; then
+  # The runner, assertions, and fixtures form one shipped scenario contract.
+  UPGRADE_RUNNER="$UPGRADE_SCENARIO_DIR/run.sh"
+  UPGRADE_SCENARIO_ARGS+=(
+    -v "$UPGRADE_SCENARIO_DIR:/app/scripts/e2e/lib/upgrade-survivor:ro"
+  )
+fi
 
 IMAGE_NAME="$(docker_e2e_resolve_image "openclaw-upgrade-survivor-e2e" OPENCLAW_UPGRADE_SURVIVOR_E2E_IMAGE)"
 SKIP_BUILD="${OPENCLAW_UPGRADE_SURVIVOR_E2E_SKIP_BUILD:-0}"
@@ -285,7 +298,8 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
     -v "$ARTIFACT_DIR:/tmp/openclaw-upgrade-survivor-artifacts" \
     -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/clawhub-fixture-server.cjs:/tmp/openclaw-clawhub-fixture-server.cjs:ro" \
     -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/config-parking.mjs:/tmp/openclaw-config-parking.mjs:ro" \
-    -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/run.sh:/tmp/openclaw-upgrade-survivor-run.sh:ro" \
+    -v "$UPGRADE_RUNNER:/tmp/openclaw-upgrade-survivor-run.sh:ro" \
+    ${UPGRADE_SCENARIO_ARGS[@]+"${UPGRADE_SCENARIO_ARGS[@]}"} \
     ${DOCKER_E2E_PACKAGE_ARGS[@]+"${DOCKER_E2E_PACKAGE_ARGS[@]}"} \
     ${DOCKER_RUN_USER_ARGS[@]+"${DOCKER_RUN_USER_ARGS[@]}"} \
     "$IMAGE_NAME" \
@@ -335,6 +349,7 @@ docker_e2e_run_with_harness \
   -v "$ARTIFACT_DIR:/tmp/openclaw-upgrade-survivor-artifacts" \
   -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/clawhub-fixture-server.cjs:/tmp/openclaw-clawhub-fixture-server.cjs:ro" \
   -v "$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/config-parking.mjs:/tmp/openclaw-config-parking.mjs:ro" \
+  ${UPGRADE_SCENARIO_ARGS[@]+"${UPGRADE_SCENARIO_ARGS[@]}"} \
   ${DOCKER_E2E_PACKAGE_ARGS[@]+"${DOCKER_E2E_PACKAGE_ARGS[@]}"} \
   ${DOCKER_RUN_USER_ARGS[@]+"${DOCKER_RUN_USER_ARGS[@]}"} \
   "$IMAGE_NAME" \
