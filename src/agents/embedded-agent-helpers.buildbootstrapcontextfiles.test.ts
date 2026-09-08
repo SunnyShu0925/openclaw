@@ -26,6 +26,24 @@ const createLargeBootstrapFiles = (): WorkspaceBootstrapFile[] => [
   makeFile({ name: "USER.md", path: "/tmp/USER.md", content: "c".repeat(10_000) }),
 ];
 
+const QUOTED_HEARTBEAT_EXAMPLE =
+  "`Check STATUS.md if it exists. Follow it strictly. Do not repeat old tasks from prior chats. If nothing needs attention, reply STATUS_OK.`";
+
+function makeMiddleBootstrapFile(lines: string[]): WorkspaceBootstrapFile {
+  return makeFile({
+    content: [
+      "# AGENTS.md",
+      "",
+      "A".repeat(9000),
+      "",
+      ...lines,
+      "",
+      "B".repeat(7000),
+      "tail marker",
+    ].join("\n"),
+  });
+}
+
 describe("buildBootstrapContextFiles", () => {
   it("keeps missing markers", () => {
     const files = [makeFile({ missing: true, content: undefined })];
@@ -155,166 +173,121 @@ describe("buildBootstrapContextFiles", () => {
     expect(result?.content).toContain(requiredScopedInstruction);
     expect(result?.content).toContain("[...truncated, read AGENTS.md for full content...]");
   });
-  it("preserves framing prose for quoted example lines in the policy digest", () => {
-    // When AGENTS.md is truncated, the policy digest selects individual lines
-    // by keyword/heading match. A candidate line can survive while the
-    // plain-prose line that framed it as an example is dropped, turning
-    // documentation into a live directive. The digest must carry that framing
-    // line so the candidate is read in context.
-    const candidateLine = "Never commit secrets without validation.";
-    const framingProse = "Example policy:";
-    const content = [
-      "# AGENTS.md",
-      "A".repeat(9000),
-      framingProse,
-      candidateLine,
-      "B".repeat(7000),
-      "tail marker",
-    ].join("\n");
-    const [result] = buildBootstrapContextFiles([makeFile({ content })], {
-      maxChars: 2000,
-    });
+  it("keeps the quoted heartbeat example with its framing", () => {
+    const frame = "Example heartbeat prompt:";
+    const [result] = buildBootstrapContextFiles(
+      [makeMiddleBootstrapFile([frame, QUOTED_HEARTBEAT_EXAMPLE])],
+      { maxChars: 2000 },
+    );
 
     expect(result?.content).toContain("[Policy digest from AGENTS.md]");
-    expect(result?.content).toContain(candidateLine);
-    expect(result?.content).toContain(framingProse);
+    expect(result?.content).toContain([frame, QUOTED_HEARTBEAT_EXAMPLE].join("\n"));
     expect(result?.content.length).toBeLessThanOrEqual(2000);
   });
-  it("does not carry fence markers as framing context for digest candidates", () => {
-    // Triple-backtick fence lines are structural, not framing prose.
-    // Carrying them as context can unbalance fences in the injected prompt
-    // when two candidates share the same fence text (deduplication drops one).
-    const candidateLine = "Never commit secrets without validation.";
-    const content = [
-      "# AGENTS.md",
-      "A".repeat(9000),
-      "```",
-      candidateLine,
-      "```",
-      "B".repeat(7000),
-      "tail marker",
-    ].join("\n");
-    const [result] = buildBootstrapContextFiles([makeFile({ content })], {
-      maxChars: 2000,
-    });
 
-    expect(result?.content).toContain(candidateLine);
-    expect(result?.content).not.toContain("```");
-    expect(result?.content.length).toBeLessThanOrEqual(2000);
-  });
-  it("resets framing context when crossing a code fence boundary", () => {
-    // Prose before an opening fence must not survive the fence to become
-    // framing context for a real policy candidate after the closing fence.
-    // Without the reset, "Example policy:" from before a fenced block
-    // attaches to the next candidate after the closing fence, turning a real
-    // directive into an apparent example.
-    const framingProse = "Example policy:";
-    const candidateLine = "Never commit secrets without validation.";
-    const content = [
-      "# AGENTS.md",
-      "A".repeat(9000),
-      framingProse,
-      "```",
-      "```",
-      candidateLine,
-      "B".repeat(7000),
-      "tail marker",
-    ].join("\n");
-    const [result] = buildBootstrapContextFiles([makeFile({ content })], {
-      maxChars: 2000,
-    });
+  it.each([
+    { padding: 51, fits: true },
+    { padding: 52, fits: false },
+  ])("selects the whole framed unit when fits=$fits", ({ padding, fits }) => {
+    // The header and separator leave 198 of the 210 digest characters for this unit.
+    const frame = "Example " + "x".repeat(padding);
+    const [result] = buildBootstrapContextFiles(
+      [makeMiddleBootstrapFile([frame, QUOTED_HEARTBEAT_EXAMPLE])],
+      { maxChars: 600 },
+    );
 
-    expect(result?.content).toContain(candidateLine);
-    expect(result?.content).not.toContain(framingProse);
-    expect(result?.content.length).toBeLessThanOrEqual(2000);
-  });
-  it("resets framing context at paragraph boundaries in the policy digest", () => {
-    // Blank lines separate paragraphs; a prose line from an earlier unrelated
-    // paragraph must not become mandatory context for a later candidate,
-    // which could consume the digest budget and exclude other rules.
-    const candidateLine = "Never commit secrets without validation.";
-    const unrelatedProse = "X".repeat(200);
-    const content = [
-      "# AGENTS.md",
-      "A".repeat(9000),
-      unrelatedProse,
-      "",
-      candidateLine,
-      "B".repeat(7000),
-      "tail marker",
-    ].join("\n");
-    const [result] = buildBootstrapContextFiles([makeFile({ content })], {
-      maxChars: 800,
-    });
-
-    expect(result?.content).toContain(candidateLine);
-    expect(result?.content).not.toContain(unrelatedProse);
-    expect(result?.content.length).toBeLessThanOrEqual(800);
-  });
-  it("counts omitted candidates independently of rendered context lines", () => {
-    // The omission notice must reflect unselected policy candidates, not
-    // total rendered lines (which now include context prose).
-    const selectedLine = "Never commit secrets without validation.";
-    const omittedLine = "Required: always run tests before push.";
-    const content = [
-      "# AGENTS.md",
-      "A".repeat(9000),
-      "Example policy:",
-      selectedLine,
-      "Another example:",
-      omittedLine,
-      "B".repeat(7000),
-      "tail marker",
-    ].join("\n");
-    const [result] = buildBootstrapContextFiles([makeFile({ content })], {
-      maxChars: 350,
-    });
-
-    const digest = result?.content ?? "";
-    // With a small budget only one candidate fits; the omission notice
-    // must report the dropped candidate.
-    if (!digest.includes(omittedLine)) {
-      expect(digest).toMatch(/more policy lines omitted/);
+    if (fits) {
+      expect(result?.content).toContain([frame, QUOTED_HEARTBEAT_EXAMPLE].join("\n"));
+      expect(result?.content).not.toContain("more policy lines omitted");
+    } else {
+      expect(result?.content).not.toContain(frame);
+      expect(result?.content).not.toContain(QUOTED_HEARTBEAT_EXAMPLE);
+      expect(result?.content).toContain("[...1 more policy lines omitted...]");
     }
+    expect(result?.content.length).toBeLessThanOrEqual(600);
   });
-  it("keeps each repeated framing label local to its own candidate", () => {
-    // Two separate paragraphs can introduce candidates with identical framing
-    // prose (e.g. two `Example policy:` labels). Framing identity is the source
-    // occurrence, not the text: when another selected candidate sits between
-    // them, the later candidate must still carry its own local frame instead of
-    // inheriting the earlier paragraph's (now-distant) label.
-    const firstCandidate = "Never commit secrets without validation.";
-    const secondCandidate = "Required: always run tests before push.";
-    const betweenCandidate = "Must read scoped AGENTS.md before subtree work.";
-    const framingProse = "Example policy:";
-    const content = [
-      "# AGENTS.md",
-      "A".repeat(9000),
-      framingProse,
-      firstCandidate,
-      "B".repeat(2000),
-      betweenCandidate,
-      "C".repeat(2000),
-      framingProse,
-      secondCandidate,
-      "D".repeat(7000),
-      "tail marker",
-    ].join("\n");
-    const [result] = buildBootstrapContextFiles([makeFile({ content })], {
-      maxChars: 2000,
-    });
 
-    const digest = result?.content ?? "";
-    expect(digest).toContain(firstCandidate);
-    expect(digest).toContain(secondCandidate);
-    expect(digest).toContain(betweenCandidate);
-    const lines = digest.split("\n");
-    const secondIdx = lines.indexOf(secondCandidate);
-    // The second candidate's own framing label must sit immediately above it,
-    // not be dropped by text-based deduplication against the first paragraph.
-    expect(secondIdx).toBeGreaterThan(0);
-    expect(lines[secondIdx - 1]).toBe(framingProse);
-    expect(digest.length).toBeLessThanOrEqual(2000);
+  it("keeps framing indivisible under the remaining total budget", () => {
+    const frame = "Example " + "x".repeat(52);
+    const result = buildBootstrapContextFiles(
+      [
+        makeFile({ name: "SOUL.md", path: "/tmp/SOUL.md", content: "s".repeat(400) }),
+        makeMiddleBootstrapFile([frame, QUOTED_HEARTBEAT_EXAMPLE]),
+      ],
+      { maxChars: 2000, totalMaxChars: 1000 },
+    );
+
+    expect(result[0]?.content).toBe("s".repeat(400));
+    expect(result[1]?.content).not.toContain(QUOTED_HEARTBEAT_EXAMPLE);
+    expect(result[1]?.content).not.toContain(frame);
+    expect(result[1]?.content.length).toBeLessThanOrEqual(600);
+  });
+
+  it.each([
+    { name: "blank line", before: ["Example policy:", ""], after: [] },
+    { name: "backtick opening", before: ["Example policy:", "```"], after: ["```"] },
+    { name: "backtick closing", before: ["```", "Example policy:", "```"], after: [] },
+    { name: "tilde opening", before: ["Example policy:", "~~~"], after: ["~~~"] },
+    { name: "tilde closing", before: ["~~~", "Example policy:", "~~~"], after: [] },
+  ])("clears framing at a $name boundary", ({ before, after }) => {
+    const candidate = "Never commit secrets without validation.";
+    const [result] = buildBootstrapContextFiles(
+      [makeMiddleBootstrapFile([...before, candidate, ...after])],
+      { maxChars: 2000 },
+    );
+
+    expect(result?.content).toContain(candidate);
+    expect(result?.content).not.toContain("Example policy:");
+    expect(result?.content).not.toContain("```");
+    expect(result?.content).not.toContain("~~~");
+    expect(result?.content.length).toBeLessThanOrEqual(2000);
+  });
+
+  it("counts omitted candidates without counting their framing lines", () => {
+    const selected = "Never commit secrets without validation.";
+    const omitted = "Required: always run tests before push.";
+    const [result] = buildBootstrapContextFiles(
+      [makeMiddleBootstrapFile(["Example policy:", selected, "Another example:", omitted])],
+      { maxChars: 350 },
+    );
+
+    expect(result?.content).toContain(["Example policy:", selected].join("\n"));
+    expect(result?.content).not.toContain(omitted);
+    expect(result?.content).toContain("[...1 more policy lines omitted...]");
+    expect(result?.content.length).toBeLessThanOrEqual(350);
+  });
+
+  it.each(["Required: always run tests before push.", "Never commit secrets without validation."])(
+    "keeps repeated frames local and ordered for %s",
+    (second) => {
+      const first = "Never commit secrets without validation.";
+      const middle = "Must read scoped AGENTS.md before subtree work.";
+      const frame = "Example policy:";
+      const [result] = buildBootstrapContextFiles(
+        [makeMiddleBootstrapFile([frame, first, "", middle, "", frame, second])],
+        { maxChars: 2000 },
+      );
+
+      expect(result?.content).toContain([frame, first, middle, frame, second].join("\n"));
+      expect(result?.content.split(frame)).toHaveLength(3);
+      expect(result?.content.length).toBeLessThanOrEqual(2000);
+    },
+  );
+
+  it("prioritizes policy lines while rendering selected units in source order", () => {
+    const earlyShort = "- Early normal ".padEnd(20, "a");
+    const earlyLong = "- Normal payload ".padEnd(70, "b");
+    const urgent = "Never ".padEnd(140, "c");
+    const lateShort = "- Late normal ".padEnd(20, "d");
+    const [result] = buildBootstrapContextFiles(
+      [makeMiddleBootstrapFile([earlyShort, "", earlyLong, "", urgent, "", lateShort])],
+      { maxChars: 600 },
+    );
+
+    expect(result?.content).toContain([earlyShort, urgent, lateShort].join("\n"));
+    expect(result?.content).not.toContain(earlyLong);
+    expect(result?.content).toContain("[...1 more policy lines omitted...]");
+    expect(result?.content.length).toBeLessThanOrEqual(600);
   });
   it("keeps bootstrap bytes in tiny per-file budgets when the marker is longer than the limit", () => {
     const maxChars = 64;
