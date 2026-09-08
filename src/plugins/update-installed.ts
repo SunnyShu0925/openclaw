@@ -362,6 +362,7 @@ async function runInstalledPluginUpdate(
       let installedPayloadRunnable = false;
       if (
         (code === PLUGIN_INSTALL_ERROR_CODE.NPM_METADATA_FAILURE ||
+          code === PLUGIN_INSTALL_ERROR_CODE.STAGED_ARTIFACT_FAILURE ||
           (retainOnUnavailable && isUnavailablePluginSource("npm", { ok: false, code }))) &&
         (params.disableOnFailure || retainOnUnavailable) &&
         !params.dryRun &&
@@ -553,7 +554,17 @@ async function runInstalledPluginUpdate(
       if (error instanceof ManagedPluginLifecycleError && error.kind === "invalid-request") {
         throw error;
       }
-      recordFailure(pluginId, attempt.message);
+      // Preserve the prior install only when the installer confirms the failure
+      // was non-destructive (staged validation threw before the candidate was
+      // published, so the prior install was never replaced). The installer's
+      // staging mechanism (installPackageDir) stages to a temporary directory and
+      // only swaps the target after validation succeeds, so staging failures leave
+      // the prior install untouched. Unclassified exceptions keep the fail-closed
+      // disable default.
+      const stagedArtifactCode = attempt.nonDestructive
+        ? PLUGIN_INSTALL_ERROR_CODE.STAGED_ARTIFACT_FAILURE
+        : undefined;
+      await recordNpmFailure(attempt.message, stagedArtifactCode);
       continue;
     }
 
