@@ -200,4 +200,70 @@ describe("goal tools", () => {
     ]);
     expect(getSessionEntry({ storePath, sessionKey: "global" })?.goal?.status).toBe("complete");
   });
+
+  it("returns actionable guidance instead of throwing when no goal exists", async () => {
+    const { config, template } = await createStoreConfig();
+    const storePath = resolveSessionStorePathCore(template, { agentId: "research" });
+    await upsertSessionEntry({
+      storePath,
+      sessionKey: "global",
+      entry: { sessionId: "sess-global", updatedAt: 1 },
+    });
+    const tool = createUpdateGoalTool({
+      agentSessionKey: "global",
+      runSessionKey: "global",
+      sessionAgentId: "research",
+      config,
+    });
+
+    const result = await tool.execute("call-no-goal", { status: "blocked" });
+
+    expect(result.details).toMatchObject({
+      status: "error",
+      error: "goal not found",
+      nextAction: expect.stringContaining("Do not retry update_goal"),
+    });
+    expect((result.details as { nextAction?: string }).nextAction).toContain(
+      "provide your response to the user",
+    );
+  });
+
+  it("returns actionable guidance when goal is already complete", async () => {
+    const { config, template } = await createStoreConfig();
+    const storePath = resolveSessionStorePathCore(template, { agentId: "research" });
+    const options = {
+      agentSessionKey: "global",
+      runSessionKey: "global",
+      sessionAgentId: "research",
+      config,
+    };
+    await upsertSessionEntry({
+      storePath,
+      sessionKey: "global",
+      entry: {
+        sessionId: "sess-global",
+        updatedAt: 1,
+        goal: {
+          schemaVersion: 1,
+          id: "goal-1",
+          objective: "ship",
+          status: "complete",
+          createdAt: 1,
+          updatedAt: 1,
+          tokenStart: 0,
+          tokenStartFresh: true,
+          tokensUsed: 10,
+          continuationTurns: 0,
+        },
+      },
+    });
+    const tool = createUpdateGoalTool(options);
+
+    const result = await tool.execute("call-already-complete", { status: "blocked" });
+
+    expect(result.details).toMatchObject({
+      status: "error",
+      nextAction: expect.stringContaining("Do not retry update_goal"),
+    });
+  });
 });
