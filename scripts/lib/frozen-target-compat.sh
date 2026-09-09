@@ -163,12 +163,165 @@ openclaw_append_frozen_plugin_harness_docker_env() {
   fi
 }
 
+openclaw_resolve_frozen_agent_bundle_mcp_contract() {
+  local source_root="${1:?missing selected source root}" authorization_status=0 resolved trusted_helper
+
+  export OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_MODE="" \
+    OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_CLIENT_PATH=""
+  openclaw_frozen_target_omissions_authorized || authorization_status=$?
+  if [ "$authorization_status" -eq 1 ]; then
+    export OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_MODE="current" \
+      OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_CLIENT_PATH="test/e2e/qa-lab/runtime/agent-bundle-mcp-tools-docker-client.ts"
+    return 0
+  fi
+  [ "$authorization_status" -eq 0 ] || return "$authorization_status"
+  trusted_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/frozen-target-compat.sh" || return 2
+
+  # Walk committed trees so only a successfully read tree can prove absence.
+  # This reader is deliberately local to the bundle contract, not the other dialects.
+  resolved="$(node --input-type=module -e '
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+const [root, sha, trustedHelper] = process.argv.slice(1);
+const fail = (message) => { throw new Error(message); };
+const git = (...args) => {
+  try {
+    return execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch {
+    fail(`unable to read selected bundle source (${args[0]})`);
+  }
+};
+try {
+  const version = /^git version (\d+)\.(\d+)/.exec(git("--version"));
+  if (!version || Number(version[1]) < 2 ||
+      (Number(version[1]) === 2 && Number(version[2]) < 45)) {
+    fail("frozen bundle source reads require Git 2.45 or newer (no lazy fetch)");
+  }
+  if (git("rev-parse", "HEAD").trim() !== sha) {
+    fail("selected source checkout does not match OPENCLAW_SELECTED_SHA");
+  }
+  if (git("cat-file", "-t", sha).trim() !== "commit") {
+    fail("selected bundle source must be a commit");
+  }
+  const rootTree = git("rev-parse", `${sha}^{tree}`).trim();
+  const read = (relativePath) => {
+    let tree = rootTree;
+    const parts = relativePath.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const entries = git("ls-tree", "-z", tree).split("\0").filter(Boolean).map((line) => {
+        const match = /^([0-7]{6}) (blob|tree|commit) ([0-9a-f]{40})\t([\s\S]+)$/.exec(line);
+        if (!match) fail("invalid selected bundle tree entry");
+        return { mode: match[1], type: match[2], oid: match[3], name: match[4] };
+      });
+      const entry = entries.find((candidate) => candidate.name === parts[i]);
+      if (!entry) return null;
+      if (i < parts.length - 1) {
+        if (entry.mode !== "040000" || entry.type !== "tree") {
+          fail(`expected committed directory for ${relativePath}`);
+        }
+        tree = entry.oid;
+      } else {
+        if (!["100644", "100755"].includes(entry.mode) || entry.type !== "blob") {
+          fail(`expected regular committed file for ${relativePath}`);
+        }
+        return git("cat-file", "blob", entry.oid);
+      }
+    }
+  };
+  const required = (relativePath) => {
+    const source = read(relativePath);
+    if (source === null) fail(`missing required bundle source: ${relativePath}`);
+    return source;
+  };
+  let ts;
+  try { ts = createRequire(trustedHelper)("typescript"); } catch {
+    fail("unable to load trusted TypeScript parser for bundle contract");
+  }
+  // Parse source text only: no target imports, config, plugins or type resolution.
+  const parse = (relativePath, source) => {
+    const file = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+    if (file.parseDiagnostics.length) fail(`invalid selected bundle syntax contract: ${relativePath}`);
+    return file;
+  };
+  const hasExport = (file, name) => file.statements.some((node) =>
+    ts.isFunctionDeclaration(node) && node.name?.text === name && node.body &&
+    node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) &&
+    node.modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
+    !node.modifiers.some((modifier) =>
+      [ts.SyntaxKind.DefaultKeyword, ts.SyntaxKind.DeclareKeyword].includes(modifier.kind)));
+  const imports = (file) => file.statements.filter((node) =>
+    ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier));
+  const hasImport = (file, module, names) => imports(file).some((node) => {
+    const clause = node.importClause;
+    return node.moduleSpecifier.text === module && clause && !clause.isTypeOnly &&
+      clause.namedBindings && ts.isNamedImports(clause.namedBindings) &&
+      names.every((name) => clause.namedBindings.elements.some((element) =>
+        !element.isTypeOnly && element.name.text === name &&
+        (element.propertyName?.text ?? element.name.text) === name));
+  });
+  const importsOwner = (file, owner) => imports(file).some((node) =>
+    node.moduleSpecifier.text.endsWith(`/agent-bundle-mcp-${owner}.js`));
+  const layouts = [
+    {
+      path: "scripts/e2e/agent-bundle-mcp-tools-docker-client.ts",
+      dist: "../../dist",
+      helper: "./lib/temp-state-dir.ts",
+    },
+    {
+      path: "test/e2e/qa-lab/runtime/agent-bundle-mcp-tools-docker-client.ts",
+      dist: "../../../../dist",
+      helper: "../../../../scripts/e2e/lib/temp-state-dir.ts",
+    },
+  ];
+  const clients = layouts.map((layout) => ({ ...layout, source: read(layout.path) }))
+    .filter((layout) => layout.source !== null);
+  if (clients.length !== 1) fail("expected exactly one committed bundle client layout");
+  const client = clients[0];
+  const clientModule = parse(client.path, client.source);
+  let manifest;
+  try { manifest = JSON.parse(required("package.json")); } catch {
+    fail("unable to read selected bundle package.json");
+  }
+  if (manifest?.type !== "module") fail("selected bundle package.json must retain ESM scope");
+  const helper = parse("scripts/e2e/lib/temp-state-dir.ts", required("scripts/e2e/lib/temp-state-dir.ts"));
+  if (!hasExport(helper, "createE2eStateDir") ||
+      !hasImport(clientModule, client.helper, ["createE2eStateDir"])) {
+    fail("unrecognized selected bundle helper contract");
+  }
+  const manager = read("src/agents/agent-bundle-mcp-manager-api.ts");
+  const ownerName = manager === null ? "runtime" : "manager-api";
+  const acquire = manager === null ? "getOrCreateSessionMcpRuntime" : "acquireSessionMcpRuntime";
+  const owner = parse(`src/agents/agent-bundle-mcp-${ownerName}.ts`,
+    manager ?? required("src/agents/agent-bundle-mcp-runtime.ts"));
+  if (!hasExport(owner, acquire) || !hasExport(owner, "disposeAllSessionMcpRuntimes") ||
+      !hasImport(clientModule, `${client.dist}/agents/agent-bundle-mcp-${ownerName}.js`,
+        [acquire, "disposeAllSessionMcpRuntimes"]) ||
+      (manager !== null && client.path !== layouts[1].path) ||
+      importsOwner(clientModule, manager === null ? "manager-api" : "runtime")) {
+    fail("unrecognized selected bundle client/API contract");
+  }
+  process.stdout.write(`${manager === null ? "legacy" : "current"}:${client.path}`);
+} catch (error) {
+  console.error(`frozen bundle contract: ${error.message}`);
+  process.exitCode = 2;
+}
+' "$source_root" "$OPENCLAW_SELECTED_SHA" "$trusted_helper")" || return 2
+
+  export OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_MODE="${resolved%%:*}" \
+    OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_CLIENT_PATH="${resolved#*:}"
+}
+
 openclaw_resolve_frozen_core_harness_capabilities() {
   local source_root="${1:?missing selected source root}" authorization_status=0
 
   export OPENCLAW_FROZEN_TARGET_ONBOARD_CASES="" \
     OPENCLAW_FROZEN_TARGET_ONBOARD_SESSION_MEMORY_HOOK_MODE="required" \
-    OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_MODE="current" \
     OPENCLAW_FROZEN_TARGET_MCP_MEMORY_CONFIG_MODE="current" \
     OPENCLAW_FROZEN_TARGET_MCP_CODE_MODE_CATALOG_MODE="current" \
     OPENCLAW_FROZEN_TARGET_RUNTIME_CONTEXT_INPUT_MODE="producer-fragments" \
@@ -229,14 +382,5 @@ openclaw_resolve_frozen_core_harness_capabilities() {
   if openclaw_frozen_target_source_contains "$source_root" src/agents/code-mode-namespaces.ts '"ALL_TOOLS"' &&
     ! openclaw_frozen_target_source_contains "$source_root" src/agents/code-mode-namespaces.ts '"catalog"'; then
     export OPENCLAW_FROZEN_TARGET_MCP_CODE_MODE_CATALOG_MODE="legacy"
-  fi
-
-  # The manager API and MCP App assertions were added after the selected
-  # release. Run its still-packaged bundle-MCP contract instead of importing a
-  # new dist entry the release cannot contain.
-  if ! git -C "$source_root" cat-file -e "$OPENCLAW_SELECTED_SHA:src/agents/agent-bundle-mcp-manager-api.ts" 2>/dev/null &&
-    git -C "$source_root" cat-file -e "$OPENCLAW_SELECTED_SHA:src/agents/agent-bundle-mcp-runtime.ts" 2>/dev/null &&
-    git -C "$source_root" cat-file -e "$OPENCLAW_SELECTED_SHA:scripts/e2e/agent-bundle-mcp-tools-docker-client.ts" 2>/dev/null; then
-    export OPENCLAW_FROZEN_TARGET_AGENT_BUNDLE_MCP_MODE="legacy"
   fi
 }

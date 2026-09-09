@@ -2203,6 +2203,17 @@
                       "gateway/config-automation",
                       "gateway/config-browser-ui-desktop",
                       "gateway/config-channels",
+                      {
+                        "group": "Channels",
+                        "pages": [
+                          "gateway/config-channels/shared-policies",
+                          "gateway/config-channels/personal-messaging",
+                          "gateway/config-channels/workplace-chat",
+                          "gateway/config-channels/community-chat",
+                          "gateway/config-channels/mention-gating-and-history",
+                          "gateway/config-channels/commands"
+                        ]
+                      },
                       "gateway/config-cloud-workers",
                       "gateway/config-extensions",
                       "gateway/config-gateway",
@@ -2247,6 +2258,16 @@
                       "gateway/telemetry",
                       "logging",
                       "gateway/opentelemetry",
+                      {
+                        "group": "OpenTelemetry",
+                        "pages": [
+                          "gateway/opentelemetry/setup",
+                          "gateway/opentelemetry/configuration",
+                          "gateway/opentelemetry/privacy-and-trace-context",
+                          "gateway/opentelemetry/model-calls-and-metrics",
+                          "gateway/opentelemetry/spans-and-events"
+                        ]
+                      },
                       "gateway/prometheus",
                       "gateway/logging",
                       "gateway/diagnostics",
@@ -2352,6 +2373,15 @@
                 "group": "Nodes and media",
                 "pages": [
                   "nodes/index",
+                  "nodes/pairing-and-status",
+                  "nodes/node-host",
+                  "nodes/node-exec",
+                  "nodes/mcp-and-skills",
+                  "nodes/session-hosting",
+                  "nodes/session-catalogs",
+                  "nodes/file-transfers",
+                  "nodes/command-policy",
+                  "nodes/device-commands",
                   "nodes/presence",
                   "nodes/troubleshooting",
                   {
@@ -2435,13 +2465,33 @@
                       "cli/reset",
                       "cli/setup",
                       "cli/uninstall",
-                      "cli/update"
+                      "cli/update",
+                      {
+                        "group": "Update",
+                        "pages": [
+                          "cli/update/status-and-history",
+                          "cli/update/repair-and-recovery",
+                          "cli/update/how-updates-run"
+                        ]
+                      }
                     ]
                   },
                   {
                     "group": "Diagnostics and security",
                     "pages": [
                       "cli/doctor",
+                      {
+                        "group": "Doctor",
+                        "pages": [
+                          "cli/doctor/running",
+                          "cli/doctor/recovery",
+                          "cli/doctor/lint",
+                          "cli/doctor/health-contract",
+                          "cli/doctor/state-migrations",
+                          "cli/doctor/sqlite-maintenance",
+                          "cli/doctor/checks"
+                        ]
+                      },
                       "cli/secrets",
                       "cli/security",
                       "cli/triage"
@@ -2548,6 +2598,20 @@
                 "group": "Codex harness",
                 "pages": [
                   "plugins/codex-harness-reference",
+                  {
+                    "group": "Codex harness reference",
+                    "pages": [
+                      "plugins/codex-harness-reference/supervision",
+                      "plugins/codex-harness-reference/app-server-transport",
+                      "plugins/codex-harness-reference/approval-and-sandbox",
+                      "plugins/codex-harness-reference/auth",
+                      "plugins/codex-harness-reference/dynamic-tools",
+                      "plugins/codex-harness-reference/timeouts",
+                      "plugins/codex-harness-reference/model-discovery",
+                      "plugins/codex-harness-reference/restricted-turns",
+                      "plugins/codex-harness-reference/workspace-bootstrap-files"
+                    ]
+                  },
                   "plugins/codex-harness-runtime"
                 ]
               },
@@ -2607,6 +2671,19 @@
                     ]
                   },
                   "plugins/sdk-agent-harness",
+                  {
+                    "group": "Agent harness plugins",
+                    "pages": [
+                      "plugins/sdk-agent-harness/core-ownership",
+                      "plugins/sdk-agent-harness/registration",
+                      "plugins/sdk-agent-harness/selection-policy",
+                      "plugins/sdk-agent-harness/attempt-runtime",
+                      "plugins/sdk-agent-harness/user-input-and-execution",
+                      "plugins/sdk-agent-harness/native-inventories",
+                      "plugins/sdk-agent-harness/runtime-config",
+                      "plugins/sdk-agent-harness/sessions-and-results"
+                    ]
+                  },
                   "plugins/sdk-setup",
                   "plugins/sdk-testing"
                 ]

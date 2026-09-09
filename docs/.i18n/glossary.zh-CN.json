@@ -3036,6 +3036,62 @@
     "target": "频道提及策略"
   },
   {
+    "source": "Node pairing and status",
+    "target": "节点配对与状态"
+  },
+  {
+    "source": "Run a node host",
+    "target": "运行节点主机"
+  },
+  {
+    "source": "Run commands on a node",
+    "target": "在节点上运行命令"
+  },
+  {
+    "source": "Node-hosted MCP servers and skills",
+    "target": "节点托管的 MCP 服务器与技能"
+  },
+  {
+    "source": "Host OpenClaw sessions on a node",
+    "target": "在节点上托管 OpenClaw 会话"
+  },
+  {
+    "source": "Node session catalogs",
+    "target": "节点会话目录"
+  },
+  {
+    "source": "Node file transfers",
+    "target": "节点文件传输"
+  },
+  {
+    "source": "Node command policy",
+    "target": "节点命令策略"
+  },
+  {
+    "source": "Node device commands",
+    "target": "节点设备命令"
+  },
+  {
+    "source": "Node host CLI",
+    "target": "节点主机 CLI"
+  },
+  {
+    "source": "Active computer presence",
+    "target": "活动计算机在线状态"
+  },
+  {
+    "source": "Camera capture",
+    "target": "相机拍摄"
+  },
+  {
+    "source": "Location command",
+    "target": "位置命令"
+  },
+  {
+    "source": "Voice wake",
+    "target": "语音唤醒"
+  },
+  {
     "source": "Releasing",
     "target": "发布流程"
   },
@@ -3070,5 +3126,153 @@
   {
     "source": "Evidence to keep",
     "target": "需保留的证据"
+  },
+  {
+    "source": "Codex session catalog and supervision",
+    "target": "Codex 会话目录与监督"
+  },
+  {
+    "source": "Codex app-server transport",
+    "target": "Codex app-server 传输"
+  },
+  {
+    "source": "Codex approval and sandbox modes",
+    "target": "Codex 审批与沙箱模式"
+  },
+  {
+    "source": "Codex auth and environment isolation",
+    "target": "Codex 认证与环境隔离"
+  },
+  {
+    "source": "Codex dynamic tools",
+    "target": "Codex 动态工具"
+  },
+  {
+    "source": "Codex timeouts and turn settlement",
+    "target": "Codex 超时与回合结算"
+  },
+  {
+    "source": "Codex model discovery",
+    "target": "Codex 模型发现"
+  },
+  {
+    "source": "Codex restricted turns",
+    "target": "Codex 受限回合"
+  },
+  {
+    "source": "Codex workspace bootstrap files",
+    "target": "Codex 工作区引导文件"
+  },
+  {
+    "source": "Gateway and service recovery",
+    "target": "Gateway 与服务恢复"
+  },
+  {
+    "source": "Lint and post-upgrade modes",
+    "target": "Lint 与升级后模式"
+  },
+  {
+    "source": "Structured health check contract",
+    "target": "结构化健康检查契约"
+  },
+  {
+    "source": "Legacy state migration",
+    "target": "旧版状态迁移"
+  },
+  {
+    "source": "SQLite maintenance and session migration",
+    "target": "SQLite 维护与会话迁移"
+  },
+  {
+    "source": "Other checks and repairs",
+    "target": "其他检查与修复"
+  },
+  {
+    "source": "Agent harness core ownership",
+    "target": "Agent harness 核心归属"
+  },
+  {
+    "source": "Register an agent harness",
+    "target": "注册 agent harness"
+  },
+  {
+    "source": "Agent harness selection policy",
+    "target": "Agent harness 选择策略"
+  },
+  {
+    "source": "Agent harness attempt runtime",
+    "target": "Agent harness 尝试运行时"
+  },
+  {
+    "source": "Agent harness user input and execution authority",
+    "target": "Agent harness 用户输入与执行权限"
+  },
+  {
+    "source": "Agent harness native inventories",
+    "target": "Agent harness 原生清单"
+  },
+  {
+    "source": "Agent harness runtime configuration",
+    "target": "Agent harness 运行时配置"
+  },
+  {
+    "source": "Agent harness sessions and results",
+    "target": "Agent harness 会话与结果"
+  },
+  {
+    "source": "Update status and run history",
+    "target": "更新状态与运行历史"
+  },
+  {
+    "source": "Update repair and recovery",
+    "target": "更新修复与恢复"
+  },
+  {
+    "source": "How an update runs",
+    "target": "更新的运行方式"
+  },
+  {
+    "source": "Configuration — shared channel policies",
+    "target": "配置 — 共享渠道策略"
+  },
+  {
+    "source": "Configuration — personal messaging channels",
+    "target": "配置 — 个人消息渠道"
+  },
+  {
+    "source": "Configuration — workplace chat channels",
+    "target": "配置 — 办公聊天渠道"
+  },
+  {
+    "source": "Configuration — community chat channels",
+    "target": "配置 — 社区聊天渠道"
+  },
+  {
+    "source": "Configuration — group mention gating and history",
+    "target": "配置 — 群组提及门控和历史记录"
+  },
+  {
+    "source": "Configuration — chat commands",
+    "target": "配置 — 聊天命令"
+  },
+  {
+    "source": "Set up OpenTelemetry export",
+    "target": "设置 OpenTelemetry 导出"
+  },
+  {
+    "source": "OpenTelemetry configuration",
+    "target": "OpenTelemetry 配置"
+  },
+  {
+    "source": "Privacy and trace context",
+    "target": "隐私和追踪上下文"
+  },
+  {
+    "source": "Model calls and exported metrics",
+    "target": "模型调用和导出指标"
+  },
+  {
+    "source": "Exported spans and diagnostic events",
+    "target": "导出的 Span 和诊断事件"
   }
 ]
