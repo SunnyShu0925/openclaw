@@ -26,7 +26,7 @@ import { createClackPrompter } from "../../wizard/clack-prompter.js";
 import { WizardCancelledError } from "../../wizard/prompts.js";
 import { normalizeExternalChannelSetupConfig } from "../channel-setup/config-compatibility.js";
 import { resolveChannelSetupOwner } from "../channel-setup/owner.js";
-import { assertAccountSelectorForMutation } from "./account-selector.js";
+import { parseAccountSelector } from "./account-selector.js";
 import { channelLabel } from "./runtime-label.js";
 import { requireValidConfigForWrite, shouldUseWizard } from "./shared.js";
 
@@ -132,7 +132,7 @@ async function channelsAddCommandImpl(
   runtime: RuntimeEnv,
   params?: { hasFlags?: boolean; beforePersistentEffect?: () => Promise<void> },
 ) {
-  assertAccountSelectorForMutation(opts.account);
+  parseAccountSelector(opts.account);
   const writeSnapshot = await requireValidConfigForWrite(runtime);
   if (!writeSnapshot) {
     return;
@@ -306,7 +306,6 @@ async function channelsAddCommandImpl(
     writeOptions: writeSnapshot.writeOptions,
     baseHash: writeSnapshot.snapshot.hash,
   });
-  const writtenConfig = committed.config;
   if (committed.movedInstallRecords || pluginRegistrySourceChanged) {
     await refreshPluginRegistryAfterConfigMutation({
       reason: "source-changed",
@@ -335,7 +334,7 @@ async function channelsAddCommandImpl(
             }),
         },
       ],
-      cfg: writtenConfig,
+      configPath: committed.path,
       runtime,
       ...(params?.beforePersistentEffect
         ? { beforePersistentEffect: params.beforePersistentEffect }

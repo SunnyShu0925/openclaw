@@ -390,4 +390,53 @@ describe("dreaming markdown storage", () => {
     expect(result.reportPath).toBeUndefined();
     await expectPathMissing(path.join(workspaceDir, "memory"));
   });
+
+  it.each(["EACCES", "EIO"])("preserves %s from an empty daily report", async (code) => {
+    const workspaceDir = await createTempWorkspace("openclaw-dreaming-read-error-");
+    const failure = Object.assign(new Error("daily file unavailable"), { code });
+    vi.spyOn(fs, "access").mockRejectedValue(failure);
+    vi.spyOn(fs, "readFile").mockRejectedValue(failure);
+
+    await expect(
+      writeDailyDreamingPhaseBlock({
+        workspaceDir,
+        phase: "light",
+        bodyLines: ["- No notable updates."],
+        hasContent: false,
+        nowMs,
+        timezone,
+        storage: { mode: "both", separateReports: false },
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it.each(["", "# My notes\n\nKeep this text.\n"])(
+    "updates an existing daily file without discarding its content: %j",
+    async (original) => {
+      const workspaceDir = await createTempWorkspace("openclaw-dreaming-existing-");
+      const dailyPath = path.join(workspaceDir, "memory", "2026-04-05.md");
+      await fs.mkdir(path.dirname(dailyPath));
+      await fs.writeFile(dailyPath, original, { mode: 0o600 });
+
+      const result = await writeDailyDreamingPhaseBlock({
+        workspaceDir,
+        phase: "light",
+        bodyLines: ["- No notable updates."],
+        hasContent: false,
+        nowMs,
+        timezone,
+        storage: { mode: "both", separateReports: false },
+      });
+
+      expect(result).toEqual({ inlinePath: dailyPath });
+      const content = await fs.readFile(dailyPath, "utf-8");
+      expect(content).toContain(original);
+      expect(content).toContain("## Light Sleep");
+      expect(content).toContain("- No notable updates.");
+      await expectPathMissing(path.join(workspaceDir, "memory", "dreaming"));
+      if (process.platform !== "win32") {
+        expect((await fs.stat(dailyPath)).mode & 0o777).toBe(0o600);
+      }
+    },
+  );
 });

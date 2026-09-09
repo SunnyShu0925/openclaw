@@ -316,14 +316,13 @@ describe("dream diary file behavior", () => {
     expect(content).toContain("A fresh signal arrived after the cleanup started.");
   });
 
-  it("does not create memory/ when updateDreamsFile skips writing", async () => {
-    const workspaceDir = await createTempWorkspace("dreaming-skip-no-dir-");
+  it("does not create the workspace when updateDreamsFile skips writing", async () => {
+    const workspaceDir = path.join(await createTempWorkspace("dreaming-skip-no-dir-"), "pending");
     await updateDreamsFile({
       workspaceDir,
       updater: () => ({ content: "", result: undefined, shouldWrite: false }),
     });
-    await expect(fs.access(path.join(workspaceDir, "memory"))).rejects.toThrow();
-    await expect(fs.access(path.join(workspaceDir, "DREAMS.md"))).rejects.toThrow();
+    await expect(fs.access(workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("does not create memory/ or DREAMS.md when deep dreaming has no body lines", async () => {
@@ -333,7 +332,7 @@ describe("dream diary file behavior", () => {
     await expect(fs.access(path.join(workspaceDir, "DREAMS.md"))).rejects.toThrow();
   });
 
-  it("writes DREAMS.md and creates memory/ when deep dreaming has body lines", async () => {
+  it("writes DREAMS.md when deep dreaming has body lines", async () => {
     const workspaceDir = await createTempWorkspace("dreaming-nonempty-deep-");
     await updateDeepDreamsFile({
       workspaceDir,

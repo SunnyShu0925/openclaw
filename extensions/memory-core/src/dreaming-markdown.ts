@@ -93,26 +93,18 @@ export async function writeDailyDreamingPhaseBlock(params: {
 
   if (shouldWriteInline(params.storage)) {
     const candidatePath = resolveDailyMemoryPath(params.workspaceDir, nowMs, params.timezone);
-    // When the sweep found no content, only update an existing daily file —
-    // never create memory/ just to write a placeholder block.
-    const fileExists =
-      params.hasContent ||
-      (await fs
-        .access(candidatePath)
-        .then(() => true)
-        .catch(() => false));
-    if (fileExists) {
+    const original = await fs.readFile(candidatePath, "utf-8").catch((err: unknown) => {
+      if (extractErrorCode(err) === "ENOENT") {
+        return undefined;
+      }
+      throw err;
+    });
+    // An existing empty file still owns its managed block; absence does not.
+    if (params.hasContent || original !== undefined) {
       inlinePath = candidatePath;
-      await fs.mkdir(path.dirname(inlinePath), { recursive: true });
-      const original = await fs.readFile(inlinePath, "utf-8").catch((err: unknown) => {
-        if (extractErrorCode(err) === "ENOENT") {
-          return "";
-        }
-        throw err;
-      });
       const markers = resolvePhaseMarkers(params.phase);
       const updated = replaceManagedMarkdownBlock({
-        original,
+        original: original ?? "",
         heading: DAILY_PHASE_HEADINGS[params.phase],
         startMarker: markers.start,
         endMarker: markers.end,

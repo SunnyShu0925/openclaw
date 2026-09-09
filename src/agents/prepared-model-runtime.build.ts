@@ -36,7 +36,6 @@ import {
 import {
   fingerprintPreparedRuntimeFacts,
   preparedModelInventoryKey,
-  prepareAgentCatalogSource,
   prepareConfiguredRuntimeFactsBatch,
   prepareWorkspaceBuildGroup,
 } from "./prepared-model-runtime.facts.js";
@@ -54,6 +53,7 @@ import {
   preparedModelRuntimeWorkspaceFactsKey,
 } from "./prepared-model-runtime.inbound-registry.js";
 import { createCatalogAttemptReporter } from "./prepared-model-runtime.publication-events.js";
+import { prepareAgentCatalogSource } from "./prepared-model-runtime.scoped-catalog.js";
 import type {
   PreparedModelRuntimeBuildStats,
   PreparedModelRuntimeCatalogMode,
@@ -70,7 +70,7 @@ const limitFullModelCatalogBuild = pLimit(MAX_CONCURRENT_FULL_MODEL_CATALOG_BUIL
 export type PreparedModelRuntimeBuildCandidate = Readonly<{
   input: PreparedModelRuntimeInput;
   catalogOwner: PreparedModelRuntimeSnapshot["catalogOwner"];
-  inventoryOwner?: Pick<PreparedModelRuntimeOwner, "catalogInventory" | "catalogAttemptError">;
+  inventoryOwner?: Pick<PreparedModelRuntimeOwner, "catalogInventory" | "catalogAttempt">;
   pluginGeneration?: PreparedModelRuntimePluginGeneration;
   prepareInboundPluginRegistry?: boolean;
   isGenerationCurrent?: () => boolean;
@@ -138,7 +138,7 @@ function createFullModelCatalogAccess(params: {
   pluginGeneration: PreparedModelRuntimePluginGeneration;
   agentBuildCompletions: Map<string, Promise<void>>;
   isCurrent: () => boolean;
-  inventoryOwner: Pick<PreparedModelRuntimeOwner, "catalogInventory" | "catalogAttemptError">;
+  inventoryOwner: Pick<PreparedModelRuntimeOwner, "catalogInventory" | "catalogAttempt">;
 }): PreparedModelRuntimeCatalogAccess {
   // Retain discovery, not the retired worker or its runtime capability projection.
   const project = (
@@ -180,7 +180,7 @@ function createFullModelCatalogAccess(params: {
       metadataSnapshot: params.pluginGeneration.pluginMetadataSnapshot,
       providers: params.pluginGeneration.pluginRegistry?.providers,
     });
-    return projected;
+    return attempt.withRefreshStatus(projected);
   };
   const inventoryKey = preparedModelInventoryKey(params.agentFacts.input);
   const normalizeProvider = createPreparedModelCatalogProviderNormalizer(
@@ -189,9 +189,13 @@ function createFullModelCatalogAccess(params: {
     params.agentFacts.env,
   );
   const previousInventory = params.inventoryOwner.catalogInventory;
-  const attempt = createCatalogAttemptReporter(params.inventoryOwner, params.isCurrent);
   const pluginFingerprint = resolveInstalledManifestRegistryIndexFingerprint(
     params.pluginGeneration.pluginMetadataSnapshot.index,
+  );
+  const attempt = createCatalogAttemptReporter(
+    params.inventoryOwner,
+    { key: inventoryKey, pluginFingerprint, credentials: params.agentFacts.credentials },
+    params.isCurrent,
   );
   let inventory =
     previousInventory?.key === inventoryKey &&
@@ -236,6 +240,7 @@ function createFullModelCatalogAccess(params: {
   });
   return {
     isCurrent: params.isCurrent,
+    withRefreshStatus: attempt.withRefreshStatus,
     loadAuth: ({ providerIds, profileIds }) => {
       const cacheKey = [providerIds, profileIds ?? []]
         .map((ids) =>

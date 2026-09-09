@@ -115,8 +115,7 @@ export async function updateDeepDreamsFile(params: {
   workspaceDir: string;
   bodyLines: string[];
 }): Promise<string> {
-  const hasContent = params.bodyLines.length > 0;
-  const body = hasContent ? params.bodyLines.join("\n") : "- No durable changes.";
+  const body = params.bodyLines.join("\n");
   return await updateDreamsFile({
     workspaceDir: params.workspaceDir,
     updater: (existing, dreamsPath) => ({
@@ -128,7 +127,7 @@ export async function updateDeepDreamsFile(params: {
         body,
       }),
       result: dreamsPath,
-      shouldWrite: hasContent,
+      shouldWrite: params.bodyLines.length > 0,
     }),
   });
 }
