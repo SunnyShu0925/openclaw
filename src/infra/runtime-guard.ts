@@ -158,23 +158,6 @@ function parseMinimumNodeEngine(engine: string | null): Semver | null {
   return parseSemver(match[1] ?? null);
 }
 
-/** Lists the minimum version of each `||` clause in a supported engine range, or null on unsupported syntax. */
-function listNodeEngineMinimums(engine: string | null): Semver[] | null {
-  if (!engine) {
-    return null;
-  }
-  const minimums: Semver[] = [];
-  for (const clause of engine.split("||")) {
-    const match = clause.match(ENGINE_CLAUSE_RE);
-    const minimum = match?.[1] ? parseSemver(match[1]) : null;
-    if (!minimum) {
-      return null;
-    }
-    minimums.push(minimum);
-  }
-  return minimums.length > 0 ? minimums : null;
-}
-
 /** Returns whether a Node version satisfies a supported engine range, or null if unsupported. */
 export function nodeVersionSatisfiesEngine(
   version: string | null,
@@ -185,8 +168,7 @@ export function nodeVersionSatisfiesEngine(
     return isNodeVersionAtLeast(parseNodeReleaseVersion(version), minimum);
   }
 
-  const clauseMinimums = listNodeEngineMinimums(engine);
-  if (!engine || !clauseMinimums) {
+  if (!engine) {
     return null;
   }
   const parsed = parseNodeReleaseVersion(version);
@@ -196,13 +178,17 @@ export function nodeVersionSatisfiesEngine(
 
   const clauses = engine.split("||");
   let satisfied = false;
-  for (const [i, clauseMinimum] of clauseMinimums.entries()) {
-    const match = clauses[i]?.match(ENGINE_CLAUSE_RE);
-    const upperRaw = match?.[2];
+  for (const clause of clauses) {
+    const match = clause.match(ENGINE_CLAUSE_RE);
+    if (!match) {
+      return null;
+    }
+    const clauseMinimum = parseSemver(match[1] ?? null);
+    const upperRaw = match[2];
     const upper = upperRaw
       ? parseSemver(upperRaw.includes(".") ? upperRaw : `${upperRaw}.0.0`)
       : null;
-    if (upperRaw && !upper) {
+    if (!clauseMinimum || (upperRaw && !upper)) {
       return null;
     }
     if (isAtLeast(parsed, clauseMinimum) && (!upper || !isAtLeast(parsed, upper))) {
