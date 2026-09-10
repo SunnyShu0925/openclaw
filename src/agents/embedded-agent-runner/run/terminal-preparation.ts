@@ -1,10 +1,11 @@
 import { copyReplyPayloadMetadata } from "../../../auto-reply/reply-payload.js";
 import type { AssistantMessage } from "../../../llm/types.js";
-import { estimateAggregateUsageCost, resolveModelCostConfig } from "../../../utils/usage-format.js";
+import { estimateAggregateUsageCost } from "../../../utils/usage-format.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import type { AgentRunTerminalReceipt } from "../../agent-run-terminal-receipt.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
+import { isProviderModelRerouted } from "../../provider-model-route.js";
 import { getCoreTtsAttemptResultMediaUrls } from "../../tools/tts-tool-result-provenance.js";
 import type { NormalizedUsage, UsageLike } from "../../usage.js";
 import { hasMessagingToolDeliveryEvidence } from "../delivery-evidence.js";
@@ -94,12 +95,10 @@ export function prepareEmbeddedRunTerminal(input: {
     finalAssistantStopReason !== "error" && finalAssistantStopReason !== "aborted";
   const costUsd = estimateAggregateUsageCost({
     usage: usageMeta.usage,
-    cost: resolveModelCostConfig({
-      provider: reportedModelRef.provider,
-      model: reportedModelRef.model,
-      config: runParams.config,
-      agentDir: runParams.agentDir,
-    }),
+    provider: reportedModelRef.provider,
+    model: reportedModelRef.model,
+    config: runParams.config,
+    agentDir: runParams.agentDir,
   });
   // Attempt normalization already folded every attempt (terminal included)
   // into the accumulator, so read it directly instead of re-adding the attempt.
@@ -145,9 +144,8 @@ export function prepareEmbeddedRunTerminal(input: {
     ...(costUsd !== undefined ? { costUsd } : {}),
   };
   const attemptFinalText = attempt.assistantTexts
-    .toReversed()
-    .map((text) => text.trim())
-    .find((text) => text.length > 0);
+    .findLast((text) => text.trim().length > 0)
+    ?.trim();
   const finalAssistantVisibleText = terminalAssistantCanOwnFinalText
     ? (resolveFinalAssistantVisibleText(terminalAssistant) ?? attemptFinalText)
     : undefined;
@@ -184,10 +182,10 @@ export function prepareEmbeddedRunTerminal(input: {
       },
       successfulToolNames,
       sourceReplyDelivered: attempt.sourceReplyDelivered,
-      rerouted:
-        reportedModelRef.provider !== input.provider ||
-        reportedModelRef.model !== input.model ||
-        responseModel !== input.model,
+      rerouted: isProviderModelRerouted(
+        { provider: input.provider, model: input.model },
+        { ...reportedModelRef, responseModel },
+      ),
     } satisfies Omit<AgentRunTerminalReceipt, "terminalDisposition">,
   });
   // A yielded attempt ends before message_end. Its aborted tool-call assistant,

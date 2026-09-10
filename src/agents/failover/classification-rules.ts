@@ -262,7 +262,10 @@ export function classifyFailoverClassificationFromHttpStatus(
     return toReasonClassification("overloaded");
   }
   if (status === 499 || (status >= 500 && status < 600)) {
-    return messageReason === "overloaded" || messageReason === "server_error"
+    // Gateways can wrap a deterministic request rejection in a 5xx response.
+    return messageReason === "overloaded" ||
+      messageReason === "server_error" ||
+      (status >= 500 && messageReason === "format")
       ? messageClassification
       : toReasonClassification("timeout");
   }
@@ -294,6 +297,8 @@ export function classifyFailoverReasonFromCode(raw: string | undefined): Failove
     return null;
   }
   switch (normalized) {
+    case "UNKNOWN_PARAMETER":
+      return "format";
     case "RESOURCE_EXHAUSTED":
     case "RATE_LIMIT":
     case "RATE_LIMITED":
@@ -369,6 +374,16 @@ function isBilling429MessageForProvider(raw: string, provider: string | undefine
     return false;
   }
   return hasProviderBilling429Override(provider) || !isAmbiguousGeneric429BalanceMessage(raw);
+}
+const REPLAY_INVALID_RE =
+  /\bprevious_response_id\b.*\b(?:invalid|unknown|not found|does not exist|expired|mismatch)\b|\btool_(?:use|call)\.(?:input|arguments)\b.*\b(?:missing|required)\b|\bincorrect role information\b|\broles must alternate\b|\binput item id does not belong to this connection\b/i;
+const THINKING_SIGNATURE_ERROR_RE =
+  /\b(?:invalid|expired)\b.*\bsignature\b|\bsignature\b.*\b(?:invalid|expired)\b/i;
+function isThinkingSignatureReplayInvalidErrorMessage(raw: string): boolean {
+  return /\bthinking\b/i.test(raw) && THINKING_SIGNATURE_ERROR_RE.test(raw);
+}
+export function isReplayInvalidErrorMessage(raw: string): boolean {
+  return REPLAY_INVALID_RE.test(raw) || isThinkingSignatureReplayInvalidErrorMessage(raw);
 }
 // shared model runtime providers throw `Error("An unknown error occurred")` provider-agnostically
 // (anthropic, google, vertex, openai-completions, mistral, bedrock, etc.) when a

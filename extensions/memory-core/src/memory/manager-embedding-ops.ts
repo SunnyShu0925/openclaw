@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
+import { extractCuratedEntryRecallMetadata } from "openclaw/plugin-sdk/memory-core-host-engine-curated";
 import {
   enforceEmbeddingMaxInputTokens,
   hasNonTextEmbeddingParts,
@@ -14,30 +15,30 @@ import {
   buildFileEntry,
   buildMultimodalChunkForIndexing,
   chunkMarkdown,
-  extractProjectKeysFromCuratedEntry,
   hashText,
-  INVALID_PROJECT_ANNOTATION_KEY,
+  isFileMissingError,
   MEMORY_EMBEDDING_CACHE_TABLE,
-  MEMORY_INDEX_CHUNK_PROVENANCE_TABLE,
-  MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE,
   MEMORY_INDEX_FTS_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
+  MEMORY_SEARCH_DEADLINE_CONTROL,
   remapChunkLines,
   retryTransientMemoryRead,
   runWithConcurrency,
   stripMemoryAnnotationCarriers,
   type MemoryChunk,
   type MemoryEntryProvenance,
+  type MemorySearchDeadlineControl,
   type MemorySource,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { MAX_TIMER_TIMEOUT_MS, resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
-import { runSqliteImmediateTransactionSync } from "openclaw/plugin-sdk/sqlite-runtime";
+import { runSqliteImmediateTransaction } from "openclaw/plugin-sdk/sqlite-runtime";
 import { chunkItems } from "openclaw/plugin-sdk/text-chunking";
 import { hasMemorySessionTombstone } from "../memory-entry-origins.js";
 import { withMemoryWorkspaceLock } from "../memory-workspace-lock.js";
 import { readSessionResetRecallCutoffMetadata } from "../session-reset-recall-metadata.js";
 import type { EmbeddingProvider } from "./embeddings.js";
+import { createMemoryChunkWriter, type IndexedMemoryChunk } from "./manager-chunk-writer.js";
 import {
   collectMemoryCachedEmbeddings,
   loadMemoryEmbeddingCache,
@@ -54,7 +55,6 @@ import {
   runMemoryEmbeddingBatchRetryWithSplit,
   runMemoryEmbeddingRetryLoop,
 } from "./manager-embedding-policy.js";
-import { deleteMemoryFtsRows } from "./manager-fts-state.js";
 import {
   resolveMemoryIndexProviderIdentities,
   type MemoryIndexProviderIdentity,
@@ -73,6 +73,7 @@ import { resolveMemoryPathClassification } from "./memory-path-provenance.js";
 const VECTOR_TABLE = MEMORY_INDEX_VECTOR_TABLE;
 const FTS_TABLE = MEMORY_INDEX_FTS_TABLE;
 const EMBEDDING_CACHE_TABLE = MEMORY_EMBEDDING_CACHE_TABLE;
+const EMBEDDING_CACHE_PRUNE_BATCH_SIZE = 100;
 const EMBEDDING_BATCH_MAX_TOKENS = 8000;
 const EMBEDDING_INDEX_CONCURRENCY = 4;
 const EMBEDDING_RETRY_MAX_ATTEMPTS = 3;
@@ -100,81 +101,12 @@ function resolveEmbeddingSecondsTimeoutMs(seconds: number): number {
 
 type MemoryIndexEntry = MemoryIndexWorkItem["entry"];
 
-type IndexedMemoryChunk = MemoryChunk & {
-  importance: number | null;
-  triggers: string | null;
-  projectKey: string | null;
-};
-
 type PreparedMemoryIndexEntry = {
   entry: MemoryIndexEntry;
   source: MemorySource;
   chunks: IndexedMemoryChunk[];
   structuredInputBytes?: number;
 };
-
-function resolveChunkRecallMetadata(params: {
-  curatedRoot: boolean;
-  projectScopeEligible: boolean;
-  sourceLines: string[];
-  chunk: MemoryChunk;
-}): Pick<IndexedMemoryChunk, "importance" | "triggers" | "projectKey"> {
-  if (!params.curatedRoot && !params.projectScopeEligible) {
-    return { importance: null, triggers: null, projectKey: null };
-  }
-
-  const phrases = new Set<string>();
-  let importance: number | null = null;
-  const annotationStartLine = params.chunk.entryStartLine ?? params.chunk.startLine;
-  const annotationEndLine = params.chunk.entryEndLine ?? params.chunk.endLine;
-  const annotationLines = params.sourceLines.slice(annotationStartLine - 1, annotationEndLine);
-  const projectAnnotations = params.projectScopeEligible
-    ? extractProjectKeysFromCuratedEntry(annotationLines.join("\n"))
-    : { annotated: false, valid: true, keys: [] };
-  for (const line of params.curatedRoot ? annotationLines : []) {
-    const annotationSuffix = line.match(
-      /(?:\s*<!--\s*(?:trigger|importance|project)\s*:[\s\S]*?-->\s*)+$/iu,
-    )?.[0];
-    if (!annotationSuffix) {
-      continue;
-    }
-    for (const match of annotationSuffix.matchAll(
-      /<!--\s*(trigger|importance|project)\s*:\s*([\s\S]*?)\s*-->/giu,
-    )) {
-      const kind = match[1]?.toLowerCase();
-      const value = match[2]?.trim() ?? "";
-      if (kind === "trigger") {
-        for (const phrase of value.split(/[,;]/u).map((entry) => entry.trim())) {
-          if (phrase) {
-            phrases.add(phrase);
-          }
-        }
-        continue;
-      }
-      if (kind === "importance" && /^\d+$/u.test(value)) {
-        const parsed = Number.parseInt(value, 10);
-        if (parsed >= 1 && parsed <= 10) {
-          importance = Math.max(importance ?? parsed, parsed);
-        }
-      }
-    }
-  }
-
-  // Missing annotations intentionally stay NULL: pre-annotation indexes keep
-  // neutral ranking and never become trigger candidates after a reindex.
-  return {
-    importance,
-    triggers: phrases.size > 0 ? [...phrases].join("; ") : null,
-    // Invalid annotations remain scoped but unsatisfiable; treating them as NULL
-    // would make malformed project memory global and leak it into every project.
-    projectKey:
-      projectAnnotations.annotated && !projectAnnotations.valid
-        ? INVALID_PROJECT_ANNOTATION_KEY
-        : projectAnnotations.keys.length > 0
-          ? projectAnnotations.keys.join("; ")
-          : null,
-  };
-}
 
 // Retry attempts are host control state. Provider-thrown values stay opaque so
 // they cannot override the counter or break accounting when they are immutable.
@@ -260,6 +192,8 @@ async function runEmbeddingOperationWithTimeout<T>(params: {
   message: string;
   /** Caller-owned cancellation, merged with the per-call watchdog abort. */
   signal?: AbortSignal;
+  /** Managed readiness pauses this watchdog, while caller cancellation stays active. */
+  deadlineControl?: MemorySearchDeadlineControl;
   run: (signal: AbortSignal) => Promise<T>;
 }): Promise<T> {
   const controller = new AbortController();
@@ -271,25 +205,58 @@ async function runEmbeddingOperationWithTimeout<T>(params: {
   }
   const timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 1);
   const timeoutError = new Error(params.message);
-  const deadlineStartedAt = Date.now();
+  let remainingMs = timeoutMs;
+  let segmentStartedAt = Date.now();
+  let paused = false;
   let timer: NodeJS.Timeout | null = null;
+  let rejectTimeout!: (error: Error) => void;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(timeoutError);
-      controller.abort(timeoutError);
-    }, timeoutMs);
+    rejectTimeout = reject;
   });
+  const armWatchdog = () => {
+    segmentStartedAt = Date.now();
+    timer = setTimeout(() => {
+      timer = null;
+      rejectTimeout(timeoutError);
+      controller.abort(timeoutError);
+    }, remainingMs);
+  };
+  const unsubscribe = params.deadlineControl?.subscribe((action) => {
+    if (action === "pause") {
+      paused = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      remainingMs = Math.max(0, remainingMs - (Date.now() - segmentStartedAt));
+      if (remainingMs === 0) {
+        // Budget already consumed before the owned phase; do not let the
+        // exemption extend work that had no time left.
+        rejectTimeout(timeoutError);
+        controller.abort(timeoutError);
+      }
+      return;
+    }
+    paused = false;
+    if (!signal.aborted) {
+      armWatchdog();
+    }
+  });
+  if (!paused) {
+    armWatchdog();
+  }
   try {
     const operation = params.run(signal);
     const result = (await Promise.race([operation, timeoutPromise])) as T;
     params.signal?.throwIfAborted();
     // An overdue watchdog can run after provider success following an event-loop stall.
-    if (Date.now() - deadlineStartedAt >= timeoutMs) {
+    if (!paused && Date.now() - segmentStartedAt >= remainingMs) {
       controller.abort(timeoutError);
       throw timeoutError;
     }
     return result;
   } finally {
+    unsubscribe?.();
     if (timer) {
       clearTimeout(timer);
     }
@@ -393,32 +360,30 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     this.syncProviderGenerationRelease = null;
   }
 
-  protected pruneEmbeddingCacheIfNeeded(): void {
-    if (!this.cache.enabled) {
-      return;
-    }
+  protected async pruneEmbeddingCacheIfNeeded(): Promise<void> {
     const max = this.cache.maxEntries;
-    if (!max || max <= 0) {
+    if (!this.cache.enabled || !max || max <= 0) {
       return;
     }
-    const row = this.db.prepare(`SELECT COUNT(*) as c FROM ${EMBEDDING_CACHE_TABLE}`).get() as
-      | { c: number }
-      | undefined;
-    const count = row?.c ?? 0;
-    if (count <= max) {
-      return;
+    const count = this.db.prepare(`SELECT COUNT(*) as c FROM ${EMBEDDING_CACHE_TABLE}`);
+    const excess = () => Number(count.get()?.c ?? 0) - max;
+    const remove = this.db.prepare(
+      `DELETE FROM ${EMBEDDING_CACHE_TABLE} WHERE rowid IN (
+         SELECT rowid FROM ${EMBEDDING_CACHE_TABLE} ORDER BY updated_at ASC LIMIT ?
+       )`,
+    );
+    while (excess() > 0) {
+      await runSqliteImmediateTransaction(this.db, async () => () => {
+        // Purges can reduce the cache while admission waits; retain the newest cap.
+        const currentExcess = excess();
+        if (currentExcess > 0) {
+          remove.run(Math.min(currentExcess, EMBEDDING_CACHE_PRUNE_BATCH_SIZE));
+        }
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
     }
-    const excess = count - max;
-    this.db
-      .prepare(
-        `DELETE FROM ${EMBEDDING_CACHE_TABLE}\n` +
-          ` WHERE rowid IN (\n` +
-          `   SELECT rowid FROM ${EMBEDDING_CACHE_TABLE}\n` +
-          `   ORDER BY updated_at ASC\n` +
-          `   LIMIT ?\n` +
-          ` )`,
-      )
-      .run(excess);
   }
 
   private async embedChunksInBatches(
@@ -547,7 +512,6 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         enabled: this.cache.enabled,
         providerIdentities: generation.identities,
         hashes: chunks.map((chunk) => chunk.hash),
-        tableName: EMBEDDING_CACHE_TABLE,
       }),
     });
   }
@@ -662,6 +626,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     providerOverride?: EmbeddingProvider,
     markDegraded = true,
     providerRuntimeOverride?: MemoryEmbeddingProviderRuntime,
+    deadlineControl?: MemorySearchDeadlineControl,
   ): Promise<number[]> {
     const provider = providerOverride ?? this.provider;
     const providerRuntime = providerOverride ? providerRuntimeOverride : this.providerRuntime;
@@ -681,8 +646,15 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
                 timeoutMs,
                 message: `memory embeddings query timed out after ${Math.round(timeoutMs / 1000)}s`,
                 signal,
+                deadlineControl,
                 run: async (opSignal) =>
-                  await provider.embed(text, { signal: opSignal, inputType: "query" }),
+                  await provider.embed(text, {
+                    signal: opSignal,
+                    inputType: "query",
+                    ...(deadlineControl
+                      ? { [MEMORY_SEARCH_DEADLINE_CONTROL]: deadlineControl }
+                      : {}),
+                  }),
               });
             },
             signal,
@@ -781,24 +753,6 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     });
   }
 
-  private clearIndexedFileData(pathname: string, source: MemorySource): void {
-    this.deleteVectorRowsForSource(pathname, source);
-    if (this.fts.enabled && this.fts.available) {
-      try {
-        deleteMemoryFtsRows({
-          db: this.db,
-          tableName: FTS_TABLE,
-          path: pathname,
-          source,
-          currentModel: this.provider?.model,
-        });
-      } catch {}
-    }
-    this.db
-      .prepare(`DELETE FROM memory_index_chunks WHERE path = ? AND source = ?`)
-      .run(pathname, source);
-  }
-
   private upsertFileRecord(entry: MemoryIndexEntry, source: MemorySource): void {
     this.db
       .prepare(
@@ -811,20 +765,6 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       .run(entry.path, source, entry.hash, entry.mtimeMs, entry.size);
   }
 
-  private deleteFileRecord(pathname: string, source: MemorySource): void {
-    this.db
-      .prepare(`DELETE FROM memory_index_sources WHERE path = ? AND source = ?`)
-      .run(pathname, source);
-  }
-
-  private assertMemoryFileSnapshot(entry: MemoryIndexEntry, currentHash: string | undefined): void {
-    if (currentHash === entry.hash) {
-      return;
-    }
-    this.markFailedFullReindexRetry({ memory: true, sessions: false });
-    throw new Error(`Memory source ${entry.path} changed while indexing; retry the memory index.`);
-  }
-
   private async writeChunks(
     { entry, source, chunks }: PreparedMemoryIndexEntry,
     generation: MemorySyncProviderGeneration | null,
@@ -832,129 +772,92 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     vectorReady: boolean,
   ): Promise<void> {
     await withMemoryWorkspaceLock(this.workspaceDir, async () => {
-      if (source === "memory") {
-        // The lock excludes purge and promotion writers while the exact file
-        // snapshot is validated and its derived index records are committed.
-        const current = await buildFileEntry(
-          entry.absPath,
-          this.workspaceDir,
-          this.settings.multimodal,
-        );
-        this.assertMemoryFileSnapshot(entry, current?.hash);
-      }
-      const now = Date.now();
-      const model = generation?.provider?.model ?? "fts-only";
-      const needsVectorRebuild =
-        !vectorReady && embeddings.some((embedding) => embedding.length > 0);
-      runSqliteImmediateTransactionSync(this.db, () => {
-        if (source === "sessions") {
-          const sessionId = expectDefined(entry.sessionId, "memory index session identity");
-          // Embedding and vector setup may await while a purge completes. Read the
-          // live owner, never the shadow index, immediately before publishing.
-          if (hasMemorySessionTombstone(generation?.database ?? this.db, this.agentId, sessionId)) {
-            this.markFailedFullReindexRetry({ memory: false, sessions: true });
-            throw new Error(
-              "A session was forgotten while memory indexing was running; retry the memory index.",
-            );
-          }
-        }
-        this.clearIndexedFileData(entry.path, source);
-        for (const [i, chunk] of chunks.entries()) {
-          const embedding = embeddings[i] ?? [];
-          const id = hashText(
-            `${source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${model}`,
+      const published = await runSqliteImmediateTransaction(this.db, async () => {
+        if (source === "memory") {
+          // The lock excludes purge and promotion writers while the exact file
+          // snapshot is validated and its derived index records are committed.
+          const current = await buildFileEntry(
+            entry.absPath,
+            this.workspaceDir,
+            this.settings.multimodal,
           );
-          this.db
-            .prepare(
-              `INSERT INTO memory_index_chunks (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                 hash=excluded.hash,
-                 model=excluded.model,
-                 text=excluded.text,
-                 embedding=excluded.embedding,
-                 updated_at=excluded.updated_at`,
-            )
-            .run(
-              id,
-              entry.path,
-              source,
-              chunk.startLine,
-              chunk.endLine,
-              chunk.hash,
-              model,
-              chunk.text,
-              JSON.stringify(embedding),
-              now,
-            );
-          this.db
-            .prepare(
-              `INSERT INTO ${MEMORY_INDEX_CHUNK_RECALL_METADATA_TABLE} (
-                 chunk_id, importance, triggers, project_key
-               ) VALUES (?, ?, ?, ?)
-               ON CONFLICT(chunk_id) DO UPDATE SET
-                 importance=excluded.importance,
-                 triggers=excluded.triggers,
-                 project_key=excluded.project_key`,
-            )
-            .run(id, chunk.importance, chunk.triggers, chunk.projectKey);
-          const provenance = chunk.provenance ?? {
-            originClass: "untrusted" as const,
-            sessionKind: "unknown" as const,
-            observedAt: now,
-          };
-          this.db
-            .prepare(
-              `INSERT INTO ${MEMORY_INDEX_CHUNK_PROVENANCE_TABLE} (
-                 chunk_id, origin_class, session_kind, observed_at, supersedes_key
-               ) VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(chunk_id) DO UPDATE SET
-                 origin_class=excluded.origin_class,
-                 session_kind=excluded.session_kind,
-                 observed_at=excluded.observed_at,
-                 supersedes_key=excluded.supersedes_key`,
-            )
-            .run(
-              id,
-              provenance.originClass,
-              provenance.sessionKind,
-              provenance.observedAt,
-              provenance.supersedesKey ?? null,
-            );
-          if (vectorReady && embedding.length > 0) {
-            replaceMemoryVectorRow({
-              db: this.db,
-              tableName: VECTOR_TABLE,
-              id,
-              embedding,
+          if (current?.hash !== entry.hash) {
+            this.dirty = true;
+            log.debug("memory source changed while indexing; queued incremental retry", {
+              path: entry.path,
             });
-          }
-          if (this.fts.enabled && this.fts.available) {
-            this.db
-              .prepare(
-                `INSERT INTO ${FTS_TABLE} (text, id, path, source, model, start_line, end_line)\n` +
-                  ` VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              )
-              .run(chunk.text, id, entry.path, source, model, chunk.startLine, chunk.endLine);
+            return undefined;
           }
         }
-        upsertMemoryEmbeddingCache({
-          db: this.db,
-          enabled: this.cache.enabled,
-          provider: generation?.provider ?? null,
-          providerKey: generation?.providerKey ?? null,
-          entries: chunks.map((chunk, index) => ({
-            hash: chunk.hash,
-            embedding: embeddings[index] ?? [],
-          })),
-          now,
-          tableName: EMBEDDING_CACHE_TABLE,
-        });
-        this.upsertFileRecord(entry, source);
-        if (needsVectorRebuild) {
-          this.markVectorRebuildRequired();
-        }
+        const now = Date.now();
+        const model = generation?.provider?.model ?? "fts-only";
+        const needsVectorRebuild =
+          !vectorReady && embeddings.some((embedding) => embedding.length > 0);
+        return () => {
+          if (source === "sessions") {
+            const sessionId = expectDefined(entry.sessionId, "memory index session identity");
+            // Embedding and vector setup may await while a purge completes. Read the
+            // live owner, never the shadow index, immediately before publishing.
+            if (
+              hasMemorySessionTombstone(generation?.database ?? this.db, this.agentId, sessionId)
+            ) {
+              this.markFailedFullReindexRetry({ memory: false, sessions: true });
+              throw new Error(
+                "A session was forgotten while memory indexing was running; retry the memory index.",
+              );
+            }
+          }
+          this.clearIndexedFileData(entry.path, source);
+          const writeChunk = createMemoryChunkWriter(this.db, {
+            path: entry.path,
+            source,
+            model,
+            now,
+          });
+          for (const [i, chunk] of chunks.entries()) {
+            const embedding = embeddings[i] ?? [];
+            const id = hashText(
+              `${source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${model}`,
+            );
+            writeChunk(id, chunk, embedding);
+            if (vectorReady && embedding.length > 0) {
+              replaceMemoryVectorRow({
+                db: this.db,
+                tableName: VECTOR_TABLE,
+                id,
+                embedding,
+              });
+            }
+            if (this.fts.enabled && this.fts.available) {
+              this.db
+                .prepare(
+                  `INSERT INTO ${FTS_TABLE} (text, id, path, source, model, start_line, end_line)\n` +
+                    ` VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                )
+                .run(chunk.text, id, entry.path, source, model, chunk.startLine, chunk.endLine);
+            }
+          }
+          upsertMemoryEmbeddingCache({
+            db: this.db,
+            enabled: this.cache.enabled,
+            provider: generation?.provider ?? null,
+            providerKey: generation?.providerKey ?? null,
+            entries: chunks.map((chunk, index) => ({
+              hash: chunk.hash,
+              embedding: embeddings[index] ?? [],
+            })),
+            now,
+          });
+          this.upsertFileRecord(entry, source);
+          if (needsVectorRebuild) {
+            this.markVectorRebuildRequired();
+          }
+          return true;
+        };
       });
+      if (!published) {
+        return;
+      }
       this.database.vectorDegradedWriteWarningShown = logMemoryVectorDegradedWrite({
         vectorEnabled: this.vector.enabled,
         vectorReady,
@@ -980,8 +883,8 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       if ("kind" in entry && entry.kind === "multimodal") {
         const multimodalChunk = await buildMultimodalChunkForIndexing(entry);
         if (!multimodalChunk) {
-          this.clearIndexedFileData(entry.path, options.source);
-          this.deleteFileRecord(entry.path, options.source);
+          this.dirty = true;
+          await this.deleteIndexedFile(entry.path, options.source);
           return null;
         }
         const chunk: IndexedMemoryChunk = {
@@ -1010,10 +913,18 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
         (await retryTransientMemoryRead(
           () => fs.readFile(entry.absPath, "utf-8"),
           `read memory markdown for indexing ${entry.absPath}`,
-        ));
-      if (options.source === "memory") {
-        this.assertMemoryFileSnapshot(entry, hashText(content));
+        ).catch((err: unknown) => {
+          if (options.source !== "memory" || !isFileMissingError(err)) {
+            throw err;
+          }
+          return null;
+        }));
+      if (content === null) {
+        this.dirty = true;
+        return null;
       }
+      // Hash, chunk, and embed one immutable read; publication validates it again.
+      const snapshot = options.source === "memory" ? { ...entry, hash: hashText(content) } : entry;
       const normalizedEntryPath = entry.path.replaceAll("\\", "/");
       const perEntry =
         options.source === "memory" &&
@@ -1045,6 +956,12 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
           pathClassification.originClass,
         );
       }
+      // Fragments inherit one entry's metadata; parse each source span once,
+      // not once per fragment of a long line or oversized entry.
+      const recallMetadata = new Map<
+        string,
+        ReturnType<typeof extractCuratedEntryRecallMetadata>
+      >();
       const chunks = (
         generation?.kind === "semantic"
           ? enforceEmbeddingMaxInputTokens(
@@ -1053,22 +970,26 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
               EMBEDDING_BATCH_MAX_TOKENS,
             )
           : baseChunks
-      ).map((chunk): IndexedMemoryChunk =>
-        Object.assign(
-          chunk,
-          resolveChunkRecallMetadata({
+      ).map((chunk): IndexedMemoryChunk => {
+        const start = chunk.entryStartLine ?? chunk.startLine;
+        const end = chunk.entryEndLine ?? chunk.endLine;
+        const span = `${start}:${end}`;
+        let metadata = recallMetadata.get(span);
+        if (!metadata) {
+          metadata = extractCuratedEntryRecallMetadata({
             curatedRoot: pathClassification.curatedRoot,
             projectScopeEligible:
               options.source === "memory" && normalizedEntryPath.toUpperCase() !== "USER.MD",
-            sourceLines,
-            chunk,
-          }),
-        ),
-      );
+            sourceLines: sourceLines.slice(start - 1, end),
+          });
+          recallMetadata.set(span, metadata);
+        }
+        return Object.assign(chunk, metadata);
+      });
       if (options.source === "sessions" && "lineMap" in entry) {
         remapChunkLines(chunks, entry.lineMap);
       }
-      return { entry, source: options.source, chunks };
+      return { entry: snapshot, source: options.source, chunks };
     });
   }
 

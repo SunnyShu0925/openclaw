@@ -171,7 +171,6 @@ export function buildEmbeddedRunPayloads(params: {
     replyItems,
     hasSourceReplyPayload,
     deliveredSourceReplyViaMessageTool,
-    explicitFinalSourceReply,
     completedSourceReplyViaMessageTool,
   } = buildSourceReplyPayloadState({
     payloads: params.messagingToolSourceReplyPayloads,
@@ -249,11 +248,12 @@ export function buildEmbeddedRunPayloads(params: {
     isTimeoutErrorMessage(rawErrorMessage) &&
     errorText === SYNTHESIZED_TIMEOUT_ERROR_TEXT;
   if (errorText && !deferAssistantTimeoutError) {
-    replyItems.push({
+    const errorPayload = {
       text: errorText,
       isError: true,
       ...(codexLoginRecovery ? { presentation: codexLoginRecovery.presentation } : {}),
-    });
+    };
+    replyItems.push(setReplyPayloadMetadata(errorPayload, { terminalProviderError: true }));
   }
   const reasoningText =
     suppressAssistantArtifacts || runAborted || lastAssistantNeedsErrorSurface
@@ -430,7 +430,7 @@ export function buildEmbeddedRunPayloads(params: {
       if (
         item.isError === true &&
         params.sourceReplyDeliveryMode === "message_tool_only" &&
-        explicitFinalSourceReply === false
+        !suppressFailureArtifacts
       ) {
         markReplyPayloadForSourceSuppressionDelivery(payload);
       }

@@ -1,10 +1,12 @@
-import crypto from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { createOneTimeTicketStore } from "../../shared/one-time-ticket-store.js";
+import { rejectWebSocketUpgrade } from "../../shared/websocket-upgrade-reject.js";
 import { startWebSocketKeepalive } from "../websocket-keepalive.js";
 import { connectRfbAttachment, type DesktopRfbAttachment } from "./attachment.js";
+import type { DesktopObserveRequester } from "./observe-requester.js";
 import {
   preauthenticateRfb,
   RfbPreauthBuffer,
@@ -17,7 +19,6 @@ import type { DesktopSessionRegistry } from "./session-registry.js";
 
 export const DESKTOP_OBSERVE_PATH = "/desktop/observe";
 const TOKEN_TTL_MS = 60_000;
-const TOKEN_PATTERN = /^[a-f0-9]{48}$/u;
 const MAX_PAYLOAD_BYTES = 1024 * 1024;
 const PAUSE_BUFFERED_BYTES = 4 * 1024 * 1024;
 const RESUME_CHECK_MS = 25;
@@ -29,6 +30,7 @@ type DesktopCloseTrigger =
   | "browser-error"
   | "stream-close"
   | "stream-error"
+  | "authority-revoked"
   | "invalid-view-only-stream"
   | "authentication-failed";
 
@@ -38,29 +40,11 @@ type DesktopObserverTokenEntry = {
   control: boolean;
   attachment: DesktopRfbAttachment;
   preauth?: RfbPreauthDescriptor;
-  expiresAt: number;
+  requester?: DesktopObserveRequester;
 };
 
-const observerTokens = new Map<string, DesktopObserverTokenEntry>();
-const observerTokenExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const observerTokens = createOneTimeTicketStore<DesktopObserverTokenEntry>({ ttlMs: TOKEN_TTL_MS });
 const desktopObserverWss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
-
-function deleteDesktopObserverToken(token: string): void {
-  observerTokens.delete(token);
-  const expiryTimer = observerTokenExpiryTimers.get(token);
-  if (expiryTimer) {
-    clearTimeout(expiryTimer);
-    observerTokenExpiryTimers.delete(token);
-  }
-}
-
-function pruneDesktopObserverTokens(nowMs: number): void {
-  for (const [token, entry] of observerTokens) {
-    if (entry.expiresAt <= nowMs) {
-      deleteDesktopObserverToken(token);
-    }
-  }
-}
 
 export function mintDesktopObserverToken(params: {
   sourceKey: string;
@@ -68,50 +52,22 @@ export function mintDesktopObserverToken(params: {
   control: boolean;
   attachment: DesktopRfbAttachment;
   preauth?: RfbPreauthDescriptor;
+  requester?: DesktopObserveRequester;
   nowMs?: number;
 }): { token: string; expiresAtMs: number } {
-  const nowMs = params.nowMs ?? Date.now();
-  pruneDesktopObserverTokens(nowMs);
-  const token = crypto.randomBytes(24).toString("hex");
-  const expiresAtMs = nowMs + TOKEN_TTL_MS;
-  const entry: DesktopObserverTokenEntry = {
-    sourceKey: params.sourceKey,
-    ownerEpoch: params.ownerEpoch,
-    control: params.control,
-    attachment: params.attachment,
-    ...(params.preauth ? { preauth: params.preauth } : {}),
-    expiresAt: expiresAtMs,
-  };
-  observerTokens.set(token, entry);
-  const expiryTimer = setTimeout(() => {
-    observerTokens.delete(token);
-    observerTokenExpiryTimers.delete(token);
-  }, TOKEN_TTL_MS);
-  expiryTimer.unref?.();
-  observerTokenExpiryTimers.set(token, expiryTimer);
-  return { token, expiresAtMs };
+  const { nowMs, ...payload } = params;
+  return observerTokens.mint(payload, {
+    nowMs,
+    revokeSignal:
+      params.requester?.isCurrent() === false ? AbortSignal.abort() : params.requester?.signal,
+  });
 }
 
 function consumeDesktopObserverToken(
   token: string,
   nowMs = Date.now(),
 ): DesktopObserverTokenEntry | undefined {
-  pruneDesktopObserverTokens(nowMs);
-  const normalized = token.trim();
-  if (!TOKEN_PATTERN.test(normalized)) {
-    return undefined;
-  }
-  const entry = observerTokens.get(normalized);
-  if (!entry) {
-    return undefined;
-  }
-  deleteDesktopObserverToken(normalized);
-  return entry.expiresAt > nowMs ? entry : undefined;
-}
-
-function writeUnauthorized(socket: Duplex): void {
-  socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-  socket.destroy();
+  return observerTokens.consume(token, nowMs);
 }
 
 function rawDataBuffer(data: RawData): Buffer {
@@ -200,13 +156,15 @@ export function handleDesktopObserveUpgrade(
   }
   const token = resource.searchParams.get("token") ?? "";
   const entry = consumeDesktopObserverToken(token);
-  if (!entry) {
-    writeUnauthorized(socket);
+  if (!entry || entry.requester?.isCurrent() === false) {
+    rejectWebSocketUpgrade(socket, { status: 401 });
     return true;
   }
   desktopObserverWss.handleUpgrade(req, socket, head, (ws) => {
     const claimedStream =
-      entry.attachment.kind === "stream" ? deps.registry.claimStream(entry.attachment) : undefined;
+      entry.attachment.kind === "stream"
+        ? deps.registry.claimStream(entry.sourceKey, entry.attachment)
+        : undefined;
     if (entry.attachment.kind === "stream" && !claimedStream) {
       ws.close(1013, "desktop stream unavailable");
       return;
@@ -214,6 +172,7 @@ export function handleDesktopObserveUpgrade(
     // View-only is enforced here at the RFB message boundary; the UI setting is only UX.
     const observer = deps.registry.attachObserver(entry.sourceKey, {
       control: entry.control,
+      operatorName: entry.requester?.operatorName,
       ownerEpoch: entry.ownerEpoch,
       // Retire the stream and keepalive before the close handshake can wait on a paused peer.
       close: (code, reason) => closeBoth(code, reason, "owner-close"),
@@ -234,6 +193,8 @@ export function handleDesktopObserveUpgrade(
     let negotiating = Boolean(entry.preauth);
     let resumeTimer: ReturnType<typeof setInterval> | undefined;
     const stopKeepalive = startWebSocketKeepalive(ws);
+    const resumeWebSocket = () => ws.resume();
+    desktopSocket.on("drain", resumeWebSocket);
 
     const closeBoth = (code: number, reason: string, trigger: DesktopCloseTrigger) => {
       if (closeCause) {
@@ -241,15 +202,20 @@ export function handleDesktopObserveUpgrade(
       }
       // Keep the first cleanup decision when its destroyed stream emits a later close.
       closeCause = { trigger, code };
+      entry.requester?.signal?.removeEventListener("abort", onRequesterGone);
       stopKeepalive();
       clearInterval(resumeTimer);
       resumeTimer = undefined;
       observer.release();
+      desktopSocket.off("drain", resumeWebSocket);
+      // A blocked desktop cannot drain, but the browser must still acknowledge close.
+      ws.resume();
       desktopSocket.destroy();
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close(code, reason);
       }
     };
+    const onRequesterGone = () => closeBoth(4006, "authority_revoked", "authority-revoked");
 
     const startSplice = (browserRemainder: Buffer = Buffer.alloc(0), preauthenticated = false) => {
       const clientMessageFilter = entry.control
@@ -258,17 +224,18 @@ export function handleDesktopObserveUpgrade(
             startPhase: preauthenticated ? "clientInit" : "version",
           });
       const forwardClientChunk = (chunk: Buffer) => {
-        if (!clientMessageFilter) {
-          desktopSocket.write(chunk);
+        if (entry.requester?.isCurrent() === false) {
+          onRequesterGone();
           return;
         }
-        const result = clientMessageFilter.filter(chunk);
-        if ("error" in result) {
+        const result = clientMessageFilter?.filter(chunk);
+        if (result && "error" in result) {
           closeBoth(1008, "invalid view-only RFB stream", "invalid-view-only-stream");
           return;
         }
-        if (result.forward.length > 0) {
-          desktopSocket.write(result.forward);
+        const forward = result?.forward ?? chunk;
+        if (forward.length > 0 && !desktopSocket.write(forward)) {
+          ws.pause();
         }
       };
       ws.on("message", (data, isBinary) => {
@@ -279,6 +246,10 @@ export function handleDesktopObserveUpgrade(
       });
       desktopSocket.on("data", (chunk) => {
         if (closeCause || ws.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        if (entry.requester?.isCurrent() === false) {
+          onRequesterGone();
           return;
         }
         ws.send(chunk, { binary: true });
@@ -321,6 +292,12 @@ export function handleDesktopObserveUpgrade(
         "stream-error",
       ),
     );
+
+    entry.requester?.signal?.addEventListener("abort", onRequesterGone, { once: true });
+    if (entry.requester?.signal?.aborted || entry.requester?.isCurrent() === false) {
+      onRequesterGone();
+      return;
+    }
 
     if (!entry.preauth) {
       startSplice();

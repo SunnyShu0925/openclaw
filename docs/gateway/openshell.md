@@ -437,7 +437,7 @@ settings to this backend.
 Custom images used with the OpenClaw filesystem bridge must provide:
 
 - `/bin/sh`
-- `sleep` for the persistent sandbox main process on current OpenShell releases
+- `sleep` for the persistent sandbox main process, when the OpenShell CLI supports detached sandbox creation (`sandbox create --detach`)
 - `python3` for pinned remote filesystem reads and mutations
 - GNU-compatible `stat` (`-c`), `readlink` (`-f`), and `find`
 - standard `mkdir`, `mv`, `rm`, and `rmdir` utilities
@@ -536,6 +536,15 @@ openclaw logs --follow
 - **An image or attachment cannot be sent:** Use a path under the configured
   `remoteWorkspaceDir`, such as `/sandbox/report.png`, rather than assuming
   every backend uses Docker's `/workspace` directory.
+- **Mirror synchronization reports recovery paths:** OpenClaw kept a host shadow
+  outside the workspace because its move or restoration could not finish. The
+  error identifies the preserved path and the workspace path and retains the
+  original failure. Compare both paths and recover the needed files before
+  deleting either copy. A partial move can leave different files in each path;
+  OpenClaw preserves remaining workspace entries instead of overwriting them
+  with an incomplete or unverified backup. If restoration completed and only
+  cleanup of the preservation directory failed, the error confirms the restored
+  workspace path and identifies the leftover directory instead.
 - **Recreate or prune cannot delete a sandbox:** Restore access to the original
   OpenShell gateway and workspace, confirm the sandbox still exists with
   `openshell --workspace <workspace-name> sandbox get <sandbox-name>`, and retry
@@ -562,5 +571,5 @@ openclaw logs --follow
 
 - [Sandboxing](/gateway/sandboxing) - modes, scopes, and backend comparison
 - [Sandbox vs Tool Policy vs Elevated](/gateway/sandbox-vs-tool-policy-vs-elevated) - debugging blocked tools
-- [Multi-Agent Sandbox and Tools](/tools/multi-agent-sandbox-tools) - per-agent overrides
+- [Multi-agent sandbox and tools](/tools/multi-agent-sandbox-tools) - per-agent overrides
 - [Sandbox CLI](/cli/sandbox) - `openclaw sandbox` commands

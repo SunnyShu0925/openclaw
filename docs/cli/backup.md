@@ -46,7 +46,10 @@ Archive `create`, `verify`, and `restore`, plus SQLite `create`, `list`, `verify
 - Default output is a timestamped `.tar.gz` archive in the current working directory. Timestamped filenames use your machine's local timezone and include the UTC offset. If the current working directory is inside a backed-up source tree, OpenClaw falls back to your home directory for the default archive location.
 - Existing archive files are never overwritten. Output paths inside the source state/workspace trees are rejected to avoid self-inclusion.
 - `openclaw backup verify <archive>` checks that the archive contains exactly one root manifest, rejects traversal-style archive paths, unsafe symbolic links, and SQLite sidecars, confirms every manifest-declared payload exists, validates every SQLite snapshot's file shape, and runs full integrity and role checks on canonical OpenClaw databases. Dedicated plugin schemas remain opaque because they may require owner-defined SQLite capabilities. `openclaw backup create --verify` runs that validation immediately after writing the archive.
-- `openclaw backup create --only-config` backs up just the active JSON config file.
+- Full archives include the active config and its required `$include` files, including dependencies outside the state directory. They preserve authored bytes, comments, and environment placeholders; resolved secrets are not written into the config copy. These additional files may contain sensitive data, so protect the archive accordingly.
+- Full archives refuse unresolved include graphs, files that change during config capture, and include aliases that cannot be represented safely. Fix missing or unreadable files, use regular-file include paths, or pause concurrent edits and retry. `--no-include-workspace` still includes required config dependencies, even within an excluded workspace.
+- `openclaw backup create --only-config` backs up just the active JSON config file, **not** its `$include` dependencies. It is a root-file export, not a complete modular-config recovery point.
+- Config files are pinned before database capture. SQLite snapshots retain their existing per-database consistency and sanitization; the archive is not one atomic snapshot across config and all databases. Later writes remain live and may not appear in the archive.
 
 ## Restore a full archive
 
@@ -84,6 +87,21 @@ paths. Restore custom agent roots to the locations configured by `agentDir`, or
 update those settings to their new locations before restarting. See
 [Restore a full archive](/install/backups#restore-a-full-archive) for the full
 disaster-recovery sequence.
+
+## Private update captures
+
+The managed `<stateDir>.update-captures/` root is excluded from ordinary archives,
+SQLite snapshots, Git backups, and support exports. Selecting a containing or
+nested workspace does not override this rule. Selecting a capture file as config
+or as a database backup source refuses the backup. Other states' captures are
+recognized by the exact sibling layout: `<owner>/` beside
+`<owner>.update-captures/`, with an existing owner directory. Canonical path
+aliases receive the same protection. Unrelated similarly named workspace
+directories remain included; a suffix alone does not establish ownership.
+
+Keep captures at their managed location alongside their owner. Moved, renamed,
+or orphaned captures from another state cannot be identified by this rule.
+This exclusion does not create captures or change ordinary backup sanitization.
 
 ## SQLite snapshots
 
@@ -214,6 +232,11 @@ openclaw backup git verify --repository ~/Backups/openclaw-git --ref <commit> --
 openclaw backup git verify --repository ~/Backups/openclaw-git --ref <commit> --agent main
 ```
 
+Git history output must fit within a 16 MiB read. If a log request reports an
+output-limit error, retry with a smaller `--limit`. An oversized commit subject
+can exceed the limit even with `--limit 1`; inspect that history directly with
+Git. OpenClaw reports the failure without returning partial history entries.
+
 Verification restores the selected snapshot into private scratch space, checks each table's row count and SHA-256, runs `PRAGMA integrity_check` and `PRAGMA foreign_key_check`, and removes the scratch copy. Restore writes only to a fresh target and refuses existing `-wal`, `-shm`, and `-journal` sidecars:
 
 ```bash
@@ -221,6 +244,11 @@ openclaw backup git restore --repository ~/Backups/openclaw-git --ref <commit> -
 ```
 
 Restore rebuilds content-backed FTS5 indexes after loading their content tables. It deliberately omits the derived `session_transcript_index_state` projection so Gateway startup reconciliation rebuilds transcript search. `vec0` virtual tables are not materialized because the extension is unavailable in the restore process; memory indexing recreates them and schedules a full reindex.
+
+Git backup creation, restore, and verification stream table data instead of
+retaining complete table dumps in memory. Restores still require space for the
+materialized Git files and the private SQLite staging copy; verification does
+not write a second set of table dumps.
 
 ## Schedule backups
 
@@ -317,7 +345,7 @@ temporary files, and downloaded runtimes rather than authoritative user state;
 reinstall or update the corresponding runtime or plugin after restore.
 Effectively activated, loadable plugins can declare additional durable or
 regenerable state- or agent-relative roots through
-[`backupResources`](/plugins/manifest#backupresources-reference). Disabled or
+[`backupResources`](/plugins/manifest/surfaces#backupresources-reference). Disabled or
 unloadable plugins cannot exclude data. Explicit config, credentials, workspace,
 agent, and plugin-included paths override exclusions, and any excluded parent
 remains traversable to reach those protected descendants. Names such as `tmp`

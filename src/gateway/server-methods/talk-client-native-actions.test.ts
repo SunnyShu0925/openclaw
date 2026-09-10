@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import { extractText } from "../../../ui/src/lib/chat/message-extract.ts";
+import * as admission from "../../agents/admitted-run-context.js";
 import {
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
   ACTIVE_EMBEDDED_RUNS,
@@ -55,7 +56,14 @@ import {
   upstream,
   withParkedNativeTask,
   withNativePlugin,
+  withRegisteredNativeEmbeddedRun,
 } from "./talk-client-native-control.test-support.js";
+
+// Observe the real admission function before the consult loader captures it for later tests.
+vi.mock("../../agents/admitted-run-context.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents/admitted-run-context.js")>();
+  return { ...actual, prepareAgentRunAdmission: vi.fn(actual.prepareAgentRunAdmission) };
+});
 
 function rawTranscriptRows() {
   return readTranscriptEventRows(openOpenClawAgentDatabase({ agentId: AGENT_ID }), SESSION_ID);
@@ -75,6 +83,41 @@ function nativeBackgroundItems(session: {
   )?.[1];
   expect(records).toBeDefined();
   return JSON.parse(records!);
+}
+
+type NativeCallSession = {
+  instructions: string;
+  initial_items?: unknown;
+  delegation?: Record<string, unknown>;
+};
+
+function isNativeCallSession(value: unknown): value is NativeCallSession {
+  return (
+    isRecord(value) &&
+    typeof value.instructions === "string" &&
+    (value.delegation === undefined || isRecord(value.delegation))
+  );
+}
+
+async function nativeCallSession(): Promise<NativeCallSession> {
+  const init = upstream.fetch.mock.calls.at(-1)?.[1];
+  if (!init) {
+    throw new Error("Missing native call request");
+  }
+  const form = await new Request("https://example.test", {
+    method: "POST",
+    headers: init.headers,
+    body: init.body,
+  }).formData();
+  const sessionJson = form.get("session");
+  if (typeof sessionJson !== "string") {
+    throw new Error("Missing native call session");
+  }
+  const session: unknown = JSON.parse(sessionJson);
+  if (!isNativeCallSession(session)) {
+    throw new Error("Invalid native call session");
+  }
+  return session;
 }
 
 function spokenMessages(frames: string[]): string[] {
@@ -155,29 +198,38 @@ describe("native Talk action ownership through public plugin registration", () =
         }
       });
       let modelRun: Promise<void> | undefined;
-      upstream.runEmbeddedAgent.mockImplementationOnce(async (params) => {
-        const { agentId, sessionId, sessionKey, storePath } = params.sessionTarget ?? {};
-        if (!agentId || !sessionId || !sessionKey || !storePath || !params.preparedRunAdmission) {
-          throw new Error("Missing native target/admission");
-        }
-        await params.preparedRunAdmission.admit("embedded", "native-history-backend");
-        const recorder = params.userTurnTranscriptRecorder;
-        const manager = guardSessionManager(
-          SessionManager.open({ agentId, sessionId, sessionKey, storePath }),
-          {
-            agentId: AGENT_ID,
-            sessionKey: SESSION_KEY,
-            runId: params.runId,
-            preparedUserTurnMessage: await recorder?.resolveMessage(),
-            preparedUserTurnTranscriptRecorder: recorder,
-          },
-        );
-        const { session } = await createTestSession({ sessionManager: manager });
-        modelRun = session.prompt(params.prompt);
-        await modelRun;
-        await recorder?.waitForRuntimePersistence();
-        return { payloads: [{ text: "Both labels are preserved." }], meta: { durationMs: 0 } };
-      });
+      upstream.runEmbeddedAgent.mockImplementationOnce(
+        async (params) =>
+          await withRegisteredNativeEmbeddedRun(params, async () => {
+            const { agentId, sessionId, sessionKey, storePath } = params.sessionTarget ?? {};
+            if (
+              !agentId ||
+              !sessionId ||
+              !sessionKey ||
+              !storePath ||
+              !params.preparedRunAdmission
+            ) {
+              throw new Error("Missing native target/admission");
+            }
+            await params.preparedRunAdmission.admit("embedded", "native-history-backend");
+            const recorder = params.userTurnTranscriptRecorder;
+            const manager = guardSessionManager(
+              SessionManager.open({ agentId, sessionId, sessionKey, storePath }),
+              {
+                agentId: AGENT_ID,
+                sessionKey: SESSION_KEY,
+                runId: params.runId,
+                preparedUserTurnMessage: await recorder?.resolveMessage(),
+                preparedUserTurnTranscriptRecorder: recorder,
+              },
+            );
+            const { session } = await createTestSession({ sessionManager: manager });
+            modelRun = session.prompt(params.prompt);
+            await modelRun;
+            await recorder?.waitForRuntimePersistence();
+            return { payloads: [{ text: "Both labels are preserved." }], meta: { durationMs: 0 } };
+          }),
+      );
       try {
         const { socket, result } = await connectNativeSession(fixture);
         socket.serverEvent(nativeTranscript(spoken));
@@ -268,12 +320,10 @@ describe("native Talk action ownership through public plugin registration", () =
           closeOpenClawAgentDatabaseByPath(resolveOpenClawAgentSqlitePath({ agentId: AGENT_ID })),
         ).toBe(true);
         await connectNativeSession(fixture);
-        const body = upstream.fetch.mock.calls.at(-1)?.[1]?.body;
-        expect(typeof body).toBe("string");
-        const request = JSON.parse(body as string);
-        expect.soft(request.session.instructions).not.toContain(delegated);
-        expect(nativeBackgroundItems(request.session)).toEqual(retained);
-        expect(request.session.delegation.ack_filler).toBe(false);
+        const session = await nativeCallSession();
+        expect.soft(session.instructions).not.toContain(delegated);
+        expect(nativeBackgroundItems(session)).toEqual(retained);
+        expect(session.delegation?.ack_filler).toBe(false);
         expect(rawTranscriptRows()).toEqual(rawCompleted);
       } finally {
         providerStream.push({ type: "done", reason: "stop", message: answer });
@@ -310,10 +360,7 @@ describe("native Talk action ownership through public plugin registration", () =
       const context = readSessionPreviewItemsFromTranscript(scope, 16, 800, "model-context");
       expect.soft(context.map((item) => item.text)).toEqual(["ordinary", "context only"]);
       await connectNativeSession(fixture);
-      const body = upstream.fetch.mock.calls.at(-1)?.[1]?.body;
-      expect(typeof body).toBe("string");
-      const request = JSON.parse(body as string);
-      expect(nativeBackgroundItems(request.session)).toEqual([
+      expect(nativeBackgroundItems(await nativeCallSession())).toEqual([
         { role: "user", text: "ordinary" },
         { role: "user", text: "context only" },
       ]);
@@ -330,8 +377,7 @@ describe("native Talk action ownership through public plugin registration", () =
       ).toEqual(["reset-kept"]);
       expect(readSessionPreviewItemsFromTranscript(scope, 16, 800)).toEqual([]);
       await connectNativeSession(fixture);
-      const resetRequest = JSON.parse(upstream.fetch.mock.calls.at(-1)![1]!.body as string);
-      expect(nativeBackgroundItems(resetRequest.session)).toEqual([
+      expect(nativeBackgroundItems(await nativeCallSession())).toEqual([
         { role: "user", text: "reset-kept" },
       ]);
       expect(rawTranscriptRows()).toEqual(resetRaw);
@@ -516,7 +562,10 @@ describe("native Talk action ownership through public plugin registration", () =
     upstream.runEmbeddedAgent.mockImplementationOnce(async (params) => {
       signal = params.abortSignal;
       await release.promise;
-      return { payloads: [{ text: "Original task completed normally." }], meta: { durationMs: 0 } };
+      return await withRegisteredNativeEmbeddedRun(params, () => ({
+        payloads: [{ text: "Original task completed normally." }],
+        meta: { durationMs: 0 },
+      }));
     });
     await withNativePlugin(async (fixture) => {
       const { socket } = await connectNativeSession(fixture);
@@ -563,6 +612,42 @@ describe("native Talk action ownership through public plugin registration", () =
         expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
       },
     );
+  });
+
+  it("preserves the connection source when reconnect controls precede a new consult", async () => {
+    const prepareAdmission = vi.mocked(admission.prepareAgentRunAdmission);
+    prepareAdmission.mockClear();
+    await withParkedNativeTask(async ({ create, offer, result, queueMessage, settleBackend }) => {
+      const replacement = await connectNativeSession(
+        { create, offer },
+        true,
+        requireString(result, "voiceSessionId"),
+      );
+      replacement.socket.serverEvent(
+        nativeDelegation("replacement-control", "use the release branch instead"),
+      );
+      await vi.waitFor(() => expect(queueMessage).toHaveBeenCalledOnce());
+      await settleBackend();
+      replacement.socket.serverEvent(nativeDelegation("replacement-task", "Start a fresh task."));
+      await vi.waitFor(() =>
+        expect(spokenMessages(replacement.socket.sent)).toContain("Subsequent task completed."),
+      );
+      expect(upstream.runEmbeddedAgent).toHaveBeenCalledTimes(2);
+      expect(prepareAdmission.mock.calls.map(([params]) => params.facts.ingress)).toEqual([
+        {
+          kind: "gateway-client",
+          boundary: "talk-agent-consult",
+          state: "present",
+          rawSourceRef: CONNECTION_ID,
+        },
+        {
+          kind: "gateway-client",
+          boundary: "talk-agent-consult",
+          state: "present",
+          rawSourceRef: CONNECTION_ID,
+        },
+      ]);
+    });
   });
 
   it.each(activeControls)(
