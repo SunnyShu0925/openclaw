@@ -228,6 +228,12 @@ export async function persistQueuedCronRunReservations(params: {
   candidates: readonly CronJob[];
   immediateJobIds?: ReadonlySet<string>;
   reservedAtMs: number;
+  scheduleMode?: "advance" | "preserve";
+  manualRun?: {
+    runId?: string;
+    terminalTracker?: { emitted: boolean };
+    scheduleOwnershipAtMs?: number;
+  };
 }): Promise<Array<{ job: CronJob; runReceipt: CronRunReceiptHandle }>> {
   // Defense in depth over admission's skipCronJobsWithoutOwners: a job that
   // loses its resolvable owner between admission and reservation (for example a
@@ -239,6 +245,10 @@ export async function persistQueuedCronRunReservations(params: {
     params.state,
     [...params.candidates],
     params.reservedAtMs,
+    {
+      ...(params.scheduleMode ? { scheduleMode: params.scheduleMode } : {}),
+      ...(params.manualRun ? { manualRun: params.manualRun } : {}),
+    },
   );
   const pendingJobs = new Map(candidates.map((job) => [job.id, structuredClone(job)]));
   const preparedClaims = new Map(
