@@ -42,6 +42,10 @@ type SourceJournalMode = "empty" | "rollback" | "unknown" | "wal";
 export type PreparedSqliteReadOnlyLocation = {
   cleanup: () => boolean;
   location: string;
+  // The directory cleanup actually removes; falls back to dirname(location) for
+  // owners constructed without an explicit owned root so diagnostics report the
+  // retained path instead of a child the recursive removal may have already deleted.
+  cleanupRoot?: string;
 };
 
 class SqliteSourceChangedError extends Error {}
@@ -326,6 +330,7 @@ export function adoptPreparedLocation(
   let active = true;
   return {
     location,
+    cleanupRoot: tempDir,
     cleanup: () => {
       if (!active) {
         return true;
