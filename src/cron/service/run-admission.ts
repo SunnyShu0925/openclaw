@@ -17,6 +17,7 @@ import { enrollForeignReceipt } from "./foreign-receipt-monitor.js";
 import { recomputeJobNextRunAtMs } from "./jobs-scheduling.js";
 import { locked } from "./locked.js";
 import { runWithCronAdmission } from "./run-admission-capacity.js";
+import { skipCronJobsWithoutOwners } from "./run-owner.js";
 import {
   activateServiceCronRunReceiptInDatabase,
   claimServiceCronRunReceiptInDatabase,
@@ -228,7 +229,18 @@ export async function persistQueuedCronRunReservations(params: {
   immediateJobIds?: ReadonlySet<string>;
   reservedAtMs: number;
 }): Promise<Array<{ job: CronJob; runReceipt: CronRunReceiptHandle }>> {
-  const pendingJobs = new Map(params.candidates.map((job) => [job.id, structuredClone(job)]));
+  // Defense in depth over admission's skipCronJobsWithoutOwners: a job that
+  // loses its resolvable owner between admission and reservation (for example a
+  // dynamic default-agent change) must not throw inside prepareServiceCronRunReceiptClaim
+  // and abort the whole batch. Filter it here with the canonical ownerless result
+  // so sibling jobs are still reserved. Idempotent with admission's prior call:
+  // a job already marked skipped is skipped again by commitCronRuntimeRows.
+  const candidates = skipCronJobsWithoutOwners(
+    params.state,
+    [...params.candidates],
+    params.reservedAtMs,
+  );
+  const pendingJobs = new Map(candidates.map((job) => [job.id, structuredClone(job)]));
   const preparedClaims = new Map(
     [...pendingJobs].map(([jobId, job]) => [
       jobId,
