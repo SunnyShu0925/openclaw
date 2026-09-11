@@ -19,10 +19,12 @@ import {
 } from "../../../gateway/server-methods/chat.abort.test-helpers.js";
 import { sessionMutationHandlers } from "../../../gateway/server-methods/sessions-mutations.js";
 import { loadSessionsRuntimeModule } from "../../../gateway/server-methods/sessions-shared.js";
+import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import {
   registerAgentRunContext,
   clearAgentRunContext,
 } from "../../../infra/agent-run-registry.js";
+import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import * as gatewayWorkAdmission from "../../../process/gateway-work-admission.js";
 import * as sessionLifecycle from "../../../sessions/session-lifecycle-admission.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
@@ -227,9 +229,6 @@ it.each(
     const recoveryRuntime: GatewayRecoveryRuntime = {
       dispatchAgent: dispatchRecovery as GatewayRecoveryRuntime["dispatchAgent"],
       waitForAgent: async () => await new Promise<never>(() => {}),
-      abortAgent: async () => {
-        throw new Error("unexpected recovery abort");
-      },
       sendRecoveryNotice: async () => {
         throw new Error("unexpected recovery notice");
       },
@@ -238,6 +237,7 @@ it.each(
       recoveryRuntime,
       resolveGatewayContext: () => gatewayContext as never,
     };
+    bindGatewayContextResolver(recoveryRuntime, gatewayContext.resolveGatewayContext);
     // Await the scheduled empty sweep before adding live rows. Process-wide
     // timer counts also include independently owned worker idle timers.
     const startupSweep = createDeferred();
@@ -312,8 +312,8 @@ it.each(
         const released = await interruptAdmissions(params);
         if (params.scope === storePath && Array.from(params.identities).includes(aKey)) {
           expect(released).toBe(true);
-          // Recovery/reset runs after the real drain but before cancellation
-          // effects, without holding an admission across its bounded deadline.
+          // Recovery/reset runs after the real drain, before the kill owner finishes,
+          // without holding an admission across its bounded deadline.
           entered.resolve();
           await resume.promise;
         }
@@ -368,7 +368,12 @@ it.each(
         }),
       ]);
       expect(sessionLifecycle.isSessionWorkAdmissionActive(storePath, [aKey])).toBe(false);
-      expect(a.killIntent).toBeUndefined();
+      expect(a.killIntent).toMatchObject({
+        reason: "killed",
+        sessionId: "a-session",
+        sessionLifecycleRevision: "a-revision",
+        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      });
       expect(b.killIntent).toBeUndefined();
       activateSubagentRegistry(gatewayContext.resolveGatewayContext);
       await testing.sweepOnceForTests();

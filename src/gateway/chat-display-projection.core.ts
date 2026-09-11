@@ -1,8 +1,9 @@
+import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
+import { GATEWAY_ASSISTANT_ERROR_FALLBACK_TEXT } from "@openclaw/gateway-protocol/gateway-error-details";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty as normalizeErrorSignal } from "@openclaw/normalization-core/string-coerce";
 import { renderAssistantRequestFailureCopy } from "../agents/failover/assistant-request-failure-copy.js";
 import { isContextOverflowError } from "../agents/failover/classify.js";
-import { STREAM_ERROR_FALLBACK_TEXT } from "../agents/stream-message-shared.js";
 import { readTranscriptSenderIdentity } from "../chat/sender-identity.js";
 import { classifyGatewayStorageFailure } from "../infra/sqlite-error-diagnostics.js";
 import {
@@ -17,7 +18,9 @@ import {
   extractAssistantTextForSilentCheck,
   hasAssistantDisplayableNonTextContent,
   hasAssistantNonTextContent,
+  hasTranscriptMediaFacts,
   isAssistantTextContentType,
+  isAssistantInternalReasoningContentType,
 } from "./chat-display-projection.helpers.js";
 import {
   filterVisibleProjectedHistoryMessages,
@@ -115,7 +118,6 @@ type ChatDisplayProjectionResult = {
   assistantErrorRecoveryObserved: boolean;
 };
 
-const GATEWAY_ASSISTANT_ERROR_FALLBACK_TEXT = "The agent run failed before producing a reply.";
 const GATEWAY_ASSISTANT_CONTEXT_OVERFLOW_FALLBACK_TEXT =
   "Context overflow: this conversation is too large for the model. Try /compact, use /new to start a fresh session, or retry the command with a tighter output limit.";
 
@@ -140,7 +142,10 @@ function isContextOverflowAssistantError(message: Record<string, unknown>): bool
 function getAssistantErrorFallbackText(message: Record<string, unknown>): string {
   return (
     formatProviderRefusalText(message) ??
-    renderAssistantRequestFailureCopy({ storageFailure: classifyGatewayStorageFailure(message) }) ??
+    renderAssistantRequestFailureCopy({
+      storageFailure: classifyGatewayStorageFailure(message),
+      code: typeof message.errorCode === "string" ? message.errorCode : undefined,
+    }) ??
     (isContextOverflowAssistantError(message)
       ? GATEWAY_ASSISTANT_CONTEXT_OVERFLOW_FALLBACK_TEXT
       : GATEWAY_ASSISTANT_ERROR_FALLBACK_TEXT)
@@ -151,7 +156,7 @@ function sanitizeAssistantErrorDisplayMessage(
   message: Record<string, unknown>,
 ): Record<string, unknown> {
   const { content, ...envelope } = message;
-  const next = sanitizeChatHistoryMessage(envelope, Number.MAX_SAFE_INTEGER).message as Record<
+  let next = sanitizeChatHistoryMessage(envelope, Number.MAX_SAFE_INTEGER).message as Record<
     string,
     unknown
   >;
@@ -165,11 +170,7 @@ function sanitizeAssistantErrorDisplayMessage(
         return [sanitized];
       }
       const entry = sanitized as { type?: unknown; text?: unknown };
-      if (
-        entry.type === "thinking" ||
-        entry.type === "reasoning" ||
-        entry.type === "redacted_thinking"
-      ) {
+      if (isAssistantInternalReasoningContentType(entry.type)) {
         return [];
       }
       if (!firstTextBlock || !isAssistantTextContentType(entry.type)) {
@@ -191,6 +192,61 @@ function sanitizeAssistantErrorDisplayMessage(
   if (typeof next.text === "string" && next.text.startsWith(STREAM_ERROR_FALLBACK_TEXT)) {
     next.text = next.text.slice(STREAM_ERROR_FALLBACK_TEXT.length);
   }
+  const terminalCopy = renderAssistantRequestFailureCopy({
+    code: typeof message.errorCode === "string" ? message.errorCode : undefined,
+  });
+  if (terminalCopy) {
+    // Apply the normal visibility rules before adding host-owned failure copy.
+    // Put it first in surviving text so phase filtering and display caps retain it.
+    // SAFETY: Sanitizing a record only clones/filters its fields; its envelope remains a record.
+    next = sanitizeChatHistoryMessage(next, Number.MAX_SAFE_INTEGER).message as Record<
+      string,
+      unknown
+    >;
+    if (shouldDropAssistantHistoryMessage(next)) {
+      next.content = [];
+      delete next.text;
+      delete next.phase;
+    }
+    const displayContent: unknown[] = Array.isArray(next.content)
+      ? [...next.content]
+      : typeof next.content === "string"
+        ? [{ type: "text", text: next.content }]
+        : [];
+    const prependText = (text: string) => {
+      const alreadyPresent = displayContent.some((block) => {
+        const entry = asOptionalRecord(block);
+        return (
+          entry &&
+          isAssistantTextContentType(entry.type) &&
+          typeof entry.text === "string" &&
+          entry.text.includes(text)
+        );
+      });
+      if (!text || alreadyPresent) {
+        return;
+      }
+      const textIndex = displayContent.findIndex((block) => {
+        const entry = asOptionalRecord(block);
+        return entry && isAssistantTextContentType(entry.type) && typeof entry.text === "string";
+      });
+      const previous = textIndex >= 0 ? asOptionalRecord(displayContent[textIndex]) : undefined;
+      if (previous) {
+        displayContent[textIndex] = {
+          ...previous,
+          text: [text, previous.text].filter(Boolean).join("\n\n"),
+        };
+      } else {
+        displayContent.push({ type: "text", text });
+      }
+    };
+    if (typeof next.text === "string") {
+      prependText(next.text);
+    }
+    prependText(getAssistantErrorFallbackText(message));
+    next.content = displayContent;
+    delete next.text;
+  }
   delete next.diagnostics;
   delete next.errorBody;
   delete next.errorCode;
@@ -207,7 +263,8 @@ function isPureStreamErrorFallbackAssistantMessage(message: Record<string, unkno
   return (
     text !== undefined &&
     text.trim() === STREAM_ERROR_FALLBACK_TEXT &&
-    !hasAssistantNonTextContent(message)
+    !hasAssistantNonTextContent(message) &&
+    !hasTranscriptMediaFacts(message)
   );
 }
 
@@ -226,7 +283,7 @@ function hasVisibleAssistantDisplayContent(message: Record<string, unknown>): bo
   if (shouldDropAssistantHistoryMessage(sanitized)) {
     return false;
   }
-  if (hasAssistantDisplayableNonTextContent(sanitized)) {
+  if (hasAssistantDisplayableNonTextContent(sanitized) || hasTranscriptMediaFacts(sanitized)) {
     return true;
   }
   return hasVisibleAssistantReplyText(sanitized);
@@ -335,7 +392,8 @@ function projectEmptyAssistantErrorMessages(
     if (message.role !== "assistant" || message.stopReason !== "error") {
       return message;
     }
-    const hasDisplayableStructuredContent = hasAssistantDisplayableNonTextContent(message);
+    const hasDisplayableStructuredContent =
+      hasAssistantDisplayableNonTextContent(message) || hasTranscriptMediaFacts(message);
     if (hasDisplayableStructuredContent) {
       changed = true;
       return sanitizeAssistantErrorDisplayMessage(message);

@@ -59,6 +59,7 @@ const resolveModelAsyncMock = vi.fn(
       return {
         ...stores,
         model: { ...staticCatalogModel, provider, id: modelId, name: modelId },
+        logicalRef: { provider, model: modelId },
       };
     }
     return {
@@ -151,8 +152,11 @@ vi.mock("../../plugins/provider-runtime.js", () => ({
   prepareProviderRuntimeAuth: vi.fn(async () => undefined),
 }));
 
-vi.mock("../provider-secret-egress.js", () => ({
+vi.mock("../provider-runtime-auth-protection.js", () => ({
   protectPreparedProviderRuntimeAuth: (value: unknown) => value,
+}));
+
+vi.mock("../provider-secret-egress.js", () => ({
   unwrapSecretSentinelsForProviderEgress: (value: unknown) => value,
 }));
 
@@ -253,7 +257,7 @@ describe("embedded model resolution consistency", () => {
         modelIdNormalization: {
           providers: {
             "custom-provider": {
-              aliases: { "legacy-model": "modern-model" },
+              aliases: { "legacy-model": "modern-model", "modern-model": "unexpected-second-pass" },
             },
           },
         },
@@ -265,7 +269,7 @@ describe("embedded model resolution consistency", () => {
         agentId: "worker",
         provider: initial.provider,
         model: initial.modelId,
-        requestedRouteResolution: "resolved",
+        requestedRouteResolution: "raw",
         fallbacksOverride: [],
         manifestPlugins,
       }),
@@ -279,7 +283,6 @@ describe("embedded model resolution consistency", () => {
     ]);
     expect(normalizeProviderModelIdWithRuntimeMock).toHaveBeenCalledWith({
       provider: "custom-provider",
-      plugins: manifestPlugins,
       context: {
         provider: "custom-provider",
         modelId: "modern-model",

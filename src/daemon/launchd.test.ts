@@ -79,9 +79,6 @@ const launchdRestartHandoffState = vi.hoisted(() => ({
     (_params: unknown) => { ok: true; value: Promise<boolean> } | { ok: false; error: string }
   >(() => ({ ok: true, value: Promise.resolve(true) })),
 }));
-const launchdConstantsState = vi.hoisted(() => ({
-  legacyGatewayLabels: [] as string[],
-}));
 const launchdSystemState = vi.hoisted(() => ({
   assertNoSystemLaunchDaemonOwnership: vi.fn<(label: string) => Promise<void>>(async () => {}),
   inspectSystemLaunchDaemonOwnership: vi.fn<
@@ -108,6 +105,11 @@ const cleanStaleGatewayProcessesSync = vi.hoisted(() =>
   vi.fn<(port?: number, options?: CleanStaleGatewayProcessesOptions) => number[]>(() => []),
 );
 const getSelfAndAncestorPidsSync = vi.hoisted(() => vi.fn<() => Set<number>>());
+const launchdCallerPids = vi.hoisted(() => {
+  // Keep the synthetic caller graph separate from host PIDs and both service fixture PIDs.
+  const caller = Math.max(process.pid, process.ppid, 4242, 4343) + 1;
+  return [caller, caller + 1];
+});
 const launchctlSpawnSync = vi.hoisted(() => vi.fn());
 const inspectPortUsage = vi.hoisted(() =>
   vi.fn<typeof import("../infra/ports-inspect.js").inspectPortUsage>(async () => ({
@@ -518,14 +520,6 @@ vi.mock("./launchd-restart-handoff.js", () => ({
     launchdRestartHandoffState.scheduleDetachedLaunchdRestartHandoff(params),
 }));
 
-vi.mock("./constants.js", async () => {
-  const actual = await vi.importActual<typeof import("./constants.js")>("./constants.js");
-  return {
-    ...actual,
-    resolveLegacyGatewayLaunchAgentLabels: () => [...launchdConstantsState.legacyGatewayLabels],
-  };
-});
-
 vi.mock("./launchd-system.js", () => ({
   assertNoSystemLaunchDaemonOwnership: (label: string) =>
     launchdSystemState.assertNoSystemLaunchDaemonOwnership(label),
@@ -694,7 +688,6 @@ beforeEach(() => {
   state.cleanupProtectedPids.length = 0;
   state.realExecFile = false;
   state.serviceStates.clear();
-  launchdConstantsState.legacyGatewayLabels.length = 0;
   launchctlSpawnSync.mockReset();
   launchctlSpawnSync.mockImplementation((file: string, args: string[]) => {
     const result = executeLaunchctlMock(file, args);
@@ -702,7 +695,7 @@ beforeEach(() => {
   });
   cleanStaleGatewayProcessesSync.mockReset();
   getSelfAndAncestorPidsSync.mockReset();
-  getSelfAndAncestorPidsSync.mockReturnValue(new Set([process.pid, process.ppid]));
+  getSelfAndAncestorPidsSync.mockReturnValue(new Set(launchdCallerPids));
   cleanStaleGatewayProcessesSync.mockImplementation((_port, options) => {
     state.cleanupProtectedPids.push(options?.resolveProtectedPid?.() ?? options?.protectedPid);
     return [];
@@ -736,60 +729,63 @@ beforeEach(() => {
 });
 
 describe("launchd process ancestry guards", () => {
-  it.each([true, false])(
-    "restarts without env markers with a Gateway ancestor: %s",
-    async (inside) => {
-      const env = createDefaultLaunchdEnv();
-      const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
-      const serviceId = `${domain}/ai.openclaw.gateway`;
-      if (inside) {
-        getSelfAndAncestorPidsSync.mockReturnValue(new Set([process.pid, process.ppid, 4242]));
-      }
+  it.each([
+    { name: "a Gateway ancestor", inside: true, servicePid: 4242 },
+    { name: "an external caller", inside: false, servicePid: 4242 },
+    { name: "a service PID matching the host PID", inside: false, servicePid: process.pid },
+    { name: "a service PID matching the host parent PID", inside: false, servicePid: process.ppid },
+  ])("restarts without env markers with $name", async ({ inside, servicePid }) => {
+    const env = createDefaultLaunchdEnv();
+    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
+    const serviceId = `${domain}/ai.openclaw.gateway`;
+    state.printOutput = ["state = running", `pid = ${servicePid}`].join("\n");
+    if (inside) {
+      getSelfAndAncestorPidsSync.mockReturnValue(new Set([...launchdCallerPids, 4242]));
+    }
 
-      const result = await withEnvAsync(
+    const result = await withEnvAsync(
+      {
+        LAUNCH_JOB_LABEL: undefined,
+        LAUNCH_JOB_NAME: undefined,
+        XPC_SERVICE_NAME: undefined,
+        OPENCLAW_SERVICE_MARKER: undefined,
+        OPENCLAW_SERVICE_KIND: undefined,
+        OPENCLAW_LAUNCHD_LABEL: undefined,
+      },
+      async () => restartLaunchAgent(launchAgentControlFixture(env)),
+    );
+
+    expect(getSelfAndAncestorPidsSync).toHaveBeenCalledOnce();
+    if (inside) {
+      expect(result).toEqual({ outcome: "scheduled" });
+      expect(launchdRestartHandoffState.scheduleDetachedLaunchdRestartHandoff).toHaveBeenCalledWith(
         {
-          LAUNCH_JOB_LABEL: undefined,
-          LAUNCH_JOB_NAME: undefined,
-          XPC_SERVICE_NAME: undefined,
-          OPENCLAW_SERVICE_MARKER: undefined,
-          OPENCLAW_SERVICE_KIND: undefined,
-          OPENCLAW_LAUNCHD_LABEL: undefined,
-        },
-        async () => restartLaunchAgent(launchAgentControlFixture(env)),
-      );
-
-      expect(getSelfAndAncestorPidsSync).toHaveBeenCalledOnce();
-      if (inside) {
-        expect(result).toEqual({ outcome: "scheduled" });
-        expect(
-          launchdRestartHandoffState.scheduleDetachedLaunchdRestartHandoff,
-        ).toHaveBeenCalledWith({
           env,
           mode: "kickstart",
           waitForPid: process.pid,
-        });
-        expect(state.launchctlCalls).toStrictEqual([["print", serviceId]]);
-        expect(cleanStaleGatewayProcessesSync).not.toHaveBeenCalled();
-      } else {
-        expect(result).toEqual({ outcome: "completed" });
-        expect(
-          launchdRestartHandoffState.scheduleDetachedLaunchdRestartHandoff,
-        ).not.toHaveBeenCalled();
-        expect(state.launchctlCalls).toStrictEqual([
-          ["print", serviceId],
-          ["enable", serviceId],
-          ["kickstart", "-k", serviceId],
-        ]);
-      }
-    },
-  );
+        },
+      );
+      expect(state.launchctlCalls).toStrictEqual([["print", serviceId]]);
+      expect(cleanStaleGatewayProcessesSync).not.toHaveBeenCalled();
+    } else {
+      expect(result).toEqual({ outcome: "completed" });
+      expect(
+        launchdRestartHandoffState.scheduleDetachedLaunchdRestartHandoff,
+      ).not.toHaveBeenCalled();
+      expect(state.launchctlCalls).toStrictEqual([
+        ["print", serviceId],
+        ["enable", serviceId],
+        ["kickstart", "-k", serviceId],
+      ]);
+    }
+  });
 
   it.each([false, true])(
     "refuses stop without env markers with a Gateway ancestor (disable: %s)",
     async (disable) => {
       const env = createDefaultLaunchdEnv();
       const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
-      getSelfAndAncestorPidsSync.mockReturnValue(new Set([process.pid, process.ppid, 4242]));
+      getSelfAndAncestorPidsSync.mockReturnValue(new Set([...launchdCallerPids, 4242]));
 
       await withEnvAsync(
         {
@@ -817,7 +813,7 @@ describe("launchd process ancestry guards", () => {
     const env = createDefaultLaunchdEnv();
     const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
     const serviceId = `${domain}/ai.openclaw.gateway`;
-    getSelfAndAncestorPidsSync.mockReturnValue(new Set([process.pid, process.ppid, 4242]));
+    getSelfAndAncestorPidsSync.mockReturnValue(new Set([...launchdCallerPids, 4242]));
 
     await withEnvAsync(
       {
@@ -850,7 +846,7 @@ describe("launchd process ancestry guards", () => {
       const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
       const serviceId = `${domain}/ai.openclaw.gateway`;
       state.serviceStates.set(serviceId, "running");
-      getSelfAndAncestorPidsSync.mockReturnValue(new Set([process.pid, process.ppid, 4242]));
+      getSelfAndAncestorPidsSync.mockReturnValue(new Set([...launchdCallerPids, 4242]));
 
       await withEnvAsync(
         {
@@ -884,7 +880,7 @@ describe("launchd process ancestry guards", () => {
     const legacyServiceId = `${domain}/ai.openclaw.legacy-gateway`;
     state.serviceStates.set(serviceId, "not-loaded");
     state.serviceStates.set(legacyServiceId, "running");
-    getSelfAndAncestorPidsSync.mockReturnValue(new Set([process.pid, process.ppid, 4242]));
+    getSelfAndAncestorPidsSync.mockReturnValue(new Set([...launchdCallerPids, 4242]));
 
     await withEnvAsync(
       {
@@ -915,6 +911,8 @@ describe("launchd runtime parsing", () => {
   it.each([
     ['disabled services = {\n\t"ai.openclaw.gateway" => enabled\n}', true],
     ['disabled services = {\n\t"ai.openclaw.gateway" => disabled\n}', false],
+    ['disabled services = {\n\t"ai.openclaw.gateway" => false\n}', true],
+    ['disabled services = {\n\t"ai.openclaw.gateway" => true\n}', false],
     ['disabled services = {\n\t"other.service" => disabled\n}', true],
   ])("parses the LaunchAgent enabled override", (output, expected) => {
     expect(parseLaunchAgentEnabled(output, "ai.openclaw.gateway")).toBe(expected);
@@ -989,20 +987,28 @@ describe("launchd runtime parsing", () => {
 });
 
 describe("launchd runtime state", () => {
-  it.runIf(process.platform === "darwin")(
-    "fails soft within the supplied deadline when launchctl blocks",
-    async () => {
+  it.runIf(process.platform === "darwin").each(["runtime", "enabled"] as const)(
+    "bounds the %s read by the supplied deadline when launchctl blocks",
+    async (read) => {
       const realFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
       const tempDir = await realFs.mkdtemp(`${process.env.TMPDIR ?? "/tmp"}/openclaw-launchd-`);
-      await realFs.writeFile(`${tempDir}/launchctl`, "#!/bin/sh\nsleep 2\n", { mode: 0o755 });
+      await realFs.writeFile(`${tempDir}/launchctl`, "#!/bin/sh\nexec /bin/sleep 2\n", {
+        mode: 0o755,
+      });
       state.realExecFile = true;
 
       try {
         await withEnvAsync({ PATH: `${tempDir}:${process.env.PATH ?? ""}` }, async () => {
           const startedAt = Date.now();
-          const runtime = await readLaunchAgentRuntime({ HOME: tempDir }, { timeoutMs: 100 });
+          if (read === "enabled") {
+            await expect(
+              isLaunchAgentEnabled({ env: { HOME: tempDir }, timeoutMs: 100 }),
+            ).rejects.toThrow("launchctl print-disabled failed");
+          } else {
+            const runtime = await readLaunchAgentRuntime({ HOME: tempDir }, { timeoutMs: 100 });
+            expect(runtime.status).toBe("unknown");
+          }
           expect(Date.now() - startedAt).toBeLessThan(1_000);
-          expect(runtime.status).toBe("unknown");
         });
       } finally {
         state.realExecFile = false;
@@ -1929,48 +1935,6 @@ describe("launchd install", () => {
     expect(state.launchctlCalls).toEqual([["print", `${domain}/ai.openclaw.gateway`]]);
   });
 
-  it("restores an external legacy-label owner when canonical bootstrap fails", async () => {
-    const env = createDefaultLaunchdEnv();
-    const legacyLabel = "ai.openclaw.legacy-gateway";
-    const legacyPlistPath = `${env.HOME}/Library/LaunchAgents/${legacyLabel}.plist`;
-    const targetPlistPath = resolveLaunchAgentPlistPath(env);
-    const previousLegacy = createTestLaunchAgentPlist({
-      label: legacyLabel,
-      programArguments: ["/legacy/node", "/legacy/openclaw.mjs", "gateway"],
-    });
-    launchdConstantsState.legacyGatewayLabels.push(legacyLabel);
-    state.files.set(legacyPlistPath, previousLegacy);
-    const domain = typeof process.getuid === "function" ? `gui/${process.getuid()}` : "gui/501";
-    state.serviceStates.set(`${domain}/${legacyLabel}`, "running");
-    state.bootstrapError = "Operation not permitted";
-    state.bootstrapTransient = true;
-
-    await expect(
-      installLaunchAgent({
-        env,
-        stdout: new PassThrough(),
-        programArguments: defaultProgramArguments,
-      }),
-    ).rejects.toThrow("launchctl bootstrap failed: Operation not permitted");
-
-    expect(state.files.get(legacyPlistPath)).toBe(previousLegacy);
-    expect(state.files.has(targetPlistPath)).toBe(false);
-    expect(state.serviceLoaded).toBe(true);
-    expect(state.serviceRunning).toBe(true);
-    expect(launchctlCommandNames()).toEqual([
-      "print",
-      "print",
-      "print",
-      "bootout",
-      "unload",
-      "enable",
-      "bootstrap",
-      "print",
-      "enable",
-      "bootstrap",
-    ]);
-  });
-
   it("stages a canonical plist without retiring a legacy LaunchAgent", async () => {
     const env = createDefaultLaunchdEnv();
     const legacyLabel = "ai.openclaw.legacy-gateway";
@@ -1979,7 +1943,6 @@ describe("launchd install", () => {
       label: legacyLabel,
       programArguments: ["/legacy/node", "/legacy/openclaw.mjs", "gateway"],
     });
-    launchdConstantsState.legacyGatewayLabels.push(legacyLabel);
     state.files.set(legacyPlistPath, previousLegacy);
 
     await stageLaunchAgent(defaultLaunchAgentFixture(env));
@@ -2588,6 +2551,19 @@ describe("launchd install", () => {
     expect(plist).toContain("<integer>10</integer>");
   });
 
+  it("points launchd stderr at the stdout log so startup crashes survive", async () => {
+    const env = createDefaultLaunchdEnv();
+    await installLaunchAgent(defaultLaunchAgentFixture(env));
+
+    const plist = state.files.get(resolveLaunchAgentPlistPath(env)) ?? "";
+    const logPath = "/Users/test/Library/Logs/openclaw/gateway.log";
+    // readLastGatewayErrorLine only reads stdout on darwin, so a stderr target
+    // that is not the stdout log discards every pre-logger startup failure.
+    expect(plist).toContain(`<key>StandardOutPath</key>\n    <string>${logPath}</string>`);
+    expect(plist).toContain(`<key>StandardErrorPath</key>\n    <string>${logPath}</string>`);
+    expect(plist).not.toContain("<key>StandardErrorPath</key>\n    <string>/dev/null</string>");
+  });
+
   it("rewrites the plist before bootstrap during restart fallback", async () => {
     const env = createDefaultLaunchdEnv();
     const plistPath = resolveLaunchAgentPlistPath(env);
@@ -2608,8 +2584,9 @@ describe("launchd install", () => {
     expect(plist).toContain("<key>StandardInPath</key>");
     expect(plist).toContain("<key>StandardOutPath</key>");
     expect(plist).toContain("<string>/Users/test/Library/Logs/openclaw/gateway.log</string>");
-    expect(plist).toContain("<key>StandardErrorPath</key>");
-    expect(plist).toContain("<string>/dev/null</string>");
+    expect(plist).toContain(
+      "<key>StandardErrorPath</key>\n    <string>/Users/test/Library/Logs/openclaw/gateway.log</string>",
+    );
     expect(plist).toContain("<key>KeepAlive</key>");
     expect(plist).toContain("<string>node</string>");
     expect(plist).not.toContain("OPENCLAW_SERVICE_VERSION");

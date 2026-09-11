@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  resolveHeartbeatScratchProposalFromReplyResult,
+  resolveHeartbeatToolResponseFromReplyResult,
+} from "../../../auto-reply/heartbeat-tool-response.js";
+import { HEARTBEAT_TOKEN } from "../../../auto-reply/tokens.js";
 import { createHookRunner } from "../../../plugins/hooks.js";
 import { makeAssistantMessageFixture } from "../../test-helpers/assistant-message-fixtures.js";
 import { getCoreTtsAttemptResultMediaUrls } from "../../tools/tts-tool-result-provenance.js";
 import { completeEmbeddedAttemptResult, createAttemptCarryover } from "./attempt-result.js";
+import { buildPayloads } from "./payloads.test-helpers.js";
 import { buildTraceToolSummary, normalizeEmbeddedRunAttemptResult } from "./run-attempt-result.js";
 import type { EmbeddedRunAttemptResult, EmbeddedRunAttemptTrajectoryRecorder } from "./types.js";
 
@@ -11,6 +17,7 @@ const TEST_OPERATIONAL_RUN_INSTANCE = { runId: "run-1" };
 function createResultFixture(params?: {
   terminal?: EmbeddedRunAttemptResult["terminal"];
   currentAttemptCompletedAssistant?: EmbeddedRunAttemptResult["currentAttemptCompletedAssistant"];
+  heartbeatToolResponse?: EmbeddedRunAttemptResult["heartbeatToolResponse"];
   replyOptional?: boolean;
   trajectoryRecorder?: EmbeddedRunAttemptTrajectoryRecorder;
   messagesSnapshot?: EmbeddedRunAttemptResult["messagesSnapshot"];
@@ -28,6 +35,7 @@ function createResultFixture(params?: {
   didSendViaMessagingTool?: boolean;
   yieldDetected?: boolean;
   yieldAcknowledgment?: string;
+  assistantTexts?: readonly string[];
   toolMetas?: Array<{
     toolName: string;
     toolCallId?: string;
@@ -57,27 +65,25 @@ function createResultFixture(params?: {
     currentAttemptCompletedAssistant: params?.currentAttemptCompletedAssistant,
     successfulNestedToolNames: params?.successfulNestedToolNames ?? [],
     attemptUsage: undefined,
-    cacheBreak: null,
     lastCallUsage: undefined,
     promptCache: undefined,
   };
   const prompt: Parameters<typeof completeEmbeddedAttemptResult>[2] = {
     preflightRecovery: undefined,
     contextBudgetStatus: undefined,
-    promptCacheChangesForTurn: null,
     yieldAborted: false,
     sessionIdUsed: settled.sessionIdUsed,
     sessionFileUsed: undefined,
     messagesSnapshot: settled.messagesSnapshot,
   };
   const subscription = {
-    assistantTexts: [],
+    assistantTexts: [...(params?.assistantTexts ?? [])],
     didSendDeterministicApprovalPrompt: () => false,
     didSendViaMessagingTool: () => params?.didSendViaMessagingTool ?? false,
     getAcceptedSessionSpawns: () => [],
     getAssistantTurnCount: () => 0,
     getCompactionCount: () => 0,
-    getHeartbeatToolResponse: () => undefined,
+    getHeartbeatToolResponse: () => params?.heartbeatToolResponse,
     getItemLifecycle: () => undefined,
     getLastAssistantTextMessageIndex: () => undefined,
     getLastCompactionTokensAfter: () => undefined,
@@ -137,7 +143,7 @@ function createResultFixture(params?: {
     },
     preparedStreamRuntime: {
       stream: { subscription },
-      cache: { observabilityEnabled: false },
+      cache: {},
     },
   };
   return { input, state, settled, prompt, hookRunner };
@@ -316,6 +322,12 @@ describe("attempt result projection", () => {
       expected: false,
     },
     {
+      label: "openai-completions truncated stream",
+      source: "prompt" as const,
+      error: new Error("Stream ended without finish_reason"),
+      expected: true,
+    },
+    {
       label: "precheck socket failure",
       source: "precheck" as const,
       error: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
@@ -342,6 +354,108 @@ describe("attempt result projection", () => {
     expect(Boolean(result.settledTurnFinalizationContext)).toBe(expected);
   });
 
+  it.each([
+    {
+      label: "an opaque WebSocket error",
+      errorMessage: "WebSocket error",
+      errorCode: "ERR_WEBSOCKET_TRANSPORT",
+      expected: true,
+    },
+    {
+      label: "a coded socket failure",
+      errorMessage: "provider request failed",
+      errorCode: "ECONNRESET",
+      expected: true,
+    },
+    {
+      label: "an authentication failure",
+      errorMessage: "invalid API key",
+      errorCode: undefined,
+      expected: false,
+    },
+    {
+      label: "an incomplete completions stream",
+      errorMessage: "Stream ended without finish_reason",
+      errorCode: undefined,
+      expected: true,
+    },
+  ])(
+    "captures settled-turn context from $label reported by the provider assistant=$expected",
+    ({ errorMessage, errorCode, expected }) => {
+      const result = completeResult({
+        currentAttemptCompletedAssistant: makeAssistantMessageFixture({
+          stopReason: "error",
+          errorMessage,
+          ...(errorCode ? { errorCode } : {}),
+        }),
+        messagesSnapshot: settledToolMessages(),
+      });
+
+      expect(Boolean(result.settledTurnFinalizationContext)).toBe(expected);
+    },
+  );
+
+  it.each([
+    {
+      label: "only pre-tool commentary",
+      assistantTexts: ["Checking the post-reboot state."],
+      messagesSnapshot: [
+        makeAssistantMessageFixture({
+          stopReason: "toolUse",
+          errorMessage: undefined,
+          timestamp: 1,
+          content: [
+            { type: "text", text: "Checking the post-reboot state." },
+            { type: "toolCall", id: "call-read", name: "read", arguments: {} },
+          ],
+        }),
+        ...settledToolMessages(),
+        makeAssistantMessageFixture({
+          stopReason: "error",
+          errorMessage: "Stream ended without finish_reason",
+          timestamp: 3,
+          content: [],
+        }),
+      ],
+      expected: true,
+    },
+    {
+      label: "unattributed visible text",
+      assistantTexts: ["here is the answer"],
+      messagesSnapshot: settledToolMessages(),
+      expected: false,
+    },
+    {
+      label: "post-tool authored text",
+      assistantTexts: ["here is the answer"],
+      messagesSnapshot: [
+        ...settledToolMessages(),
+        makeAssistantMessageFixture({
+          stopReason: "stop",
+          errorMessage: undefined,
+          timestamp: 2,
+          content: [{ type: "text", text: "here is the answer" }],
+        }),
+      ],
+      expected: false,
+    },
+  ])(
+    "keeps truncated-stream settled recovery for $label=$expected",
+    ({ assistantTexts, messagesSnapshot, expected }) => {
+      const result = completeResult({
+        terminal: {
+          kind: "failed",
+          source: "prompt",
+          error: new Error("Stream ended without finish_reason"),
+        },
+        assistantTexts,
+        messagesSnapshot,
+      });
+
+      expect(Boolean(result.settledTurnFinalizationContext)).toBe(expected);
+    },
+  );
+
   it.each(["compaction", "tool_execution"] as const)(
     "does not authorize settled-turn finalization after a %s timeout observation",
     (timeoutObservation) => {
@@ -352,6 +466,23 @@ describe("attempt result projection", () => {
           error: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
           timeoutObservation,
         },
+        messagesSnapshot: settledToolMessages(),
+      });
+
+      expect(result.settledTurnFinalizationContext).toBeUndefined();
+    },
+  );
+
+  it.each(["compaction", "tool_execution"] as const)(
+    "does not authorize assistant-reported finalization after a %s timeout observation",
+    (phase) => {
+      const result = completeResult({
+        terminal: { kind: "timeout", phase, source: "observation" },
+        currentAttemptCompletedAssistant: makeAssistantMessageFixture({
+          stopReason: "error",
+          errorMessage: "WebSocket error",
+          errorCode: "ERR_WEBSOCKET_TRANSPORT",
+        }),
         messagesSnapshot: settledToolMessages(),
       });
 
@@ -419,6 +550,78 @@ describe("attempt result projection", () => {
     expect(retry).toEqual(first);
     expect(latest.latestMcpAppChannelView.viewId).toBe("view-latest");
     expect(latest.latestMcpConnectAction.authorizationUrl).toBe("https://auth.example/latest");
+  });
+
+  it.each([
+    { label: "notifying", notify: true, expectedText: "The monitored task is complete." },
+    { label: "quiet", notify: false, expectedText: HEARTBEAT_TOKEN },
+  ])(
+    "carries a $label heartbeat response and private scratch across empty retry attempts",
+    ({ notify, expectedText }) => {
+      const carryover = createAttemptCarryover();
+      const publicResponse = {
+        outcome: "done" as const,
+        notify,
+        summary: "The task reached its completion condition.",
+        notificationText: "The monitored task is complete.",
+      };
+      const scratch = "Private monitor notes: completion checked; no follow-up needed.";
+      const providerFailure = {
+        kind: "failed" as const,
+        source: "prompt" as const,
+        error: Object.assign(new Error("529 overloaded"), { status: 529 }),
+      };
+      const accepted = completeResult({
+        heartbeatToolResponse: { ...publicResponse, scratch },
+        terminal: providerFailure,
+      });
+      const retry = completeResult({ terminal: providerFailure });
+      const completed = completeResult({ assistantTexts: ["Internal retry fallback."] });
+
+      carryover.apply(accepted);
+      carryover.apply(retry);
+      carryover.apply(completed);
+      const payloads = buildPayloads({
+        isHeartbeatTrigger: true,
+        assistantTexts: completed.assistantTexts,
+        heartbeatToolResponse: completed.heartbeatToolResponse,
+      });
+
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]?.text).toBe(expectedText);
+      expect(resolveHeartbeatToolResponseFromReplyResult(payloads)).toEqual(publicResponse);
+      expect(resolveHeartbeatScratchProposalFromReplyResult(payloads)).toBe(scratch);
+      expect(JSON.stringify(payloads)).not.toContain(scratch);
+      expect(JSON.stringify(payloads)).not.toContain("Internal retry fallback.");
+    },
+  );
+
+  it("starts a fresh run without the previous heartbeat response or scratch", () => {
+    const previousRun = createAttemptCarryover();
+    previousRun.apply(
+      completeResult({
+        heartbeatToolResponse: {
+          outcome: "done",
+          notify: true,
+          summary: "Previous task complete.",
+          scratch: "Private notes from the previous run.",
+        },
+      }),
+    );
+    const freshRun = createAttemptCarryover();
+    const completed = completeResult({ assistantTexts: ["The new task is still running."] });
+
+    freshRun.apply(completed);
+    const payloads = buildPayloads({
+      isHeartbeatTrigger: true,
+      assistantTexts: completed.assistantTexts,
+      heartbeatToolResponse: completed.heartbeatToolResponse,
+    });
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.text).toBe("The new task is still running.");
+    expect(resolveHeartbeatToolResponseFromReplyResult(payloads)).toBeUndefined();
+    expect(resolveHeartbeatScratchProposalFromReplyResult(payloads)).toBeUndefined();
   });
 
   it("keeps completed client tool calls in reserved source order", () => {

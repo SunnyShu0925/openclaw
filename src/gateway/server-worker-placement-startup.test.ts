@@ -18,6 +18,7 @@ import {
 import { createDeferredCore } from "../shared/deferred.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
 import type { WorkerPlacementDispatchService } from "./worker-environments/placement-dispatch.js";
+import type { WorkerSessionWorkspace } from "./worker-environments/session-workspace.js";
 
 describe("worker placement startup health lifetime", () => {
   it("samples disk on schedule while reconciliation is stuck and drains both on stop", async () => {
@@ -47,6 +48,7 @@ describe("worker placement startup health lifetime", () => {
       reconcileActive,
     });
     const environments = {
+      subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
       start: vi.fn(),
       stop: vi.fn().mockResolvedValue(undefined),
@@ -131,6 +133,7 @@ describe("worker placement startup health lifetime", () => {
         turnClaim: null,
       };
       const environments = {
+        subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
         installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
         start: vi.fn(),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -222,6 +225,7 @@ describe("worker placement startup health lifetime", () => {
       stateChangedAtMs: 1,
     } as const;
     const environments = {
+      subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
       start: vi.fn(),
       stop: vi.fn().mockResolvedValue(undefined),
@@ -294,6 +298,7 @@ describe("worker placement startup health lifetime", () => {
       reconcileActive: vi.fn().mockResolvedValue(undefined),
     });
     const environments = {
+      subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn(() => vi.fn()),
       start: vi.fn(),
       stop: vi.fn().mockRejectedValueOnce(stopError).mockResolvedValueOnce(undefined),
@@ -372,6 +377,7 @@ describe("worker placement startup health lifetime", () => {
     });
     const environments = {
       get: vi.fn((environmentId: string) => ({ environmentId, state: "provisioning" })),
+      subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn((guard: ReconcileGuard) => {
         installedGuard = guard;
         return vi.fn();
@@ -492,6 +498,7 @@ describe("worker placement startup health lifetime", () => {
     });
     const environments = {
       get: vi.fn((environmentId: string) => ({ environmentId, state: "provisioning" })),
+      subscribeMachineShapeChanged: vi.fn(() => vi.fn()),
       installReconcileEnvironmentGuard: vi.fn((guard: ReconcileGuard) => {
         installedGuard = guard;
         return async () => {
@@ -626,7 +633,7 @@ describe("worker placement startup recovery authority", () => {
             environmentId: string;
             expectedGeneration: number;
             signal?: AbortSignal;
-            run: (localPath: string) => Promise<void>;
+            run: (workspace: WorkerSessionWorkspace) => Promise<void>;
           }) => Promise<void>;
         }
       | undefined;
@@ -658,8 +665,11 @@ describe("worker placement startup recovery authority", () => {
         dispatchOptions.runRecoveryBarrier({
           ...request,
           signal: controller.signal,
-          run: async (localPath) => {
-            events.push(`recovery:${localPath}`);
+          run: async (workspace) => {
+            if (workspace.kind !== "local") {
+              throw new Error("recovery fixture requires a local workspace");
+            }
+            events.push(`recovery:${workspace.path}`);
             await releaseRecovery.promise;
             events.push("recovery:done");
           },

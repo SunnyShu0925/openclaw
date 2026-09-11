@@ -5,6 +5,7 @@ import type { SessionPermissionMode } from "../../../../packages/gateway-protoco
  */
 import { messageToolOwnsVisibleReply } from "../../../auto-reply/source-reply-delivery-mode.js";
 import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
+import { isEmbeddedMode } from "../../../infra/embedded-mode.js";
 import {
   isCodeModeDiagnosticEnabled,
   logCodeModeDiagnostic,
@@ -19,7 +20,9 @@ import { createSkillInstructionDeliveryCache } from "../../agent-tools.read.js";
 import { getChannelAgentToolMeta } from "../../channel-tools.js";
 import { createCodeModePermissionChangeReason } from "../../code-mode-permission-change.js";
 import type { CodeModeSkill } from "../../code-mode-skills.js";
+import { loadPairedComputerUseAvailabilityForSurface } from "../../computer-use-node-capabilities.js";
 import { resolveConversationCapabilityProfile } from "../../conversation-capability-profile.js";
+import { projectConversationToolNames } from "../../conversation-tool-policy-pipeline.js";
 import {
   isLocalModelLeanEnabled,
   resolveLocalModelLeanPreserveToolNames,
@@ -27,6 +30,7 @@ import {
 import { resolveModelAuthMode } from "../../model-auth.js";
 import { supportsModelTools } from "../../model-tool-support.js";
 import { recordAgentCleanupFailure } from "../../run-cleanup-timeout.js";
+import { resolveSessionPlacementComputer } from "../../session-placement-computer.js";
 import {
   resolveSessionPermissionExecMode,
   type PreparedSessionPermissionPolicy,
@@ -58,7 +62,7 @@ import type { EmbeddedRunAttemptParams } from "./types.js";
 type OpenClawCodingToolsOptions = NonNullable<Parameters<typeof createOpenClawCodingTools>[0]>;
 type SkillUsagePaths = OpenClawCodingToolsOptions["skillUsagePaths"];
 
-export function prepareEmbeddedAttemptToolBase(params: {
+export async function prepareEmbeddedAttemptToolBase(params: {
   agentDir: string;
   attempt: EmbeddedRunAttemptParams;
   setup: EmbeddedAttemptSetup;
@@ -69,9 +73,12 @@ export function prepareEmbeddedAttemptToolBase(params: {
   skillUsagePaths: SkillUsagePaths;
   skillsSnapshot: EmbeddedRunAttemptParams["skillsSnapshot"];
   codeModeSkills: readonly CodeModeSkill[];
+  reviewTranscript?: NonNullable<OpenClawCodingToolsOptions["exec"]>["reviewTranscript"];
   toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor;
 }) {
   const { attempt } = params;
+  const requireExplicitMessageTarget =
+    attempt.requireExplicitMessageTarget ?? isSubagentSessionKey(attempt.sessionKey);
   const forceDirectMessageTool = messageToolOwnsVisibleReply(attempt);
   const toolRunContext = buildEmbeddedAttemptToolRunContext({
     ...attempt,
@@ -171,35 +178,16 @@ export function prepareEmbeddedAttemptToolBase(params: {
         });
   // Rebuild at each call: permission refresh observes the current attempt fields.
   const buildConversationContext = () => ({
+    ...toolRunContext,
+    requireExplicitMessageTarget,
     config: toolSearchRuntimeConfig,
     sessionKey: params.setup.sandboxSessionKey,
-    runSessionKey:
-      attempt.sessionKey && attempt.sessionKey !== params.setup.sandboxSessionKey
-        ? attempt.sessionKey
-        : undefined,
+    runSessionKey: attempt.sessionKey?.trim() || attempt.sessionId,
     sessionId: attempt.sessionId,
     runId: attempt.runId,
     agentDir: params.agentDir,
-    agentAccountId: attempt.agentAccountId,
     messageProvider: resolveAttemptToolPolicyMessageProvider(attempt),
     messageChannel: attempt.messageChannel,
-    chatType: attempt.chatType,
-    messageTo: attempt.messageTo,
-    messageThreadId: attempt.messageThreadId,
-    currentChannelId: attempt.currentChannelId,
-    currentMessagingTarget: attempt.currentMessagingTarget,
-    currentThreadTs: attempt.currentThreadTs,
-    currentMessageId: attempt.currentMessageId,
-    groupId: attempt.groupId,
-    groupChannel: attempt.groupChannel,
-    groupSpace: attempt.groupSpace,
-    memberRoleIds: attempt.memberRoleIds,
-    spawnedBy: attempt.spawnedBy,
-    senderId: attempt.senderId,
-    senderName: attempt.senderName,
-    senderUsername: attempt.senderUsername,
-    senderE164: attempt.senderE164,
-    senderIsOwner: attempt.senderIsOwner,
     modelProvider: attempt.provider,
     modelId: attempt.modelId,
     modelApi: attempt.model.api,
@@ -210,7 +198,6 @@ export function prepareEmbeddedAttemptToolBase(params: {
     spawnWorkspaceDir,
     skillsSnapshot: params.skillsSnapshot,
     runtimeToolAllowlist: effectiveToolsAllow,
-    scheduledToolPolicy: attempt.scheduledToolPolicy,
   });
   const runtimeCapabilityProfile = resolveConversationCapabilityProfile({
     ...buildConversationContext(),
@@ -225,6 +212,25 @@ export function prepareEmbeddedAttemptToolBase(params: {
     trustedInternalHandoff: attempt.trustedInternalHandoff,
     pluginMetadataSnapshot: attempt.preparedModelRuntime?.metadataSnapshot,
   });
+  const computerTransport = resolveSessionPlacementComputer(
+    attempt.admittedRunContext.operationalRunInstance,
+  );
+  const computerAllowed =
+    shouldConstructTools &&
+    projectConversationToolNames({
+      capabilityProfile: runtimeCapabilityProfile,
+      toolNames: ["computer"],
+      warn: () => undefined,
+    }).length === 1;
+  const pairedNodeComputerUse = (
+    await loadPairedComputerUseAvailabilityForSurface({
+      computerAllowed,
+      modelHasVision: attempt.model.input?.includes("image") ?? true,
+      computerTransport,
+      embeddedMode: isEmbeddedMode(),
+      signal: params.runAbortController.signal,
+    })
+  )?.prepared;
   const localModelLeanEnabled = isLocalModelLeanEnabled({
     config: attempt.config,
     agentId: params.setup.sessionAgentId,
@@ -262,11 +268,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
       : (() => {
           const allTools = createOpenClawCodingTools({
             agentId: params.setup.sessionAgentId,
-            ...toolRunContext,
             ...buildConversationContext(),
-            clientCaps: attempt.clientCaps,
-            pinnedWidgetAuthoring: attempt.pinnedWidgetAuthoring,
-            toolBindings: attempt.toolBindings,
             exec: {
               ...attempt.execOverrides,
               ...(sessionPermissionPolicy
@@ -274,17 +276,17 @@ export function prepareEmbeddedAttemptToolBase(params: {
                 : {}),
               config: attempt.config,
               elevated: attempt.bashElevated,
+              reviewTranscript: params.reviewTranscript,
             },
             sandbox: params.setup.sandbox,
             stagedMediaPaths: resolveStagedInputMediaPaths(attempt.media),
             sessionPermissionPolicy,
-            nativeChannelId: attempt.chatId,
-            messageActionTurnCapability: attempt.messageActionTurnCapability,
             channelContext: attempt.channelContext,
             allowGatewaySubagentBinding: attempt.allowGatewaySubagentBinding,
             operationalRunInstance: attempt.admittedRunContext.operationalRunInstance,
+            computerTransport,
+            pairedNodeComputerUse,
             conversationRecall: attempt.conversationRecall,
-            approvalReviewerDeviceId: attempt.approvalReviewerDeviceId,
             oneShotCliRun: attempt.oneShotCliRun,
             toolSearchCatalogRef,
             codeModeSkills,
@@ -301,7 +303,6 @@ export function prepareEmbeddedAttemptToolBase(params: {
               ...(attempt.skillWorkshopAutonomousCapture ? { autonomousCapture: true } : {}),
               origin: attempt.skillWorkshopOrigin,
               proposalMutationBudget: attempt.skillWorkshopProposalMutationBudget,
-              proposalReviewCompletion: attempt.skillWorkshopProposalReviewCompletion,
               proposalRevision: attempt.skillWorkshopProposalRevision,
               libraryAuthoring: attempt.skillLibraryAuthoring,
             },
@@ -314,15 +315,9 @@ export function prepareEmbeddedAttemptToolBase(params: {
             includeToolSearchControls: toolSearchControlsEnabledForRun,
             toolSearchCatalogExecutor: params.toolSearchCatalogExecutor,
             toolConstructionPlan: toolConstructionPlan.codingToolConstructionPlan,
-            replyToMode: attempt.replyToMode,
-            hasRepliedRef: attempt.hasRepliedRef,
             computerContextEpoch,
             skillInstructionDeliveryCache,
             registerRunCleanup: (cleanup) => generationCleanups.push(cleanup),
-            requireExplicitMessageTarget:
-              attempt.requireExplicitMessageTarget ?? isSubagentSessionKey(attempt.sessionKey),
-            sourceReplyDeliveryMode: attempt.sourceReplyDeliveryMode,
-            taskSuggestionDeliveryMode: attempt.taskSuggestionDeliveryMode,
             inboundEventKind: attempt.currentInboundEventKind,
             disableMessageTool: attempt.disableMessageTool,
             forceMessageTool: attempt.forceMessageTool,
@@ -410,6 +405,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
     cronCreatorToolAllowlistCaptureRef,
     effectiveToolsAllow,
     forceDirectMessageTool,
+    requireExplicitMessageTarget,
     inheritedToolAllowlist,
     localModelLeanEnabled,
     localModelLeanPreserveToolNames,

@@ -47,6 +47,18 @@ identity and revision rather than discovered by scanning every user's files.
 | 6           | Custodian skills       | shipped; configured Custodian agent only             |
 | 7 — lowest  | Extra directories      | `skills.load.extraDirs` + plugin skills              |
 
+When a session uses a different execution workspace, OpenClaw also loads that
+workspace's `skills/` and `.agents/skills/` directories. These skills follow the
+entire agent catalog in precedence and prompt order; within the execution
+workspace, `skills/` wins over `.agents/skills/`. Both directories participate in
+snapshot refresh and sandbox synchronization. Sandboxed runs read the
+materialized copies, not the original host paths.
+
+Managed worktree sessions keep their recorded canonical workspace as the skill
+source. A selected nested workspace stays nested: discovery does not walk up to
+its parent repository. Installing OpenClaw from a repository does not make that
+repository's `.agents/skills/` a global bundled skill source.
+
 Skill roots support grouped layouts. OpenClaw discovers a skill whenever
 `SKILL.md` appears anywhere under a configured root (up to 6 levels deep):
 
@@ -86,7 +98,7 @@ the same captured file content.
 The skill entry includes the node locator. Its files, relative references, and
 binaries live on the node, so load and execute it with
 `exec host=node node=<node-id>`. Restart the node host after changing its skill
-files. See [Nodes](/nodes#node-hosted-skills) for pairing and off-switches.
+files. See [Nodes](/nodes/mcp-and-skills#node-hosted-skills) for pairing and off-switches.
 
 ## Per-agent vs shared skills
 
@@ -188,6 +200,8 @@ Do not edit those managed directories directly. Use the editor, the
 [Skills library CLI](/cli/skills#personal-skill-library), or the agent's
 authorized authoring tool. Runtime copies are separate from project files and
 must not be committed with a project.
+
+<a id="agent-skill-allowlists" />
 
 ## Agent allowlists
 
@@ -689,21 +703,27 @@ command identities. Other CLI backends use the prompt catalog only.
 ## Snapshots and refresh
 
 OpenClaw snapshots eligible skills **when a session starts** and reuses that
-list for all subsequent turns in the session. Changes to skills or config take
-effect on the next new session.
+list until a refresh trigger below applies.
 
 Managed library selections keep their exact revisions until an explicit
-attach or refresh. The file-watcher behavior below applies to ordinary
-file-backed skill roots, not immutable library revisions.
+attach or refresh, including across Gateway restarts. The refresh triggers
+below apply to ordinary file-backed skill roots.
 
-File-backed skills refresh mid-session in two cases:
+File-backed skills refresh mid-session when:
 
 - The skills watcher detects a `SKILL.md` change.
+- The Gateway restarts, including when `skills.load.watch` is `false`.
 - A new eligible remote node connects.
+- Native file-watch capacity is exhausted and the next agent turn starts.
 
-The refreshed list is picked up on the next agent turn. If the effective agent
-allowlist changes, OpenClaw refreshes the snapshot to keep visible skills
-aligned.
+The refreshed list is picked up on the next agent turn in the same session.
+If the effective agent allowlist changes, OpenClaw refreshes the snapshot to
+keep visible skills aligned.
+
+When native watch capacity is exhausted, OpenClaw logs one warning and stops
+the skills watchers. With watching enabled, later agent turns refresh file-backed
+skills through the existing snapshot preparation. Restart the Gateway after
+restoring watch capacity to enable native watching again.
 
 <AccordionGroup>
   <Accordion title="Skills watcher">
@@ -715,8 +735,8 @@ aligned.
     {
       skills: {
         load: {
-          extraDirs: ["~/Projects/agent-scripts/skills"],
-          allowSymlinkTargets: ["~/Projects/manager/skills"],
+          extraDirs: ["~/path/to/agent-scripts/skills"],
+          allowSymlinkTargets: ["~/path/to/skills"],
           watch: true, // default
         },
       },
@@ -726,7 +746,7 @@ aligned.
     Watcher events use a built-in 250 ms debounce. Use `allowSymlinkTargets`
     for intentional symlinked layouts where a skill
     root symlink points outside the configured root, for example
-    `<workspace>/skills/manager -> ~/Projects/manager/skills`.
+    `<workspace>/skills/manager -> ~/path/to/skills`.
     Skill Workshop does not use these configured symlink targets.
 
   </Accordion>
@@ -791,5 +811,8 @@ read every admitted skill. Native harnesses retain their own prompt policy.
   </Card>
   <Card title="Plugins" href="/tools/plugin" icon="plug">
     Plugins can ship skills alongside the tools they document.
+  </Card>
+  <Card title="OpenProse migration" href="/prose" icon="pen-nib">
+    Move from the removed OpenProse plugin to the upstream Agent Skill.
   </Card>
 </CardGroup>

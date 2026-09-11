@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
+import { computeBackoffSchedule } from "../../../packages/retry/src/index.js";
 import { isGatewayExternallySupervised } from "../../infra/gateway-supervision.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
@@ -22,6 +23,7 @@ import {
   type OpenClawAgentDatabase,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import { sleep } from "../../utils/sleep.js";
 import { resolveStateDir } from "../paths.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import {
@@ -29,6 +31,7 @@ import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import type { SqliteSessionWriteOperation } from "./session-accessor.sqlite-write-operation.js";
 import {
   deleteOrphanedTranscriptIndexRowsInTransaction,
   listSessionsNeedingTranscriptIndexReconcile,
@@ -54,6 +57,10 @@ import type {
 const log = createSubsystemLogger("sessions/transcript-index");
 const PROJECTION_WRITE_CHUNK_ROWS = 512;
 const PROJECTION_READY_POLL_MS = 10;
+// Repeated pending passes can keep respawning workers for a contended snapshot.
+// Do not reset on aggregate progress: other sessions may finish while it races.
+// Zero preserves one immediate retry; ready targets poll independently.
+const RECONCILE_RETRY_BACKOFF_MS: readonly number[] = [0, 50, 200, 500, 1_000];
 
 type RunningReconcile = {
   pending: boolean;
@@ -142,22 +149,26 @@ function observeWorkerLeaseRelease(worker: Worker) {
 
 async function runProjectionWrite<T>(
   databaseOptions: ReconcileDatabaseOptions,
-  operationLabel: string,
+  operationLabel: Extract<SqliteSessionWriteOperation, `sessions.transcript-index.${string}`>,
   operation: (database: OpenClawAgentDatabase) => T,
   memorySource?: MemoryTranscriptProjectionSource,
 ): Promise<T> {
-  return await runExclusiveSqliteSessionWrite(databaseOptions, async () => {
-    const write = () => {
-      // Disposal revokes a memory source. Check inside the queue before the opener
-      // can materialize a successor database for a late worker result.
-      memorySource?.assertCurrentOwner();
-      return runOpenClawAgentWriteTransaction(operation, databaseOptions, { operationLabel });
-    };
-    return !isIncognitoOpenClawAgentSqlitePath(databaseOptions.path, databaseOptions) &&
-      !getOpenClawAgentDatabaseIfOpen(databaseOptions)
-      ? withOpenClawAgentDatabaseAsync(databaseOptions, write)
-      : write();
-  });
+  return await runExclusiveSqliteSessionWrite(
+    databaseOptions,
+    async () => {
+      const write = () => {
+        // Disposal revokes a memory source. Check inside the queue before the opener
+        // can materialize a successor database for a late worker result.
+        memorySource?.assertCurrentOwner();
+        return runOpenClawAgentWriteTransaction(operation, databaseOptions, { operationLabel });
+      };
+      return !isIncognitoOpenClawAgentSqlitePath(databaseOptions.path, databaseOptions) &&
+        !getOpenClawAgentDatabaseIfOpen(databaseOptions)
+        ? withOpenClawAgentDatabaseAsync(databaseOptions, write)
+        : write();
+    },
+    operationLabel,
+  );
 }
 
 async function claimPreparedSessionTranscriptProjection(
@@ -548,6 +559,7 @@ export function startSessionTranscriptIndexReconcile(
   const pending = yieldToGateway()
     .then(async () => {
       let reconciledSessions = 0;
+      let retryCount = 0;
       while (true) {
         // Leave a successor's pending request intact if the previous memory
         // owner was disposed while its successful pass was settling.
@@ -561,6 +573,8 @@ export function startSessionTranscriptIndexReconcile(
         });
         reconciledSessions += result.reconciledSessions;
         if (state.pending) {
+          retryCount += 1;
+          await sleep(computeBackoffSchedule(RECONCILE_RETRY_BACKOFF_MS, retryCount));
           continue;
         }
         // Check and relinquish ownership without an async boundary. A later

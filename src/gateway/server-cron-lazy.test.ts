@@ -2,6 +2,7 @@
  * Tests lazy cron startup behavior in the gateway server.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../test/helpers/promise.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayCronServiceContract } from "./server-cron-contract.js";
@@ -22,14 +23,6 @@ vi.mock("./server-cron.js", () => ({
 }));
 
 const { createLazyGatewayCronState } = await import("./server-cron-lazy.js");
-
-function deferred() {
-  let resolve = () => {};
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 describe("createLazyGatewayCronState", () => {
   beforeEach(() => {
@@ -469,6 +462,9 @@ function createCronService(): GatewayCronServiceContract {
     remove: vi.fn(async () => ({ ok: true }) as never),
     removeStaleJobFamily: vi.fn(async () => 0),
     removeAgentJobsTransactional: vi.fn(async (_agentId, commit) => await commit()),
+    quiesceJobs: vi.fn(async (_jobs, commitGuard) => {
+      commitGuard();
+    }),
     run: vi.fn(async () => ({ ok: true, ran: false, reason: "invalid-spec" }) as never),
     enqueueRun: vi.fn(async () => ({ ok: true, ran: false, reason: "invalid-spec" }) as never),
     getJob: vi.fn(() => undefined),

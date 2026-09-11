@@ -7,8 +7,11 @@ import { canonicalPathFromExistingAncestor, isPathInside } from "../infra/fs-saf
 import {
   GIT_TIMEOUT_MS,
   executeGitCommand as runGit,
+  normalizeGitPathForFilesystem,
   requireGitCommand as requireGit,
+  requireGitCommandOutput,
 } from "../infra/git-exec.js";
+import { assertNotUpdateCapturePath } from "../infra/update-capture-paths.js";
 import { formatCommandOutput, formatCommandResult } from "../process/command-error.js";
 import { spawnCommand } from "../process/exec-spawn.js";
 import { BACKUP_RUN_ERROR_MAX_LENGTH } from "../state/backup-run-records.contract.js";
@@ -113,7 +116,7 @@ function gitBackupRepositoryPrivacyRemediation(repositoryPath: string, cause: un
 async function assertGitRepository(repositoryPath: string, env?: NodeJS.ProcessEnv): Promise<void> {
   const topLevel = await requireGit(repositoryPath, ["rev-parse", "--show-toplevel"], { env });
   const [canonicalTopLevel, canonicalRepository] = await Promise.all([
-    fs.realpath(topLevel),
+    fs.realpath(normalizeGitPathForFilesystem(topLevel)),
     fs.realpath(repositoryPath),
   ]);
   if (canonicalTopLevel !== canonicalRepository) {
@@ -273,6 +276,9 @@ export async function createGitBackup(params: {
   now?: Date;
   gitEnv?: NodeJS.ProcessEnv;
 }): Promise<GitBackupCreateResult> {
+  for (const database of params.databases) {
+    assertNotUpdateCapturePath(database.path, params.stateDir);
+  }
   const repositoryPath = path.resolve(params.repositoryPath);
   await initializeGitBackupRepository({
     repositoryPath,
@@ -514,10 +520,11 @@ export async function readGitBackupLog(params: {
     `--max-count=${params.limit}`,
     "--pretty=format:%H%x09%cI%x09%s",
   ]);
-  if (result.code !== 0) {
-    throw new Error(formatGitBackupCommandResult("git log", result));
-  }
-  return result.stdout
+  return requireGitCommandOutput(
+    "git log",
+    result,
+    (command, failure) => new Error(formatGitBackupCommandResult(command, failure)),
+  )
     .split("\n")
     .filter(Boolean)
     .map((line) => {

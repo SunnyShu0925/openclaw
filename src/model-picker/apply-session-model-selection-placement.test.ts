@@ -1,10 +1,12 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { loadProviderScopedThinkingCatalog } from "../agents/model-catalog.runtime.js";
 import {
   loadSessionEntryReadOnly,
+  patchSessionEntryCore,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -12,6 +14,18 @@ import {
   onSessionLifecycleEvent,
   type SessionLifecycleEvent,
 } from "../sessions/session-lifecycle-events.js";
+
+const runtimeChoiceMocks = vi.hoisted(() => ({
+  validate: vi.fn<() => string | undefined>(),
+}));
+
+// Runtime eligibility belongs to its owner; exercise its commit guard here.
+vi.mock("../agents/model-runtime-choice.js", () => ({
+  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
+    kind: "ready",
+    validate: runtimeChoiceMocks.validate,
+  })),
+}));
 
 vi.mock("../agents/model-catalog.runtime.js", () => ({
   loadProviderScopedThinkingCatalog: vi.fn(async () => []),
@@ -125,6 +139,7 @@ function createParams(overrides: Partial<ApplySessionModelSelectionParams> = {})
 }
 
 beforeEach(() => {
+  runtimeChoiceMocks.validate.mockReset().mockReturnValue(undefined);
   vi.mocked(loadProviderScopedThinkingCatalog).mockReset().mockResolvedValue([]);
   lifecycleEvents = [];
   unsubscribeLifecycle = onSessionLifecycleEvent((event) => lifecycleEvents.push(event));
@@ -226,6 +241,64 @@ describe("applySessionModelSelection — placement guard", () => {
 
     expect(result.status).toBe("applied");
     expect(placementMocks.resolveWorkerPlacementSessionRuntimeCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("rejects runtime availability revoked while waiting for the session writer", async () => {
+    const tempRoot = tempDirs.make("openclaw-model-picker-runtime-race-");
+    const storePath = path.join(tempRoot, "sessions.json");
+    const sessionKey = "agent:main:dm:runtime-race";
+    const sessionEntry = createEntry({ sessionId: "runtime-race-1" });
+    const initial = structuredClone(sessionEntry);
+    await replaceSessionEntry({ sessionKey, storePath }, sessionEntry);
+    const entered = createDeferred();
+    const release = createDeferred();
+    const writer = patchSessionEntryCore({ sessionKey, storePath }, async () => {
+      entered.resolve();
+      await release.promise;
+      return null;
+    });
+    await entered.promise;
+    let runtimeAvailable = true;
+    const validated = createDeferred();
+    runtimeChoiceMocks.validate.mockImplementation(() => {
+      validated.resolve();
+      return runtimeAvailable ? undefined : "Selected runtime is no longer available.";
+    });
+    const pending = applySessionModelSelection(
+      createParams({
+        sessionEntry,
+        sessionKey,
+        storePath,
+        request: {
+          provider: "openai",
+          model: "gpt-4o",
+          isDefault: false,
+          runtime: { kind: "set", runtime: "openclaw" },
+        },
+      }),
+    );
+    try {
+      // Preparation accepts the runtime; revoke it before the queued write can commit.
+      expect(
+        await Promise.race([validated.promise.then(() => true), pending.then(() => false)]),
+      ).toBe(true);
+      runtimeAvailable = false;
+    } finally {
+      release.resolve();
+      await writer;
+    }
+
+    expect(await pending).toMatchObject({
+      status: "rejected",
+      reason: "not-allowed",
+      message: "Selected runtime is no longer available.",
+    });
+    expect(loadSessionEntryReadOnly({ sessionKey, storePath })).toEqual(initial);
+    expect(sessionEntry).toEqual(initial);
+    expect(lifecycleEvents).toEqual([]);
+    expect(effects.triggerSessionPatchHook).not.toHaveBeenCalled();
+    expect(effects.refreshQueuedFollowupSession).not.toHaveBeenCalled();
+    expect(effects.enqueueSystemEvent).not.toHaveBeenCalled();
   });
 
   it("rejects a model selection when placement activates between the pre-write read and the durable commit", async () => {

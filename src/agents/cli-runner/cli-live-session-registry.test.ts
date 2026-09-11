@@ -4,10 +4,7 @@ import type {
   CliBackendLiveSessionCapability,
   CliBackendLiveSessionHandle,
 } from "../../plugins/cli-backend.types.js";
-import {
-  prepareSystemAgentRunAdmission,
-  resolveAdmittedRunActiveAssertion,
-} from "../admitted-run-context.js";
+import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import { buildPreparedCliRunContext } from "../cli-runner.test-helpers.js";
 import { hasModelFallbackStop } from "../failover-error.js";
 import { createAgentCleanupScope } from "../run-cleanup-timeout.js";
@@ -266,23 +263,12 @@ describe("generic plugin-owned live session registry", () => {
     expect(owner.capability.current()).toBe(owner.session);
     owner.revokeCaller();
     expect(owner.controller.signal.aborted).toBe(false);
-    expect(resolveAdmittedRunActiveAssertion(owner.context.params.admittedRunContext)).toBeTypeOf(
-      "function",
-    );
     expect(() => owner.capability.current()).toThrow("caller is no longer active");
     expect(() => owner.capability.activate(owner.session)).toThrow("caller is no longer active");
+    await expect(owner.capability.restart()).rejects.toThrow("caller is no longer active");
+    expect(owner.close).not.toHaveBeenCalled();
     await closeCliLiveSession(owner.context, "restart");
     expect(owner.close).toHaveBeenCalledOnce();
-  });
-
-  it("rejects a caller-revoked restart before closing the registered process", async () => {
-    const owner = await createOwner();
-    owner.register();
-    owner.revokeCaller();
-    await expect(restartCliLiveSession(owner.context)).rejects.toThrow(
-      "caller is no longer active",
-    );
-    expect(owner.close).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(
@@ -298,7 +284,7 @@ describe("generic plugin-owned live session registry", () => {
       });
       owner.register();
       const restarting = await createOwner({ sessionId: owner.sessionId });
-      const run = restartCliLiveSession(restarting.context);
+      const run = restarting.capability.restart();
       const observed = run.then(
         () => "restarted",
         (error: unknown) => error,
@@ -309,9 +295,6 @@ describe("generic plugin-owned live session registry", () => {
           restarting.revokeCaller();
         }
         expect(restarting.controller.signal.aborted).toBe(false);
-        expect(
-          resolveAdmittedRunActiveAssertion(restarting.context.params.admittedRunContext),
-        ).toBeTypeOf("function");
       } finally {
         held.resolve();
       }
@@ -356,7 +339,7 @@ describe("generic plugin-owned live session registry", () => {
         expect(cleanupScope.outcome).toBe("uncertain");
         const next = await createOwner({ sessionId: owner.sessionId });
         next.context.params.oneShotCliRun = true;
-        const nextRestart = restartCliLiveSession(next.context).then(
+        const nextRestart = next.capability.restart().then(
           () => undefined,
           (error: unknown) => error,
         );
@@ -383,7 +366,7 @@ describe("generic plugin-owned live session registry", () => {
     original.register();
     const next = await createOwner({ sessionId: original.sessionId });
     let settled = false;
-    const restarting = restartCliLiveSession(next.context).then(() => {
+    const restarting = next.capability.restart().then(() => {
       settled = true;
     });
     original.capability.remove(original.session);
@@ -454,6 +437,22 @@ describe("generic plugin-owned live session registry", () => {
       expect(original.capability.current()).toBe(original.session);
     },
   );
+
+  it("refuses plugin restart when the exact live generation is required", async () => {
+    const original = await createOwner({ generation: "required-live-process" });
+    original.register();
+    const resumed = await createOwner({
+      sessionId: original.sessionId,
+      requiredGeneration: original.session.generation,
+    });
+    expect(resumed.capability.current()).toBe(original.session);
+    await expect(resumed.capability.restart()).rejects.toMatchObject({
+      reason: "session_expired",
+      code: "cli_live_session_changed",
+    });
+    expect(original.close).not.toHaveBeenCalled();
+    expect(original.capability.current()).toBe(original.session);
+  });
 
   it("transfers admitted MCP authority to the original private process before capture", async () => {
     const original = await createOwner({

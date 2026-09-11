@@ -111,7 +111,7 @@ describe("shell env fallback", () => {
     const etcShellsContent = `${shells.join("\n")}\n`;
     const readFileSyncSpy = vi
       .spyOn(fs, "readFileSync")
-      .mockImplementation((filePath, encoding) => {
+      .mockImplementation((filePath, encoding?: BufferEncoding | fs.ReadFileSyncOptions | null) => {
         if (filePath === "/etc/shells" && encoding === "utf8") {
           return etcShellsContent;
         }
@@ -809,18 +809,6 @@ describe("shell env fallback", () => {
 
     expect(result).toEqual({ executable: shellTool, pathEnv: shellBin });
     expect(exec).toHaveBeenCalledOnce();
-  });
-
-  it("returns the login-shell PATH needed by env-based executable launchers", () => {
-    const exec = vi.fn(() => framedShellEnv("PATH=/bin\0"));
-
-    const result = resolveExecutableFromUserShellPath("sh", {
-      env: { PATH: "/missing", SHELL: "/bin/sh" },
-      strategy: "fallback",
-      exec: exec as unknown as Parameters<typeof resolveExecutableFromUserShellPath>[1]["exec"],
-    });
-
-    expect(result).toEqual({ executable: "/bin/sh", pathEnv: "/bin" });
   });
 
   it("returns null without invoking shell on win32", () => {

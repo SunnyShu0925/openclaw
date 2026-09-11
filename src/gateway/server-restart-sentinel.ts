@@ -196,6 +196,7 @@ export async function deliverQueuedSessionDelivery(params: {
   if (
     await deliverQueuedGeneratedMediaAgentTurn({
       entry: queuedEntry,
+      runtimeContextFragments: queuedEntry.runtimeContextFragments,
       canonicalKey,
       agentId,
       storePath,
@@ -427,7 +428,7 @@ async function loadRestartSentinelStartupTask(params: {
   }
   const sessionKey = payload.sessionKey?.trim();
   const message = formatRestartSentinelMessage(payload);
-  const updateRun = payload.kind === "update" ? await finalizeRestartUpdateRun(payload) : undefined;
+  let updateRun = payload.kind === "update" ? await finalizeRestartUpdateRun(payload) : undefined;
   const updateRunId = updateRun?.runId;
   let noticeMessage =
     payload.kind === "update"
@@ -468,28 +469,41 @@ async function loadRestartSentinelStartupTask(params: {
         reason: payload.stats?.reason ?? null,
       });
       if (updateRunId) {
-        // A lost updater must leave a terminal outcome after the existing
-        // verification deadline; first-terminal-wins preserves a completed CLI result.
-        const expiredRun = await finalizeRestartUpdateRun(payload, true);
-        if (expiredRun) {
-          noticeMessage = renderUpdateRunReport(expiredRun).markdown;
+        // Expiry bounds notice delivery, not CLI verification. Only Gateway-owned
+        // runs finish here; first-terminal-wins preserves completed CLI results.
+        updateRun = await finalizeRestartUpdateRun(payload, true);
+        if (updateRun) {
+          noticeMessage = renderUpdateRunReport(updateRun).markdown;
         }
       }
     }
 
+    // A pending owner can outlive this retry window. Reserving the permanent
+    // finished-notice key now would suppress its eventual verified report.
+    if (updateRun?.status === "running") {
+      return { status: "skipped" as const, reason: "update-restart-pending" };
+    }
+
     if (!routedSessionKey) {
-      const controlPlaneOnlyConfigRestart =
-        (payload.kind === "config-patch" || payload.kind === "config-apply") &&
+      const targetlessCliOutcome =
+        payload.kind === "update" &&
+        updateRun?.trigger === "cli" &&
+        !updateRun.origin.sessionKey &&
+        !updateRun.origin.deliveryContext;
+      const controlPlaneOnlyAcknowledgement =
+        (payload.kind === "config-patch" ||
+          payload.kind === "config-apply" ||
+          targetlessCliOutcome) &&
         (typeof payload.message !== "string" || payload.message.trim().length === 0) &&
         !payload.continuation &&
         !payload.deliveryContext &&
         payload.threadId == null;
-      if (controlPlaneOnlyConfigRestart) {
-        // A targetless config acknowledgement has no agent turn to resume.
-        // Synthesizing a main-session wake races real restart recovery and spends a model turn.
+      if (controlPlaneOnlyAcknowledgement) {
+        // A targetless control-plane/CLI acknowledgement has no agent turn to
+        // resume. An inferred wake can bootstrap an unrelated workspace on boot.
         const consumed = await clearRestartSentinelIfRevision(sentinelRevision);
         if (!consumed) {
-          log.info(`${summary}: newer restart sentinel preserved while consuming config restart`);
+          log.info(`${summary}: newer restart sentinel preserved while consuming acknowledgement`);
         }
         return { status: "ran" as const };
       }

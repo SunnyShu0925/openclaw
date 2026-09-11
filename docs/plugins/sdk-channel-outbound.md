@@ -125,8 +125,14 @@ export const demoMessageAdapter = defineChannelMessageAdapter({
 ```
 
 Only declare capabilities the native transport actually preserves. Cover
-each declared send, receipt, live-preview, and receive-ack capability with
-the contract helpers exported from this subpath.
+each declared capability with the matching contract helper exported from this
+subpath:
+
+- send: `verifyChannelMessageAdapterCapabilityProofs(...)`
+- durable final delivery: `verifyDurableFinalCapabilityProofs(...)`
+- live preview: `verifyChannelMessageLiveCapabilityAdapterProofs(...)` and
+  `verifyChannelMessageLiveFinalizerProofs(...)`
+- receive ack: `verifyChannelMessageReceiveAckPolicyAdapterProofs(...)`
 
 ## Outbound echo suppression
 
@@ -237,6 +243,14 @@ Use `payloadOutcomes` when a batch mixes sent, suppressed, and failed
 payloads. Do not infer hook cancellation from an empty legacy
 direct-delivery result.
 
+Failure is not permission to send the same payload through another path.
+Once admitted, the queue owns retry or reconciliation until its exact owner
+acknowledges or terminally retires the intent. Pending custody is not a
+delivery receipt: preserve partial receipts, and do not report an unconfirmed
+`ask_user` prompt as visible. Gateway `OUTBOUND_DELIVERY_QUEUED` responses mean
+delivery is pending and must not be resent; an ambiguous send may need
+reconciliation rather than an automatic retry.
+
 When a transport creates a thread during its first successful send, the
 outbound adapter may implement `adoptTargetFromDelivery(...)`. Return the
 typed thread ID from the platform receipt and core carries it into later
@@ -320,3 +334,11 @@ Follow the dated removal-eligibility window in [Migration](/plugins/sdk-migratio
 This subpath is not tied to the next Plugin SDK major, and eligibility does not
 itself remove an export. External imports do not emit a runtime warning; update
 plugin imports rather than waiting for one.
+
+## Related
+
+- [Channel inbound API](/plugins/sdk-channel-inbound) — the receive side that records and dispatches before a reply is sent
+- [Channel ingress API](/plugins/sdk-channel-ingress) — the resolver that produces the participant identity a send is attributed to
+- [Building channel plugins](/plugins/sdk-channel-plugins) — the full channel plugin walkthrough
+- [Plugin SDK subpaths](/plugins/sdk-subpaths) — which subpath exports each helper
+- [Plugin SDK migration](/plugins/sdk-migration) — removal-eligibility windows for legacy outbound exports

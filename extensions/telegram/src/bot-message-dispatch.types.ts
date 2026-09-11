@@ -144,8 +144,9 @@ type TelegramProgressCompositor = {
   markFinalReplyStarted: () => void;
   markFinalReplyDelivered: () => void;
   beginNewTurn: (options?: { force?: boolean }) => boolean;
-  reset: () => void;
-  suppress: () => void;
+  beginAssistantMessage: () => void;
+  resetActivity: (options?: { suppressed?: boolean }) => void;
+  resetReasoningProgress: () => void;
   cancel: () => void;
   pushToolProgress: (
     line?: string | ChannelProgressDraftLine,
@@ -227,6 +228,7 @@ export type TelegramDispatchTurn = TelegramDispatchTurnConfig &
   TelegramReplyStateSlice & {
     queuedFinal: boolean;
     agentRunFailed?: boolean;
+    sendPolicyDenied?: boolean;
     noVisibleReplyFallbackEligible: boolean;
     suppressSilentReplyFallback: boolean;
     hadErrorReplyFailureOrSkip: boolean;

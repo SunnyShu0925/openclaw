@@ -4,6 +4,7 @@ import type { Duplex, Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 import { toErrorObject } from "../../infra/errors.js";
+import { withTimeout } from "../../infra/fs-safe.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import {
   resolveRuntimeWorkerArgv,
@@ -161,6 +162,7 @@ export async function createServiceChildRelayAdapter(
     useWindowsJobAnchor ? undefined : params.secretInput,
   );
   const controlFd = useWindowsJobAnchor ? undefined : reserveStdioEntry(stdio, "pipe");
+  const lineageFd = useWindowsJobAnchor ? undefined : reserveStdioEntry(stdio, "pipe");
   reserveStdioEntry(stdio, "ipc");
 
   if (params.abortSignal?.aborted) {
@@ -181,7 +183,13 @@ export async function createServiceChildRelayAdapter(
 
   // SAFETY: a defined controlFd was reserved as a pipe in this exact spawn stdio array.
   const control = controlFd === undefined ? null : (child.stdio[controlFd] as Duplex | null);
-  if (!child.connected || (!useWindowsJobAnchor && (!control || !child.stdout || !child.stderr))) {
+  // Its reader stays outside the killed process group, including escaped writers.
+  // SAFETY: lineageFd was reserved as a pipe in this exact spawn stdio array.
+  const lineage = lineageFd === undefined ? null : (child.stdio[lineageFd] as Readable | null);
+  if (
+    !child.connected ||
+    (!useWindowsJobAnchor && (!control || !lineage || !child.stdout || !child.stderr))
+  ) {
     child.kill("SIGKILL");
     const error = new Error(
       "service child cleanup identity lost: lifecycle channels were not created",
@@ -217,6 +225,8 @@ export async function createServiceChildRelayAdapter(
   let childError: Error | undefined;
   let childDisconnected = false;
   let childExited = false;
+  const relayExit = createDeferredCore();
+  const lineageEnd = createDeferredCore();
   let requestedSignal: "SIGTERM" | "SIGKILL" | undefined;
   let waitError: Error | undefined;
   const startup = createDeferredCore();
@@ -255,18 +265,19 @@ export async function createServiceChildRelayAdapter(
   child.stderr?.once("end", settleWait);
   child.stderr?.once("close", settleWait);
 
-  const loseIdentity = (message: string) => {
+  const loseIdentity = (message: string, options?: ErrorOptions) => {
     if (state === "closed" || state === "identity-lost") {
       return;
     }
     state = "identity-lost";
-    waitError = new Error(`service child cleanup identity lost: ${message}`);
+    waitError = new Error(`service child cleanup identity lost: ${message}`, options);
     events.emitError(waitError, "process");
     if (!commandPid) {
       startup.reject(waitError);
     }
     settleWait();
     extinctionCompletion.reject(waitError);
+    lineage?.destroy();
   };
 
   const sendChildMessage = (
@@ -305,6 +316,29 @@ export async function createServiceChildRelayAdapter(
     });
   };
 
+  lineage?.once("end", () => {
+    lineageEnd.resolve();
+    if (state !== "starting" && state !== "active") {
+      return;
+    }
+    void sendControlMessage({
+      type: "lineage-closed",
+      generation,
+      sequence: ++outboundSequence,
+    }).catch((error: unknown) => {
+      if (state === "starting" || state === "active") {
+        loseIdentity(toErrorObject(error, "lineage notification failed").message);
+      }
+    });
+  });
+  lineage?.once("error", (error) => loseIdentity("lineage observation failed", { cause: error }));
+  lineage?.once("close", () => {
+    if (!lineage.readableEnded) {
+      loseIdentity("lineage reader closed before EOF");
+    }
+  });
+  lineage?.resume();
+
   const onConstructionAbort = () => {
     child.kill("SIGKILL");
     // The anchor may still be cleaning its group after relay loss. Keep that
@@ -340,19 +374,61 @@ export async function createServiceChildRelayAdapter(
       loseIdentity(missingReceiptError);
       return;
     }
-    // Only kernel group disappearance certifies closure. The anchor's census is
-    // advisory: hidden or concurrently forked members can be absent from ps.
+    // Closure requires lineage EOF outside the group as well as kernel group
+    // disappearance; an escaped writer survives the anchor's group-wide KILL.
     const deadline = Date.now() + GRACEFUL_CANCEL_TIMEOUT_MS;
+    if (!childExited) {
+      // Control EOF can precede the relay reaping its anchor. Darwin reports
+      // EPERM for that unreaped zombie group, so join before observing it.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        loseIdentity("service child relay did not exit before cleanup deadline");
+        return;
+      }
+      try {
+        await withTimeout(
+          Promise.race([relayExit.promise, extinctionCompletion.promise]),
+          remainingMs,
+          { message: "service child relay did not exit before cleanup deadline" },
+        );
+      } catch {
+        loseIdentity("service child relay did not exit before cleanup deadline");
+        return;
+      }
+      if (state !== "closing") {
+        return;
+      }
+    }
+    if (!lineage?.readableEnded) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        loseIdentity("command lineage remained open after its anchor closed");
+        return;
+      }
+      try {
+        await withTimeout(
+          Promise.race([lineageEnd.promise, extinctionCompletion.promise]),
+          remainingMs,
+          { message: "command lineage remained open after its anchor closed" },
+        );
+      } catch {
+        loseIdentity("command lineage remained open after its anchor closed");
+        return;
+      }
+    }
+    if (state !== "closing") {
+      return;
+    }
     for (;;) {
       try {
         // Observation only: signalling a retired numeric PGID could hit a reused group.
         process.kill(-anchorPid, 0);
-      } catch (error) {
+      } catch (cause) {
         // SAFETY: process.kill throws Node system errors; only the exact ESRCH code certifies absence.
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        if ((cause as NodeJS.ErrnoException).code === "ESRCH") {
           finishAuthorityClose(missingReceiptError);
         } else {
-          loseIdentity("owned process group disappearance could not be confirmed");
+          loseIdentity("owned process group disappearance could not be confirmed", { cause });
         }
         return;
       }
@@ -403,6 +479,19 @@ export async function createServiceChildRelayAdapter(
     } else if (message.type === "closing") {
       closingReceipt = true;
       state = "closing";
+      if (control) {
+        // Retire cancellation before acknowledging this exact POSIX receipt.
+        // The ACK releases the sender, not the independent native extinction join.
+        outboundSequence += 1;
+        void sendControlMessage({
+          type: "closing-ack",
+          generation,
+          sequence: outboundSequence,
+          closingSequence: message.sequence,
+        }).catch((error: unknown) => {
+          controlError ??= toErrorObject(error, "closing acknowledgement failed");
+        });
+      }
     } else if (message.type === "startup-error") {
       if (useWindowsJobAnchor) {
         startup.reject(new Error(message.error));
@@ -525,6 +614,7 @@ export async function createServiceChildRelayAdapter(
   });
   child.once("exit", () => {
     childExited = true;
+    relayExit.resolve();
     removeConstructionAbortListener();
     if (useWindowsJobAnchor) {
       finishWindowsAuthority();
@@ -542,6 +632,8 @@ export async function createServiceChildRelayAdapter(
     stdinMode: params.stdinMode,
     secretFd: params.secretInput?.fd,
     controlFd,
+    lineageFd,
+    ...(control ? { acknowledgeClosing: true as const } : {}),
     windowsShellCommand: params.windowsShellCommand,
   };
   const stdin = createManagedChildStdin(child.stdin);

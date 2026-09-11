@@ -315,7 +315,7 @@ describe("resolveWorkerPlacementSessionRuntimeCapabilities", () => {
       entry: {
         sessionId: "s-override",
         updatedAt: 0,
-        providerOverride: "anthropic",
+        providerOverride: "claude-cli",
         modelOverride: "opus-4.7",
         agentRuntimeOverride: "openclaw",
       },

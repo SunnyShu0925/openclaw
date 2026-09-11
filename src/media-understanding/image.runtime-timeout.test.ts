@@ -3,6 +3,8 @@
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
+import { createEmptyPluginMetadataSnapshot } from "../agents/test-helpers/embedded-agent-runner-e2e-mocks.js";
 import {
   SET_RUNTIME_API_KEY_FIELD,
   imageRuntimeMocks,
@@ -12,6 +14,10 @@ import {
 
 const {
   completeMock,
+  acquireAgentRunPreparedModelRuntimeMock,
+  shouldPreferProviderRuntimeResolvedModelMock,
+  getApiKeyForModelMock,
+  prepareProviderRuntimeAuthMock,
   setRuntimeApiKeyMock,
   discoverModelsMock,
   releasePreparedModelRuntimeMock,
@@ -479,7 +485,7 @@ describe("describeImageWithModelCore", () => {
     expect(options.timeoutMs).toBe(25);
   });
 
-  it("releases the prepared runtime when a provider ignores caller cancellation", async () => {
+  it("retains the prepared runtime until an aborted provider actually settles", async () => {
     discoverModelsMock.mockReturnValue({
       find: vi.fn(() => ({
         api: "openai-responses",
@@ -489,7 +495,11 @@ describe("describeImageWithModelCore", () => {
         baseUrl: "https://api.openai.com/v1",
       })),
     });
-    completeMock.mockImplementation(() => new Promise(() => {}));
+    const completion = createDeferred();
+    completeMock.mockImplementation(async () => {
+      await completion.promise;
+      throw new Error("late provider failure");
+    });
     const controller = new AbortController();
     const result = describeImageWithModelCore({
       cfg: {},
@@ -504,12 +514,17 @@ describe("describeImageWithModelCore", () => {
       signal: controller.signal,
     });
 
-    await vi.waitFor(() => expect(completeMock).toHaveBeenCalledOnce());
-    const assertion = expect(result).rejects.toThrow("caller cancelled provider request");
-    controller.abort(new Error("caller cancelled provider request"));
-    await assertion;
+    try {
+      await vi.waitFor(() => expect(completeMock).toHaveBeenCalledOnce());
+      const assertion = expect(result).rejects.toThrow("caller cancelled provider request");
+      controller.abort(new Error("caller cancelled provider request"));
+      await assertion;
 
-    expect(releasePreparedModelRuntimeMock).toHaveBeenCalledOnce();
+      expect(releasePreparedModelRuntimeMock).not.toHaveBeenCalled();
+    } finally {
+      completion.resolve();
+    }
+    await vi.waitFor(() => expect(releasePreparedModelRuntimeMock).toHaveBeenCalledOnce());
   });
 
   it("keeps the full configured timeout for provider requests after slow setup", async () => {
@@ -602,21 +617,62 @@ describe("describeImageWithModelCore", () => {
     expect(completeMock).not.toHaveBeenCalled();
   });
 
-  it("releases a prepared generation that resolves after the setup timeout", async () => {
+  it.each(
+    (["timeout", "cancellation"] as const).flatMap((mode) =>
+      (["admission", "model", "credential", "credential-model", "runtime-auth"] as const).map(
+        (stage) => ({ mode, stage }),
+      ),
+    ),
+  )("stops image setup after $mode during $stage", async ({ mode, stage }) => {
     vi.useFakeTimers();
-    let finishResolution!: (value: {
-      authStorage: typeof preparedAuthStorage;
-      model: { provider: string; id: string; api: string; input: string[] };
-      modelRegistry: object;
-    }) => void;
-    resolveModelAsyncMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishResolution = resolve;
+    const started = createDeferred();
+    const finish = createDeferred();
+    const delay = async <T>(value: T): Promise<T> => {
+      started.resolve();
+      await finish.promise;
+      return value;
+    };
+    const resolved = {
+      authStorage: preparedAuthStorage,
+      model: {
+        provider: "openai",
+        id: "gpt-5.4-mini",
+        api: "openai-responses",
+        input: ["text", "image"],
+      },
+      modelRegistry: {},
+    };
+    resolveModelAsyncMock.mockResolvedValue(resolved);
+    shouldPreferProviderRuntimeResolvedModelMock.mockReturnValue(stage === "credential-model");
+    if (stage === "admission") {
+      acquireAgentRunPreparedModelRuntimeMock.mockImplementationOnce(() =>
+        delay({
+          snapshot: {
+            agentDir: "/tmp/openclaw-agent",
+            config: {},
+            metadataSnapshot: createEmptyPluginMetadataSnapshot(),
+            createStores: () => ({ authStorage: preparedAuthStorage, modelRegistry: {} }),
+          },
+          release: releasePreparedModelRuntimeMock,
         }),
-    );
-
-    const result = describeImageWithModelCore({
+      );
+    } else if (stage === "model") {
+      resolveModelAsyncMock.mockImplementationOnce(() => delay(resolved));
+    } else if (stage === "credential") {
+      getApiKeyForModelMock.mockImplementationOnce(() =>
+        delay({ apiKey: "test-token", source: "test", mode: "oauth" }),
+      );
+    } else if (stage === "credential-model") {
+      resolveModelAsyncMock
+        .mockResolvedValueOnce(resolved)
+        .mockImplementationOnce(() => delay(resolved));
+    } else {
+      prepareProviderRuntimeAuthMock.mockImplementationOnce(() =>
+        delay({ apiKey: "prepared-test-token" }),
+      );
+    }
+    const controller = new AbortController();
+    const pending = describeImageWithModelCore({
       cfg: {},
       agentDir: "/tmp/openclaw-agent",
       provider: "openai",
@@ -626,72 +682,32 @@ describe("describeImageWithModelCore", () => {
       mime: "image/png",
       prompt: "Describe the image.",
       timeoutMs: 25,
-    });
-    const assertion = expect(result).rejects.toThrow(
-      "image description setup timed out after 25ms before provider request started",
-    );
-    await vi.advanceTimersByTimeAsync(25);
-    await assertion;
-
-    finishResolution({
-      authStorage: preparedAuthStorage,
-      model: {
-        provider: "openai",
-        id: "gpt-5.4-mini",
-        api: "openai-responses",
-        input: ["text", "image"],
-      },
-      modelRegistry: {},
-    });
-    await vi.runAllTimersAsync();
-    await vi.waitFor(() => expect(releasePreparedModelRuntimeMock).toHaveBeenCalledOnce());
-    expect(completeMock).not.toHaveBeenCalled();
-  });
-
-  it("releases a prepared generation when cancellation wins during setup", async () => {
-    let finishResolution!: (value: {
-      authStorage: typeof preparedAuthStorage;
-      model: { provider: string; id: string; api: string; input: string[] };
-      modelRegistry: object;
-    }) => void;
-    resolveModelAsyncMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishResolution = resolve;
-        }),
-    );
-    const controller = new AbortController();
-    const result = describeImageWithModelCore({
-      cfg: {},
-      agentDir: "/tmp/openclaw-agent",
-      provider: "openai",
-      model: "gpt-5.4-mini",
-      buffer: Buffer.from("png-bytes"),
-      fileName: "image.png",
-      mime: "image/png",
-      prompt: "Describe the image.",
-      timeoutMs: 1000,
       signal: controller.signal,
     });
-
-    await vi.waitFor(() => expect(resolveModelAsyncMock).toHaveBeenCalledOnce());
-    const assertion = expect(result).rejects.toThrow("caller cancelled during setup");
-    controller.abort(new Error("caller cancelled during setup"));
-    await assertion;
+    const rejected = expect(pending).rejects.toThrow(
+      mode === "timeout"
+        ? "image description setup timed out after 25ms before provider request started"
+        : "caller cancelled during setup",
+    );
+    await started.promise;
+    if (mode === "timeout") {
+      await vi.advanceTimersByTimeAsync(25);
+    } else {
+      controller.abort(new Error("caller cancelled during setup"));
+    }
+    await rejected;
     expect(releasePreparedModelRuntimeMock).not.toHaveBeenCalled();
-
-    finishResolution({
-      authStorage: preparedAuthStorage,
-      model: {
-        provider: "openai",
-        id: "gpt-5.4-mini",
-        api: "openai-responses",
-        input: ["text", "image"],
-      },
-      modelRegistry: {},
-    });
-
+    finish.resolve();
+    await vi.runAllTimersAsync();
     await vi.waitFor(() => expect(releasePreparedModelRuntimeMock).toHaveBeenCalledOnce());
+    expect(resolveModelAsyncMock).toHaveBeenCalledTimes(
+      stage === "admission" ? 0 : stage === "credential-model" ? 2 : 1,
+    );
+    expect(getApiKeyForModelMock).toHaveBeenCalledTimes(
+      stage === "admission" || stage === "model" ? 0 : 1,
+    );
+    expect(prepareProviderRuntimeAuthMock).toHaveBeenCalledTimes(stage === "runtime-auth" ? 1 : 0);
+    expect(setRuntimeApiKeyMock).not.toHaveBeenCalled();
     expect(completeMock).not.toHaveBeenCalled();
   });
 });

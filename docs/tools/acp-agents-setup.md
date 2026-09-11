@@ -212,8 +212,13 @@ or flag value should remain one argv token:
 }
 ```
 
-- `agents.<id>.command` is the executable or existing command string for that ACP agent.
-- `agents.<id>.args` is optional. Each array item is shell-quoted before OpenClaw passes it through the current acpx command-string registry.
+- `agents.<id>.command` is the executable or existing command string for that ACP agent. An existing absolute executable path stays one argument even when it contains spaces.
+- `agents.<id>.args` is optional. Each item is passed unchanged, including empty strings, spaces, quotes, and backslashes. Do not add shell quoting inside the array.
+
+On Windows, put the executable path in `command` and its flags in `args`.
+Quote relative executable paths containing spaces when using a command string.
+Generated adapter wrappers also use argv arrays. Reconnecting an unchanged
+session preserves its saved command representation and conversation history.
 
 See [Plugins](/tools/plugin).
 
@@ -357,3 +362,4 @@ If you need to restrict permissions, set `nonInteractivePermissions` to `deny` s
 - [ACP agents](/tools/acp-agents) — overview, operator runbook, concepts
 - [Sub-agents](/tools/subagents)
 - [Multi-agent routing](/concepts/multi-agent)
+- [ACPx plugin reference](/plugins/reference/acpx) — the acpx runtime plugin's manifest and config, including the Pi session catalog

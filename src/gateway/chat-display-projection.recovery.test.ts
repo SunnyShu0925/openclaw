@@ -1,6 +1,7 @@
+import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 import { describe, expect, it } from "vitest";
 import { projectChatDisplayMessages } from "./chat-display-projection.js";
-import { SessionHistorySseState } from "./session-history-state.js";
+import { buildSessionHistorySnapshot, SessionHistorySseState } from "./session-history-state.js";
 
 const user = { role: "user", content: "hello", __openclaw: { seq: 1 } };
 const failed = {
@@ -27,15 +28,110 @@ function projectedIds(messages: unknown[]) {
 
 describe("recovered assistant errors", () => {
   it.each([
+    { name: "empty", content: [] },
+    { name: "partial text", content: [{ type: "text", text: "Partial reply" }] },
+    {
+      name: "structured",
+      content: [{ type: "toolCall", id: "partial-call", name: "read", arguments: {} }],
+    },
+    {
+      name: "phased final text",
+      content: [
+        {
+          type: "text",
+          text: "Partial reply",
+          textSignature: '{"v":1,"id":"msg_partial","phase":"final_answer"}',
+        },
+      ],
+    },
+    {
+      name: "phased commentary",
+      content: [
+        {
+          type: "text",
+          text: "PRIVATE_COMMENTARY",
+          textSignature: '{"v":1,"id":"msg_commentary","phase":"commentary"}',
+        },
+      ],
+    },
+    {
+      name: "over-limit partial text",
+      content: [{ type: "text", text: "Partial reply ".repeat(700) }],
+    },
+    {
+      name: "over-limit phased final",
+      content: [
+        {
+          type: "text",
+          text: "Partial reply ".repeat(700),
+          textSignature: '{"v":1,"id":"msg_long","phase":"final_answer"}',
+        },
+      ],
+    },
+    { name: "string content", content: "Partial reply" },
+    { name: "text alias", content: [], text: "Partial reply" },
+  ])("retains safe incomplete-tool guidance in $name history", ({ name: _name, ...partial }) => {
+    const message = {
+      ...failed,
+      ...partial,
+      errorCode: "incomplete_tool_call",
+      errorMessage: "PRIVATE_PROVIDER_DETAIL",
+    };
+    const original = structuredClone(message);
+    for (const messages of [
+      projectChatDisplayMessages([user, message]),
+      buildSessionHistorySnapshot({ rawMessages: [user, message] }).history.messages,
+    ]) {
+      expect(messages.at(-1)).toMatchObject({
+        stopReason: "error",
+        content: expect.arrayContaining([
+          expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining(
+              "⚠️ The provider returned an unfinished tool call. Earlier actions may have completed; verify their results before continuing.",
+            ),
+          }),
+        ]),
+      });
+      const serialized = JSON.stringify(messages);
+      expect(serialized).not.toContain("PRIVATE_PROVIDER_DETAIL");
+      expect(serialized).not.toContain("PRIVATE_COMMENTARY");
+      expect(serialized.split("The provider returned an unfinished tool call.")).toHaveLength(2);
+      if (JSON.stringify(partial).includes("Partial reply")) {
+        expect(serialized).toContain("Partial reply");
+      }
+      if (JSON.stringify(partial).includes("partial-call")) {
+        expect(serialized).toContain("partial-call");
+      }
+      expect(projectChatDisplayMessages(messages)).toEqual(messages);
+    }
+    expect(message).toEqual(original);
+  });
+
+  it.each([
     { content: [] },
+    { content: [{ type: "input_text", text: "" }] },
+    { content: [{ type: "input_text", text: STREAM_ERROR_FALLBACK_TEXT }] },
+    { content: [{ type: "text", text: STREAM_ERROR_FALLBACK_TEXT }] },
+    { content: [{ type: "reasoning", text: "Internal reasoning" }] },
+    { content: [{ type: "redacted_thinking", data: "redacted" }] },
     { content: "" },
     { content: [{ type: "text", text: "  " }] },
     { content: [{ type: "thinking", thinking: "private reasoning" }] },
-  ])("retires a non-visible failed attempt after its run answers: %j", ({ content }) => {
-    const failure = { ...failed, content };
-    const raw = [user, failure, answer];
+  ])("retires repeated non-visible failed attempts after their run answers: %j", ({ content }) => {
+    const failures = Array.from({ length: 4 }, (_, attempt) => ({
+      ...failed,
+      content,
+      __openclaw: { ...failed["__openclaw"], id: `attempt-${attempt}`, seq: attempt + 2 },
+    }));
+    const final = { ...answer, __openclaw: { ...answer["__openclaw"], seq: 6 } };
+    const raw = [user, ...failures, final];
     const original = structuredClone(raw);
-    expect(projectedIds(raw)).toEqual([user["__openclaw"], answer["__openclaw"]]);
+    expect(projectedIds(raw)).toEqual([user["__openclaw"], final["__openclaw"]]);
+    expect(buildSessionHistorySnapshot({ rawMessages: raw }).history.messages).toEqual([
+      user,
+      final,
+    ]);
     expect(raw).toEqual(original);
   });
 

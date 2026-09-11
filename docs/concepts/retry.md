@@ -16,21 +16,28 @@ title: "Retry policy"
 
 These defaults apply to channel sends. Model requests use the recovery policy below.
 
-| Setting            | Default   |
-| ------------------ | --------- |
-| Attempts           | 3         |
-| Max delay cap      | 30000 ms  |
-| Jitter             | 0.1 (10%) |
-| Telegram min delay | 400 ms    |
-| Discord min delay  | 500 ms    |
+| Setting       | Default   | Applies to                                                             |
+| ------------- | --------- | ---------------------------------------------------------------------- |
+| Attempts      | 3         | Every envelope below                                                   |
+| Jitter        | 0.1 (10%) | Every envelope below                                                   |
+| Min delay     | 400 ms    | The shared channel envelope: Telegram and any channel with no override |
+| Min delay     | 500 ms    | Discord sends and Discord REST calls                                   |
+| Max delay cap | 30000 ms  | The shared channel envelope and Discord sends                          |
+| Max delay cap | 300000 ms | Discord REST API calls                                                 |
+
+These are per-request envelopes. The Discord Gateway WebSocket reconnect loop is
+separate and does not use them: it allows up to 50 reconnect attempts and backs
+off exponentially from 2000 ms to a 30000 ms cap, with no jitter.
 
 ## Behavior
 
 ### Model providers
 
-Agent runs automatically recover from temporary rate limits, overloads, and provider failures before showing a terminal error. OpenClaw allows up to eight recovery attempts within a 90-second retry window. Backoff starts around one second, increases exponentially, and adds jitter to spread concurrent retries. Provider pacing, including `Retry-After` and “Please try again in …” hints, takes precedence when it requires a longer wait.
+Agent runs automatically recover from temporary rate limits, overloads, and provider failures before showing a terminal error. Rate limits receive up to 10 total attempts; other transient failures allow eight retries within a 90-second retry window. Backoff starts around one second, increases exponentially, and adds jitter to spread concurrent retries. Provider pacing, including `retry-after`, `retry-after-ms`, and “Please try again in …” hints, sets the minimum wait even beyond the 30-second backoff cap. Cancellation and the run deadline still stop recovery.
 
-Recovery continues the existing transcript with an instruction to preserve completed work and inspect interrupted actions before deciding whether to repeat them. It can recover a throttle after tool activity or partial output without resubmitting the original user request. The run shows a retry status while waiting and remains cancellable. Long quota windows, billing failures, authentication errors, and provider refusals do not use this transient retry budget.
+Recovery continues the existing transcript with an instruction to preserve completed work and inspect interrupted actions before deciding whether to repeat them. It can recover a throttle after tool activity or partial output without resubmitting the original user request. The run shows one transient retry indicator while waiting and remains cancellable. Recovered attempts do not leave persisted assistant errors; only terminal failure retains one error. Billing failures, authentication errors, and provider refusals do not use this transient retry budget.
+
+Exhausted subscription, daily, weekly, or monthly usage windows go directly to eligible auth-profile or model fallback. A long `Retry-After` value alone does not establish usage-window exhaustion: temporary throttles still honor the provider's minimum wait.
 
 The [model failover controller](/concepts/model-failover#model-fallback) owns this recovery budget. Once it is exhausted, OpenClaw follows eligible auth-profile or model fallback paths, or surfaces the final failure. Native harnesses may retry individual requests internally before returning a terminal failure to OpenClaw; those internal retries are separate from OpenClaw's continuation budget.
 
@@ -53,7 +60,7 @@ For SDK calls that retain internal retries, Stainless-based SDKs such as Anthrop
 
 Discord and Telegram channel retry timings are built in and are not configurable in `openclaw.json`.
 
-The embedded runtime's existing session setting `retry.provider.maxRetries` overrides its recovery-attempt budget. This is an embedded session setting, not an `openclaw.json` key, and it does not configure native harness request retries. Automatic recovery requires no new configuration.
+The embedded runtime's existing session setting `retry.provider.maxRetries` overrides its recovery retry budget; `0` disables retries, and rate limits remain capped at 10 total attempts. This is an embedded session setting, not an `openclaw.json` key, and it does not configure native harness request retries. Automatic recovery requires no new configuration.
 
 ## Notes
 
@@ -79,3 +86,4 @@ late result without authorizing another send.
 
 - [Model failover](/concepts/model-failover)
 - [Command queue](/concepts/queue)
+- [Streaming and chunking](/concepts/streaming)

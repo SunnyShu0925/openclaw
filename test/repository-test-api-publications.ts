@@ -8,8 +8,6 @@ const publications: Record<string, string | symbol> = {
   "extensions/memory-lancedb/lancedb-runtime.ts": Symbol.for(
     "openclaw.memoryLanceDbRuntimeTestApi",
   ),
-  "packages/ai/src/transports/openai-responses-transport.ts":
-    "openclawOpenAIResponsesTransportTestApi",
   "src/agents/agent-hooks/compaction-safeguard.ts": Symbol.for(
     "openclaw.compactionSafeguardTestApi",
   ),
@@ -43,8 +41,6 @@ const publications: Record<string, string | symbol> = {
   "src/agents/media-generation-task-status-shared.ts": Symbol.for(
     "openclaw.mediaGenerationDuplicateGuardTestApi",
   ),
-  "src/agents/models-config.plan.ts": Symbol.for("openclaw.modelsConfigPlanTestApi"),
-  "src/agents/models-config.ts": Symbol.for("openclaw.modelsConfigTestApi"),
   "src/agents/prepared-model-runtime.ts": Symbol.for("openclaw.preparedModelRuntimeTestApi"),
   "src/agents/session-suspension.ts": Symbol.for("openclaw.sessionSuspensionTestApi"),
   "src/agents/sessions/tools/bash.ts": Symbol.for("openclaw.bashToolTestApi"),
@@ -79,7 +75,6 @@ const publications: Record<string, string | symbol> = {
   "src/auto-reply/usage-bar/template.ts": Symbol.for("openclaw.usageBarTemplateTestApi"),
   "src/cli/command-secret-gateway.ts": Symbol.for("openclaw.commandSecretGatewayTestApi"),
   "src/cli/gateway-cli/run.ts": Symbol.for("openclaw.gatewayRunTestApi"),
-  "src/commands/backup-shared.ts": Symbol.for("openclaw.backupPlanTestApi"),
   "src/commands/doctor-auth-migration-receipts.ts": Symbol.for(
     "openclaw.authProfileMigrationReceiptsTestApi",
   ),

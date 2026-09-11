@@ -1,5 +1,6 @@
 import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
+import { readGitHubPublicationSessionLifecycle } from "../state/github-publication-session-lifecycles.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -17,6 +18,7 @@ import {
   createTestGitHubPublicationRuntime as createGitHubPublicationRuntime,
   githubPublicationTestMocks,
   installGitHubPublicationTestHarness,
+  persistPublicationTestSession,
   root,
   seedLocalPublication,
 } from "./github-publication.test-support.js";
@@ -25,11 +27,58 @@ import {
   seedActivePlacement,
 } from "./worker-environments/placement-dispatch-test-fixtures.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
+import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
 
 const mocks = githubPublicationTestMocks();
 
 describe("Gateway GitHub publication boundaries", () => {
   installGitHubPublicationTestHarness();
+
+  it.each(["retained", "missing"] as const)(
+    "does not rebind a %s receipt lifecycle when replaying after the real reset",
+    async (bindingState) => {
+      const session = await persistPublicationTestSession(REQUEST.sessionKey);
+      const placements = createWorkerSessionPlacementStore({
+        database: openOpenClawStateDatabase(),
+      });
+      const requested = placements.startDispatch(REQUEST);
+      placements.fail({
+        sessionId: REQUEST.sessionId,
+        expectedGeneration: requested.generation,
+        recoveryError: "Provisioning stopped before allocation",
+      });
+      const coordinator = createTestGitHubPublicationCoordinator({ placements });
+      const input = {
+        sessionKey: REQUEST.sessionKey,
+        agentId: REQUEST.agentId,
+        idempotencyKey: "deferred-before-reset",
+      };
+      const accepted = await coordinator.requestForSession(input);
+      expect(accepted.status).toBe("requested");
+      const binding = { publicationKind: "shared" as const, requestId: accepted.requestId };
+      const originalLifecycle = readGitHubPublicationSessionLifecycle(binding);
+      expect(originalLifecycle).toEqual({ lifecycle_revision: session.read().lifecycleRevision });
+      if (bindingState === "missing") {
+        openOpenClawStateDatabase()
+          .db.prepare(
+            "DELETE FROM github_publication_session_lifecycles WHERE publication_kind = 'shared' AND request_id = ?",
+          )
+          .run(accepted.requestId);
+      }
+      await session.reset(placements);
+      const replay = await coordinator.requestForSession(input);
+      expect(replay).toMatchObject({ status: "failed", code: "session_changed" });
+      expect(readGitHubPublicationSessionLifecycle(binding)).toEqual(
+        bindingState === "retained" ? originalLifecycle : undefined,
+      );
+      await coordinator.resumeSessionRequests();
+      expect(coordinator.read(accepted.requestId)).toMatchObject({
+        status: "failed",
+        code: "session_changed",
+      });
+      expect(commands.some((argv) => argv.includes("push") || argv.includes("POST"))).toBe(false);
+    },
+  );
 
   it.each([
     ["URL rewrite", "url.https://attacker.invalid/.insteadof https://github.com/"],
@@ -641,6 +690,11 @@ describe("Gateway GitHub publication boundaries", () => {
   ])("queues a cloud session publication with $label", async ({ claimRunId, expectedRunId }) => {
     const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     const placements = createWorkerSessionPlacementStore({ database });
+    seedAttachedPlacementEnvironment(database, {
+      environmentId: "environment-deferred-request",
+      sessionId: REQUEST.sessionId,
+      ownerEpoch: 2,
+    });
     const active = seedActivePlacement(placements, {
       environmentId: "environment-deferred-request",
       ownerEpoch: 2,
@@ -688,6 +742,11 @@ describe("Gateway GitHub publication boundaries", () => {
   it("publishes deferred session requests alongside an accepted turn claim", async () => {
     const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     const placements = createWorkerSessionPlacementStore({ database });
+    seedAttachedPlacementEnvironment(database, {
+      environmentId: "environment-accepted-deferred",
+      sessionId: REQUEST.sessionId,
+      ownerEpoch: 2,
+    });
     const active = seedActivePlacement(placements, {
       environmentId: "environment-accepted-deferred",
       ownerEpoch: 2,
@@ -725,6 +784,11 @@ describe("Gateway GitHub publication boundaries", () => {
   it("defers an orphaned turn request and publishes it when the workspace is quiescent", async () => {
     const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     const placements = createWorkerSessionPlacementStore({ database });
+    seedAttachedPlacementEnvironment(database, {
+      environmentId: "environment-1",
+      sessionId: REQUEST.sessionId,
+      ownerEpoch: 2,
+    });
     const active = seedActivePlacement(placements, {
       environmentId: "environment-1",
       ownerEpoch: 2,
@@ -763,6 +827,11 @@ describe("Gateway GitHub publication boundaries", () => {
   it("defers snapshot preparation failures without blocking workspace acceptance", async () => {
     const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     const placements = createWorkerSessionPlacementStore({ database });
+    seedAttachedPlacementEnvironment(database, {
+      environmentId: "environment-snapshot-failure",
+      sessionId: REQUEST.sessionId,
+      ownerEpoch: 2,
+    });
     const active = seedActivePlacement(placements, {
       environmentId: "environment-snapshot-failure",
       ownerEpoch: 2,
