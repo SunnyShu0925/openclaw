@@ -764,12 +764,9 @@ describe("preemptive-compaction", () => {
 
     const toolSchemaTokens = estimateToolSchemaTokenPressure(
       Array.from({ length: 79 }, (_, i) => ({
-        type: "function",
-        function: {
-          name: `tool_${i}`,
-          description: "x".repeat(4000),
-          parameters: { type: "object", properties: { arg: { type: "string" } } },
-        },
+        name: `tool_${i}`,
+        description: "x".repeat(4000),
+        parameters: { type: "object", properties: { arg: { type: "string" } } },
       })),
     );
 
@@ -788,6 +785,27 @@ describe("preemptive-compaction", () => {
     expect(withTools.route).not.toBe("fits");
     expect(withTools.estimatedPromptTokens).toBeGreaterThan(withoutTools.estimatedPromptTokens);
     expect(withTools.overflowTokens).toBeGreaterThan(0);
+  });
+
+  it("excludes runtime output schemas and metadata from tool pressure", () => {
+    const definition = {
+      name: "lookup",
+      description: "Look up a record.",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+    };
+    const runtimeTool = {
+      ...definition,
+      label: "Record lookup",
+      outputSchema: { type: "string", description: "result documentation ".repeat(4_000) },
+      executionMode: "parallel",
+      hideFromChannelProgress: true,
+      resultContentSource: "network",
+      execute: async () => ({ content: [], details: {} }),
+    };
+
+    expect(estimateToolSchemaTokenPressure([runtimeTool])).toBe(
+      estimateToolSchemaTokenPressure([definition]),
+    );
   });
 
   it("does not alter the estimate when toolSchemaTokens is zero or undefined", () => {

@@ -14,6 +14,7 @@ import {
   estimateJsonPayloadTokenPressure,
   estimateMessageTokenPressure,
   estimateRenderedPromptTokens,
+  estimateToolSchemaTokens,
 } from "../../sessions/context-token-pressure.js";
 import { estimateToolResultReductionPotential } from "../tool-result-truncation.js";
 import type { PreemptiveCompactionRoute } from "./preemptive-compaction.types.js";
@@ -94,11 +95,10 @@ function resolveProviderContextBoundary(
 }
 
 /** Estimates token pressure from serialized tool definitions sent alongside the prompt. */
-export function estimateToolSchemaTokenPressure(tools: unknown[]): number {
-  if (!Array.isArray(tools) || tools.length === 0) {
-    return 0;
-  }
-  return Math.ceil(estimateJsonPayloadTokenPressure(tools) * SAFETY_MARGIN);
+export function estimateToolSchemaTokenPressure(
+  tools: Parameters<typeof estimateToolSchemaTokens>[0],
+): number {
+  return Math.ceil(estimateToolSchemaTokens(tools) * SAFETY_MARGIN);
 }
 
 function estimateTranscriptBoundaryTokenPressure(params: {
