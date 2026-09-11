@@ -751,7 +751,7 @@ describe("preemptive-compaction", () => {
 
   it("includes tool schema tokens in the precheck estimate so large catalogs trigger overflow", () => {
     const messages = [makeAssistantHistory("short conversation text")];
-    const contextTokenBudget = 150_000;
+    const contextTokenBudget = 128_000;
     const reserveTokens = 20_000;
 
     const withoutTools = shouldPreemptivelyCompactBeforePrompt({
@@ -770,7 +770,7 @@ describe("preemptive-compaction", () => {
       })),
     );
 
-    expect(toolSchemaTokens).toBeGreaterThan(50_000);
+    expect(toolSchemaTokens).toBeGreaterThan(contextTokenBudget - reserveTokens);
 
     const withTools = shouldPreemptivelyCompactBeforePrompt({
       messages,
