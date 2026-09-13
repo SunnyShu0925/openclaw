@@ -14,6 +14,7 @@ import {
   createPrivateSqliteTempDirectorySync,
   resolvePrivateSqliteSnapshotStagingRoot,
 } from "./sqlite-private-directory.js";
+import { emitSnapshotCleanupFailure } from "./sqlite-readonly-location-cleanup.js";
 import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
 import {
   readSqliteSchemaHeader,
@@ -349,23 +350,33 @@ export function adoptPreparedLocation(
   location: string,
   ownedRoot?: string,
   requireCleanup = false,
+  onCleanupFailure?: (report: { cleanupRoot: string }) => void,
 ): PreparedSqliteReadOnlyLocation {
   const tempDir = ownedRoot ?? path.dirname(location);
   let active = true;
   let pending: Promise<boolean> | undefined;
+  let reported = false;
   const complete = (removed: boolean) => {
     if (removed) {
       active = false;
     } else if (requireCleanup) {
       throw new Error(`SQLite read-only worker snapshot cleanup failed: ${tempDir}`);
+    } else if (!reported) {
+      // Record once per owner; non-throwing so a successful read is never turned
+      // into a failure by cleanup (mirrors sqlite-coordinator's idle-close diagnostic).
+      reported = true;
+      emitSnapshotCleanupFailure({ cleanupRoot: tempDir }, onCleanupFailure);
     }
     return removed;
   };
   return {
     location,
+    cleanupRoot: tempDir,
     cleanup: () => {
       if (pending) {
-        return complete(false);
+        // Pending async removal: return false without a false warning;
+        // requireCleanup delegates to complete(false) for the fatal throw.
+        return requireCleanup ? complete(false) : false;
       }
       if (!active) {
         return true;
