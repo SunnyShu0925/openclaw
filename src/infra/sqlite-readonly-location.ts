@@ -14,7 +14,11 @@ import {
   createPrivateSqliteTempDirectorySync,
   resolvePrivateSqliteSnapshotStagingRoot,
 } from "./sqlite-private-directory.js";
-import { emitSnapshotCleanupFailure } from "./sqlite-readonly-location-cleanup.js";
+import {
+  adoptPreparedLocation,
+  removeTempDirectory,
+  removeTempDirectoryAsync,
+} from "./sqlite-readonly-location-cleanup.js";
 import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
 import {
   readSqliteSchemaHeader,
@@ -34,14 +38,6 @@ const SQLITE_READONLY_RESULT_CODE = 8;
 const SQLITE_RESULT_CODE_MASK = 0xff;
 const SQLITE_JOURNAL_MAGIC = Buffer.from([0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]);
 export const SQLITE_SNAPSHOT_STAGING_PREFIX = `openclaw-sqlite-readonly-${process.pid}-`;
-const pendingTempDirectoryCleanup = new Set<string>();
-let cleanupExitHandlerInstalled = false;
-const tempDirectoryRemovalOptions = {
-  force: true,
-  maxRetries: 3,
-  recursive: true,
-  retryDelay: 20,
-} as const;
 
 type PinnedFile = {
   descriptor: number;
@@ -305,102 +301,6 @@ function rollbackJournalReferencesSuperJournal(journalPath: string): boolean {
   } finally {
     fs.closeSync(descriptor);
   }
-}
-
-function recordTempDirectoryCleanup(tempDir: string, removed: boolean): boolean {
-  if (removed) {
-    pendingTempDirectoryCleanup.delete(tempDir);
-    return true;
-  }
-  pendingTempDirectoryCleanup.add(tempDir);
-  if (!cleanupExitHandlerInstalled) {
-    cleanupExitHandlerInstalled = true;
-    process.once("exit", () => {
-      for (const pendingDir of pendingTempDirectoryCleanup) {
-        try {
-          fs.rmSync(pendingDir, { force: true, recursive: true });
-        } catch {
-          // The directory is private and remains registered until process teardown completes.
-        }
-      }
-    });
-  }
-  return false;
-}
-
-export function removeTempDirectory(tempDir: string): boolean {
-  try {
-    fs.rmSync(tempDir, tempDirectoryRemovalOptions);
-    return recordTempDirectoryCleanup(tempDir, true);
-  } catch {
-    return recordTempDirectoryCleanup(tempDir, false);
-  }
-}
-
-export async function removeTempDirectoryAsync(tempDir: string): Promise<boolean> {
-  try {
-    await fs.promises.rm(tempDir, tempDirectoryRemovalOptions);
-    return recordTempDirectoryCleanup(tempDir, true);
-  } catch {
-    return recordTempDirectoryCleanup(tempDir, false);
-  }
-}
-
-export function adoptPreparedLocation(
-  location: string,
-  ownedRoot?: string,
-  requireCleanup = false,
-  onCleanupFailure?: (report: { cleanupRoot: string }) => void,
-): PreparedSqliteReadOnlyLocation {
-  const tempDir = ownedRoot ?? path.dirname(location);
-  let active = true;
-  let pending: Promise<boolean> | undefined;
-  let reported = false;
-  const complete = (removed: boolean) => {
-    if (removed) {
-      active = false;
-    } else if (requireCleanup) {
-      throw new Error(`SQLite read-only worker snapshot cleanup failed: ${tempDir}`);
-    } else if (!reported) {
-      // Record once per owner; non-throwing so a successful read is never turned
-      // into a failure by cleanup (mirrors sqlite-coordinator's idle-close diagnostic).
-      reported = true;
-      emitSnapshotCleanupFailure({ cleanupRoot: tempDir }, onCleanupFailure);
-    }
-    return removed;
-  };
-  return {
-    location,
-    cleanupRoot: tempDir,
-    cleanup: () => {
-      if (pending) {
-        // Pending async removal: return false without a false warning;
-        // requireCleanup delegates to complete(false) for the fatal throw.
-        return requireCleanup ? complete(false) : false;
-      }
-      if (!active) {
-        return true;
-      }
-      return complete(removeTempDirectory(tempDir));
-    },
-    cleanupAsync: () => {
-      if (pending) {
-        return pending;
-      }
-      if (!active) {
-        return Promise.resolve(true);
-      }
-      // Register ownership before invoking native removal; concurrent callers
-      // join it, and synchronous callers cannot race or report early success.
-      pending = Promise.resolve()
-        .then(() => removeTempDirectoryAsync(tempDir))
-        .then(complete)
-        .finally(() => {
-          pending = undefined;
-        });
-      return pending;
-    },
-  };
 }
 
 function recoverPrivateRollbackCopy(snapshotPath: string): void {

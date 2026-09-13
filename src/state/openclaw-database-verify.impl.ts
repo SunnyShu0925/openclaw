@@ -37,9 +37,7 @@ function isVerifyResult(value: unknown): value is OpenClawDatabaseVerifyResult {
     typeof result.path === "string" &&
     typeof result.ok === "boolean" &&
     (result.error === undefined || typeof result.error === "string") &&
-    (result.terminal === undefined || typeof result.terminal === "boolean") &&
-    (result.warnings === undefined ||
-      (Array.isArray(result.warnings) && result.warnings.every((w) => typeof w === "string")))
+    (result.terminal === undefined || typeof result.terminal === "boolean")
   );
 }
 
@@ -176,15 +174,6 @@ export function runDatabaseVerifyWorker(
     }
     if (!result) {
       throw new Error("database verification worker exited without results");
-    }
-    // Surface cleanup warnings carried from the child without converting a
-    // successful verification into a failure.
-    for (const r of result) {
-      if (r.warnings && r.warnings.length > 0) {
-        for (const w of r.warnings) {
-          log.warn("database verification snapshot cleanup warning", { path: r.path, warning: w });
-        }
-      }
     }
     return result;
   });

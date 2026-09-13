@@ -2,11 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setLoggerOverride } from "../logging/logger.js";
+import { testApi } from "../logging/logger.test-support.js";
 import {
+  adoptPreparedLocation,
   type CleanupFailureReport,
-  SnapshotCleanupWarning,
 } from "./sqlite-readonly-location-cleanup.js";
-import { adoptPreparedLocation } from "./sqlite-readonly-location.js";
 
 // chmod-based denial only works on POSIX where the process is not root
 // (root bypasses mode bits, and Windows chmod does not revoke deletion ACLs).
@@ -19,14 +20,27 @@ beforeEach(async () => {
   root = await fs.promises.realpath(
     await fs.promises.mkdtemp(path.join(os.tmpdir(), "snapshot-cleanup-owner-")),
   );
+  await fs.promises.writeFile(path.join(root, "cleanup.log"), "");
+  setLoggerOverride({ level: "warn", file: path.join(root, "cleanup.log") });
 });
 
 afterEach(async () => {
+  await testApi.flushFileLogQueueForTests();
+  setLoggerOverride(null);
+  vi.restoreAllMocks();
   // Restore permissions so the fixture can be removed even when a test revoked
   // write access on a parent to trigger a real cleanup failure.
   await fs.promises.chmod(root, 0o700).catch(() => undefined);
   await fs.promises.rm(root, { recursive: true, force: true });
 });
+
+async function readCleanupLog(): Promise<unknown[]> {
+  await testApi.flushFileLogQueueForTests();
+  return (await fs.promises.readFile(path.join(root, "cleanup.log"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line): unknown => JSON.parse(line));
+}
 
 // Revoke write access on the parent so fs.rmSync cannot unlink the owned root.
 // This is a real filesystem failure at the cleanup boundary, not a mocked rm.
@@ -54,7 +68,7 @@ describe.runIf(supportsChmodDenial)("chmod-denied cleanup failure", () => {
     }
 
     expect(reports).toHaveLength(1);
-    expect(reports[0]?.cleanupRoot).toBe(ownedRoot);
+    expect(reports[0]).toEqual({ cleanupRoot: ownedRoot, operation: "rm", code: "EACCES" });
     // The owned copy remains on disk; the exit handler retries removal later.
     expect(fs.existsSync(ownedRoot)).toBe(true);
     // A successful read's outcome is preserved: cleanup did not throw, and repeated
@@ -84,16 +98,14 @@ it("does not emit a warning when cleanup succeeds", async () => {
 });
 
 describe.runIf(supportsChmodDenial)("chmod-denied default sink", () => {
-  it("uses process.emitWarning as the default sink when no callback is supplied", async () => {
+  it("uses the structured log as the default sink when no callback is supplied", async () => {
     const ownedRoot = path.join(root, "default-sink");
     const location = path.join(ownedRoot, "database.sqlite");
     await fs.promises.mkdir(ownedRoot, { recursive: true, mode: 0o700 });
     await fs.promises.writeFile(location, "snapshot bytes");
 
-    const warnings: string[] = [];
-    vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
-      warnings.push(warning instanceof Error ? warning.message : warning);
-    });
+    const processWarning = vi.spyOn(process, "emitWarning");
+    const consoleWarning = vi.spyOn(console, "warn");
 
     const prepared = adoptPreparedLocation(location, ownedRoot, false);
 
@@ -101,22 +113,34 @@ describe.runIf(supportsChmodDenial)("chmod-denied default sink", () => {
     try {
       expect(prepared.cleanup()).toBe(false);
     } finally {
-      vi.restoreAllMocks();
       await fs.promises.chmod(root, 0o700);
     }
 
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(ownedRoot);
-    expect(warnings[0]).toContain("SQLite read-only snapshot cleanup failed");
+    const records = await readCleanupLog();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      "1": { path: ownedRoot, operation: "rm", errorCode: "EACCES" },
+      message: expect.stringContaining("SQLite read-only snapshot cleanup failed"),
+    });
+    expect(processWarning).not.toHaveBeenCalled();
+    expect(consoleWarning).not.toHaveBeenCalled();
   });
 });
 
-it("exposes SnapshotCleanupWarning as a named export for log filtering", () => {
-  const warning = new SnapshotCleanupWarning("/tmp/example");
-  expect(warning).toBeInstanceOf(Error);
-  expect(warning.name).toBe("SnapshotCleanupWarning");
-  expect(warning.message).toContain("/tmp/example");
-  expect(warning.message).toContain("SQLite read-only snapshot cleanup failed");
+it("records structured cleanup diagnostics", async () => {
+  const ownedRoot = path.join(root, "diagnostic-only");
+  await fs.promises.mkdir(ownedRoot);
+  vi.spyOn(fs, "rmSync").mockImplementationOnce(() => {
+    throw Object.assign(new Error("snapshot busy"), { code: "EBUSY" });
+  });
+  const prepared = adoptPreparedLocation(path.join(ownedRoot, "database.sqlite"), ownedRoot);
+  expect(prepared.cleanup()).toBe(false);
+  const records = await readCleanupLog();
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    "1": { path: ownedRoot, operation: "rm", errorCode: "EBUSY" },
+    message: expect.stringContaining("SQLite read-only snapshot cleanup failed"),
+  });
 });
 
 describe.runIf(supportsChmodDenial)("chmod-denied requireCleanup", () => {
@@ -180,14 +204,10 @@ it("does not throw when the onCleanupFailure callback itself throws", async () =
   await fs.promises.mkdir(ownedRoot, { recursive: true, mode: 0o700 });
   await fs.promises.writeFile(location, "snapshot bytes");
 
-  const fallbackWarnings: string[] = [];
-  vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
-    fallbackWarnings.push(warning instanceof Error ? warning.message : warning);
-  });
   // Force removal failure via fs.rmSync mock so the callback is exercised on
   // every platform, including root POSIX and Windows (where chmod can't deny).
   vi.spyOn(fs, "rmSync").mockImplementation(() => {
-    throw new Error("mock removal failure");
+    throw Object.assign(new Error("mock removal failure"), { code: "EBUSY" });
   });
 
   const prepared = adoptPreparedLocation(location, ownedRoot, false, () => {
@@ -202,49 +222,40 @@ it("does not throw when the onCleanupFailure callback itself throws", async () =
     vi.restoreAllMocks();
   }
 
-  // The callback failure fell back to process.emitWarning with the cleanup
-  // diagnostic, and the callback error itself was also warned.
-  expect(fallbackWarnings).toHaveLength(2);
-  expect(fallbackWarnings[0]).toContain("SQLite read-only snapshot cleanup failed");
-  expect(fallbackWarnings[1]).toContain("callback exploded");
+  const records = await readCleanupLog();
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    "1": { path: ownedRoot, operation: "rm", errorCode: "EBUSY" },
+  });
+  expect(JSON.stringify(records)).not.toContain("callback exploded");
 });
 
-it("normalizes non-Error callback failures without throwing", async () => {
+it("reports non-Error callback failures without throwing", async () => {
   const ownedRoot = path.join(root, "non-error-callback");
   const location = path.join(ownedRoot, "database.sqlite");
   await fs.promises.mkdir(ownedRoot, { recursive: true, mode: 0o700 });
   await fs.promises.writeFile(location, "snapshot bytes");
 
-  // Simulate Node's real emitWarning behaviour: it accepts string or Error but
-  // throws ERR_INVALID_ARG_TYPE for numbers, null, or plain objects. The fix
-  // must normalize the callback error before calling emitWarning.
-  const fallbackWarnings: string[] = [];
-  vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
-    if (typeof warning !== "string" && !(warning instanceof Error)) {
-      throw Object.assign(new TypeError("ERR_INVALID_ARG_TYPE"), { code: "ERR_INVALID_ARG_TYPE" });
-    }
-    fallbackWarnings.push(warning instanceof Error ? warning.message : warning);
-  });
+  const processWarning = vi.spyOn(process, "emitWarning");
   vi.spyOn(fs, "rmSync").mockImplementation(() => {
-    throw new Error("mock removal failure");
+    throw Object.assign(new Error("mock removal failure"), { code: "EBUSY" });
   });
 
   const prepared = adoptPreparedLocation(location, ownedRoot, false, () => {
-    // A non-Error throw (number) must not cause emitWarning to throw
-    // ERR_INVALID_ARG_TYPE — it should be normalized to a string warning.
     // oxlint-disable-next-line typescript/only-throw-error -- Exercise non-Error failures at the cleanup boundary.
     throw 42;
   });
 
   try {
-    // On the pre-fix code, process.emitWarning(42) throws ERR_INVALID_ARG_TYPE,
-    // which escapes cleanup() and violates the non-throwing contract.
     expect(prepared.cleanup()).toBe(false);
   } finally {
+    expect(processWarning).not.toHaveBeenCalled();
     vi.restoreAllMocks();
   }
 
-  expect(fallbackWarnings).toHaveLength(2);
-  expect(fallbackWarnings[0]).toContain("SQLite read-only snapshot cleanup failed");
-  expect(fallbackWarnings[1]).toContain("42");
+  const records = await readCleanupLog();
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    "1": { path: ownedRoot, operation: "rm", errorCode: "EBUSY" },
+  });
 });
