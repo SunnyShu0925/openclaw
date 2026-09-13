@@ -578,6 +578,62 @@ describe("prepareSqliteReadOnlyLocation", () => {
     );
   });
 
+  it("names retry count and guidance when async source does not stabilize", async () => {
+    const databasePath = createTempDatabasePath();
+    const sqlite = requireNodeSqlite();
+    const database = new sqlite.DatabaseSync(databasePath);
+    database.exec(
+      "PRAGMA journal_mode = WAL; CREATE TABLE probe (value TEXT); INSERT INTO probe VALUES ('ok');",
+    );
+    database.close();
+    const canonicalPath = fs.realpathSync.native(databasePath);
+    const openSync = fs.openSync.bind(fs);
+    vi.spyOn(fs, "openSync").mockImplementation(((pathname: fs.PathLike, flags: fs.OpenMode) => {
+      if (path.resolve(String(pathname)) === canonicalPath) {
+        const error = new Error("simulated source disappearance");
+        (error as NodeJS.ErrnoException).code = "ENOENT";
+        throw error;
+      }
+      return openSync(pathname, flags);
+    }) as typeof fs.openSync);
+    await expect(prepareSqliteReadOnlyLocationInProcess(databasePath)).rejects.toThrow(
+      /did not stabilize after \d+ read-only inspection attempts/u,
+    );
+    await expect(prepareSqliteReadOnlyLocationInProcess(databasePath)).rejects.toThrow(
+      /Wait a moment for write activity to settle/u,
+    );
+    await expect(prepareSqliteReadOnlyLocationInProcess(databasePath)).rejects.toThrow(
+      canonicalPath,
+    );
+  });
+
+  it("names retry count and guidance when sync source does not stabilize", () => {
+    const databasePath = createTempDatabasePath();
+    const sqlite = requireNodeSqlite();
+    const database = new sqlite.DatabaseSync(databasePath);
+    database.exec(
+      "PRAGMA journal_mode = WAL; CREATE TABLE probe (value TEXT); INSERT INTO probe VALUES ('ok');",
+    );
+    database.close();
+    const canonicalPath = fs.realpathSync.native(databasePath);
+    const openSync = fs.openSync.bind(fs);
+    vi.spyOn(fs, "openSync").mockImplementation(((pathname: fs.PathLike, flags: fs.OpenMode) => {
+      if (path.resolve(String(pathname)) === canonicalPath) {
+        const error = new Error("simulated source disappearance");
+        (error as NodeJS.ErrnoException).code = "ENOENT";
+        throw error;
+      }
+      return openSync(pathname, flags);
+    }) as typeof fs.openSync);
+    expect(() => prepareSqliteReadOnlyLocationSyncInProcess(databasePath)).toThrow(
+      /did not stabilize after \d+ read-only inspection attempts/u,
+    );
+    expect(() => prepareSqliteReadOnlyLocationSyncInProcess(databasePath)).toThrow(
+      /Wait a moment for write activity to settle/u,
+    );
+    expect(() => prepareSqliteReadOnlyLocationSyncInProcess(databasePath)).toThrow(canonicalPath);
+  });
+
   it.runIf(process.platform === "linux")(
     "keeps a live WAL connection's POSIX locks in the owning process",
     async () => {
