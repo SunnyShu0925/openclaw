@@ -235,7 +235,12 @@ type PluginUpdateAttemptState = {
 };
 
 type PluginUpdateAttemptResult =
-  | { kind: "exception"; message: string; error: unknown; nonDestructive: boolean }
+  | {
+      kind: "exception";
+      message: string;
+      error: unknown;
+      code: typeof PLUGIN_INSTALL_ERROR_CODE.STAGED_ARTIFACT_FAILURE | undefined;
+    }
   | ({ kind: "result"; result: PluginUpdateInstallResult } & PluginUpdateAttemptState);
 
 function isPluginUpdateUnchanged(
@@ -484,7 +489,10 @@ export async function runPluginUpdateAttempt(params: {
       kind: "exception",
       message: `Failed to ${phase} ${params.pluginId}: ${String(error)}`,
       error,
-      nonDestructive: error instanceof StagedArtifactFailureError,
+      code:
+        error instanceof StagedArtifactFailureError
+          ? PLUGIN_INSTALL_ERROR_CODE.STAGED_ARTIFACT_FAILURE
+          : undefined,
     };
   }
 
