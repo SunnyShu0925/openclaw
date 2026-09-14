@@ -174,16 +174,3 @@ export function hasSessionPresenceViewers(
 export function hasMultiplePresenceIdentities(value: unknown): boolean {
   return projectPresencePayload(value).users.length >= 2;
 }
-
-const lastPresentationUserIdByScope = new WeakMap<object, string>();
-
-export function resolvePresentationUserId(
-  viewer: AuthenticatedUser | null | undefined,
-  scope: object,
-): string | null {
-  const id = viewer?.identity?.type === "profile" ? viewer.identity.id : null;
-  if (id) {
-    lastPresentationUserIdByScope.set(scope, id);
-  }
-  return id ?? lastPresentationUserIdByScope.get(scope) ?? null;
-}

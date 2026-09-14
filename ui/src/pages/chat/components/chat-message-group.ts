@@ -10,6 +10,7 @@ import {
 } from "../../../components/person-activity-link.ts";
 import { t } from "../../../i18n/index.ts";
 import type { MessageGroup, ToolCard } from "../../../lib/chat/chat-types.ts";
+import { messageClientSourcesLabel } from "../../../lib/chat/message-client-source.ts";
 import { normalizeRoleForGrouping } from "../../../lib/chat/message-normalizer.ts";
 import { formatSenderLabel } from "../../../lib/chat/sender-label.ts";
 import {
@@ -188,24 +189,10 @@ function renderPreparedGroupMessage(
   );
 }
 
-function isPeerSenderGroup(
-  group: Pick<MessageGroup, "sender">,
-  userId: string | null | undefined,
-): boolean {
-  if (!userId) {
-    return false;
-  }
-  const identity = group.sender?.identity;
-  return Boolean(group.sender && !(identity?.type === "profile" && identity.id === userId));
-}
-
 function isOwnSenderGroup(
   group: Pick<MessageGroup, "sender">,
   userId: string | null | undefined,
 ): boolean {
-  if (!userId) {
-    return false;
-  }
   const identity = group.sender?.identity;
   return identity?.type === "profile" && identity.id === userId;
 }
@@ -378,13 +365,27 @@ export function renderActivityGroup(
       `;
 }
 
+function isSourceOnlyUserGroup(
+  group: Pick<MessageGroup, "role" | "sender" | "senderLabel" | "sourceClients">,
+): boolean {
+  return (
+    normalizeRoleForGrouping(group.role) === "user" &&
+    Boolean(group.sourceClients?.length) &&
+    !group.sender &&
+    !group.senderLabel?.trim()
+  );
+}
+
 export function resolveMessageGroupSenderLabel(
-  group: Pick<MessageGroup, "role" | "sender" | "senderLabel"> & {
+  group: Pick<MessageGroup, "role" | "sender" | "senderLabel" | "sourceClients"> & {
     messages: ReadonlyArray<{ message: unknown }>;
   },
-  opts: Pick<RenderMessageGroupOptions, "assistantName" | "userId" | "userName" | "userAvatar">,
+  opts: Pick<RenderMessageGroupOptions, "assistantName" | "userId" | "userName">,
 ): string {
   const normalizedRole = normalizeRoleForGrouping(group.role);
+  if (isSourceOnlyUserGroup(group)) {
+    return messageClientSourcesLabel(group.sourceClients ?? []);
+  }
   if (normalizedRole === "custom") {
     const isError = group.messages.every(({ message }) => {
       const customType = asNullableRecord(message)?.customType;
@@ -399,19 +400,14 @@ export function resolveMessageGroupSenderLabel(
       ? t("chat.workspaceConflict.eventSender")
       : t("common.system");
   }
-  const assistantName = opts.assistantName ?? "Assistant";
-  const resolvedUserName = resolveLocalUserName({
-    name: opts.userName ?? null,
-    avatar: opts.userAvatar ?? null,
-  });
+  const resolvedUserName = resolveLocalUserName({ name: opts.userName });
   const userLabel = group.senderLabel?.trim();
-  const isCurrentUser = normalizedRole === "user" && isOwnSenderGroup(group, opts.userId);
   return normalizedRole === "user"
-    ? isCurrentUser
+    ? isOwnSenderGroup(group, opts.userId)
       ? resolvedUserName
       : (userLabel ?? resolvedUserName)
     : normalizedRole === "assistant"
-      ? (userLabel ?? assistantName)
+      ? (userLabel ?? opts.assistantName ?? "Assistant")
       : normalizedRole === "tool"
         ? t("chat.messages.toolSender")
         : normalizedRole;
@@ -443,8 +439,11 @@ export function renderMessageGroupContent(group: MessageGroup, opts: RenderMessa
 
 export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroupOptions) {
   const normalizedRole = normalizeRoleForGrouping(group.role);
+  const sourceOnly = isSourceOnlyUserGroup(group);
   const assistantName = opts.assistantName ?? "Assistant";
-  const isPeerGroup = normalizedRole === "user" && isPeerSenderGroup(group, opts.userId);
+  const showSenderIdentity =
+    normalizedRole === "user" && Boolean(group.sender) && !isOwnSenderGroup(group, opts.userId);
+  const isPeerGroup = Boolean(opts.userId) && showSenderIdentity;
   const isForwarded = normalizedRole === "assistant" && hasForwardedSource(group);
   const sourceSessionKey = group.senderSession?.sessionKey;
   const who = resolveMessageGroupSenderLabel(group, opts);
@@ -527,6 +526,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
     avatarPlacement === "gutter" &&
     Boolean(preparedMessages[lastMessageIndex]?.source.displayMarkdown);
   const avatar =
+    !sourceOnly &&
     normalizedRole !== "tool" &&
     avatarPlacement === "gutter" &&
     (isForwarded || normalizedRole !== "assistant" || opts.showAssistantAvatar !== false)
@@ -554,6 +554,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
       }${senderHue === null ? "" : " chat-group--sender-tint"}"
       style=${senderHue === null ? nothing : `--chat-sender-hue: ${senderHue}`}
       data-chat-row-key=${group.key}
+      ?data-show-sender-identity=${showSenderIdentity}
     >
       ${inlineUserAvatar ? nothing : avatar}
       <div class="chat-group-messages">
@@ -625,7 +626,8 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
           ? nothing
           : html`<div
               class="chat-group-footer ${
-                normalizedRole === "user" && (isPeerGroup || avatarPlacement !== "footer")
+                normalizedRole === "user" &&
+                (group.sourceClients?.length || showSenderIdentity || avatarPlacement !== "footer")
                   ? "chat-group-footer--persistent-identity"
                   : ""
               }${sendStatus ? " chat-group-footer--send-status" : ""}"
@@ -633,12 +635,12 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
               <div class="chat-group-footer__meta">
                 ${isPeerGroup ? nothing : userFooterActions}
                 ${
-                  normalizedRole === "user" && avatarPlacement === "footer"
+                  normalizedRole === "user" && !sourceOnly && avatarPlacement === "footer"
                     ? renderChatAuthorAvatar(group.sender)
                     : nothing
                 }
                 ${
-                  isForwarded
+                  isForwarded || sourceOnly
                     ? nothing
                     : renderPersonName(
                         who,
@@ -648,6 +650,13 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
                           : null,
                         "chat-sender-name",
                       )
+                }
+                ${
+                  group.sourceClients?.length
+                    ? html`<span class="chat-message-source"
+                        >${messageClientSourcesLabel(group.sourceClients)}</span
+                      >`
+                    : nothing
                 }
                 ${renderChatSendStatus(sendStatus, opts)}
                 ${renderMessageMeta(group.timestamp, meta)}

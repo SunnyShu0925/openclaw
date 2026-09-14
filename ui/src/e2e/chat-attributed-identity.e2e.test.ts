@@ -253,24 +253,16 @@ suite.define(() => {
               },
             },
           });
-          // When the viewer identity is unresolved (profiled=false), the fix
-          // intentionally does not classify attributed messages as peer — own
-          // messages would flash left then right. The peer class and left
-          // alignment only apply once the viewer is known.
-          if (profiled) {
-            const peer = page.locator(".chat-group--peer", {
-              hasText: "Riley joined this conversation.",
-            });
-            await expect(peer.locator(".chat-sender-name")).toHaveText("Riley");
-            await expect(peer.locator(".chat-group-footer")).toHaveCSS("opacity", "1");
-          } else {
-            // Viewer unknown: message is not classified as peer (right-aligned,
-            // same as own messages). The recorded sender name is still preserved.
-            const group = page.locator(".chat-group.user", {
-              hasText: "Riley joined this conversation.",
-            });
-            await expect(group).not.toHaveClass(/chat-group--peer/);
-          }
+          const peer = page.locator(".chat-group.user", {
+            hasText: "Riley joined this conversation.",
+          });
+          await page.mouse.move(0, 0);
+          await page.locator(".agent-chat__composer-combobox textarea").focus();
+          await expect
+            .poll(() => peer.evaluate((row) => row.classList.contains("chat-group--peer")))
+            .toBe(profiled);
+          await expect(peer.locator(".chat-sender-name")).toHaveText("Riley");
+          await expect(peer.locator(".chat-group-footer")).toHaveCSS("opacity", "1");
           if (height === 430) {
             const thread = page.locator(".chat-thread");
             await thread.focus();
