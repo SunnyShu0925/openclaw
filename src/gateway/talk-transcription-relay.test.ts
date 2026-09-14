@@ -1,6 +1,7 @@
 /**
  * Tests talk transcription relay behavior between realtime events and clients.
  */
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
@@ -563,13 +564,13 @@ describe("talk transcription gateway relay", () => {
   it("closes a backpressured owner for final transcripts while healthy owners still receive them", async () => {
     vi.useFakeTimers();
     const createSocket = () => {
-      const socket = {
+      const socket = Object.assign(new EventEmitter(), {
         readyState: WebSocket.OPEN as number,
         bufferedAmount: 0,
         send: vi.fn<(payload: string) => void>(),
         close: vi.fn<(code: number, reason: string) => void>(),
         terminate: vi.fn<() => void>(),
-      };
+      });
       socket.close.mockImplementation(() => {
         socket.readyState = WebSocket.CLOSING;
       });

@@ -1,4 +1,4 @@
-import { getEventListeners } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
@@ -17,7 +17,7 @@ type Frame = {
   payload: TextPayload;
   recipientProfileId?: string;
 };
-type PeerSocket = {
+type PeerSocket = EventEmitter & {
   readyState: number;
   bufferedAmount: number;
   close: () => void;
@@ -28,7 +28,7 @@ type PeerSocket = {
 function createPeer(connId: string, completeImmediately = false) {
   const callbacks: Array<(error?: Error) => void> = [];
   const frames: Frame[] = [];
-  const socket: PeerSocket = {
+  const socket: PeerSocket = Object.assign(new EventEmitter(), {
     readyState: WebSocket.OPEN,
     bufferedAmount: 0,
     close: vi.fn(),
@@ -41,7 +41,7 @@ function createPeer(connId: string, completeImmediately = false) {
         callbacks.push(callback);
       }
     }),
-  };
+  });
   const client: GatewayWsClient = {
     connId,
     socket: socket as unknown as GatewayWsClient["socket"],

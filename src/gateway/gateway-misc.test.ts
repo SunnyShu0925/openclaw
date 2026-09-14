@@ -1,5 +1,6 @@
 // Gateway miscellaneous tests cover shared utility edges around control UI,
 // diagnostics, proxy state, node command policy, and server helper behavior.
+import { EventEmitter } from "node:events";
 import * as fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as os from "node:os";
@@ -288,13 +289,11 @@ type EventFrame = {
   seq?: number;
 };
 
-type RecordingSocket = TestSocket & {
-  sent: EventFrame[];
-};
+type RecordingSocket = TestSocket & { sent: EventFrame[] };
 
 function makeRecordingSocket(): RecordingSocket {
   const sent: EventFrame[] = [];
-  return {
+  return Object.assign(new EventEmitter(), {
     readyState: 1,
     bufferedAmount: 0,
     send: vi.fn((payload: string) => {
@@ -303,7 +302,7 @@ function makeRecordingSocket(): RecordingSocket {
     close: vi.fn(),
     terminate: vi.fn(),
     sent,
-  };
+  });
 }
 
 function makeGatewayWsClient(

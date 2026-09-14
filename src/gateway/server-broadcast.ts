@@ -34,12 +34,9 @@ import type {
   GatewayPluginEventScope,
 } from "./server-broadcast-types.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
-import {
-  MAX_BUFFERED_BYTES,
-  WEBSOCKET_CLOSE_GRACE_MS,
-  WEBSOCKET_OPEN_READY_STATE,
-} from "./server-constants.js";
+import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import type { GatewayClientRegistry } from "./server/client-registry.js";
+import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
@@ -518,18 +515,7 @@ export function createGatewayBroadcaster(params: {
       if (slow) {
         state.retired = true;
         clearPending(state);
-        try {
-          c.socket.close(1008, "slow consumer");
-        } catch {
-          /* ignore */
-        }
-        setTimeout(() => {
-          try {
-            c.socket.terminate();
-          } catch {
-            /* ignore */
-          }
-        }, WEBSOCKET_CLOSE_GRACE_MS).unref?.();
+        closeGatewayTransportWithGrace(state.socket, 1008, "slow consumer");
         continue;
       }
       if (!retained && live?.coalesce && state.inFlight > 0) {
