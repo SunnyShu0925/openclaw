@@ -171,7 +171,12 @@ suite.define(() => {
     const gateway = await installMockGateway(page, {
       featureMethods,
       presenceUsers: [
-        { self: true, id: "alice", name: "Alice", watchedSessions: ["main", sessionKey] },
+        {
+          self: true,
+          id: "alice",
+          name: "Alice",
+          watchedSessions: ["main", sessionKey],
+        },
         { id: "owner", name: "Owner", watchedSessions: ["main", sessionKey] },
       ],
       methodResponses: {
@@ -209,7 +214,13 @@ suite.define(() => {
       const gateway = await installMockGateway(page, {
         featureMethods,
         presenceUsers: [
-          { self: true, id: "alice", name: "Alice", watchedSessions: ["main", sessionKey] },
+          {
+            self: true,
+            id: "alice",
+            identity: { type: "profile" as const, id: "alice" },
+            name: "Alice",
+            watchedSessions: ["main", sessionKey],
+          },
           { id: "owner", name: "Owner", watchedSessions: ["main", sessionKey] },
           { id: "zoe", name: "Zoe", watchedSessions: ["main", sessionKey] },
         ],
@@ -242,11 +253,7 @@ suite.define(() => {
       await expect(typingRow.locator(".agent-chat__typing-bubble > span")).toHaveCount(3);
       await expect(previewBubble).toHaveCount(0);
       await expect(
-        typingRow.locator(
-          kind === "group"
-            ? ".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)"
-            : ".chat-group-footer .chat-author-avatar",
-        ),
+        typingRow.locator(".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)"),
       ).toBeVisible();
       await screenshot(page, "typing-dots-before.png");
 
@@ -415,7 +422,12 @@ suite.define(() => {
       deferredMethods: ["session.suggestions.resolve"],
       featureMethods,
       presenceUsers: [
-        { self: true, id: "owner", name: "Owner", watchedSessions: ["main", sessionKey] },
+        {
+          self: true,
+          id: "owner",
+          name: "Owner",
+          watchedSessions: ["main", sessionKey],
+        },
         { id: "alice", name: "Alice", watchedSessions: ["main", sessionKey] },
       ],
       methodResponses: {
@@ -479,7 +491,12 @@ suite.define(() => {
     const { context, page } = await contextAndPage();
     await installMockGateway(page, {
       presenceUsers: [
-        { self: true, id: "alice", name: "Alice", watchedSessions: ["main"] },
+        {
+          self: true,
+          id: "alice",
+          name: "Alice",
+          watchedSessions: ["main"],
+        },
         { id: "owner", name: "Owner", watchedSessions: ["main"] },
       ],
       methodResponses: { "sessions.list": sessionRow("viewer") },

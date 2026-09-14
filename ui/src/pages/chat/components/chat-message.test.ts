@@ -2203,7 +2203,18 @@ describe("grouped chat rendering", () => {
       behavior: "keeps a peer's recorded sender name visible",
       senderLabel: "alice",
       sender: { id: "profile-1", name: "Alice Example" },
-      viewer: { userName: "Local User" },
+      viewer: { userId: "local-viewer", userName: "Local User" },
+      expectedName: "alice",
+    },
+    {
+      behavior: "keeps a peer's recorded sender name before the viewer identity resolves",
+      senderLabel: "alice",
+      sender: {
+        id: "profile-1",
+        name: "Alice Example",
+        identity: { type: "profile" as const, id: "profile-1" },
+      },
+      viewer: { userId: null, userName: "Local User" },
       expectedName: "alice",
     },
     {
@@ -2340,7 +2351,7 @@ describe("grouped chat rendering", () => {
       label: "attributed sender without a viewer",
       sender: { id: "other-user" },
       userId: null,
-      peer: true,
+      peer: false,
     },
   ])("sets peer alignment for $label", ({ sender, userId, peer }) => {
     const container = document.createElement("div");
@@ -2629,6 +2640,7 @@ describe("grouped chat rendering", () => {
             showReasoning: true,
             showToolCalls: true,
             assistantName: "OpenClaw",
+            userId: "local-viewer",
             avatarPlacement,
           },
         ),

@@ -192,10 +192,22 @@ function isPeerSenderGroup(
   group: Pick<MessageGroup, "sender">,
   userId: string | null | undefined,
 ): boolean {
+  if (!userId) {
+    return false;
+  }
   const identity = group.sender?.identity;
-  return Boolean(
-    group.sender && !(userId && identity?.type === "profile" && identity.id === userId),
-  );
+  return Boolean(group.sender && !(identity?.type === "profile" && identity.id === userId));
+}
+
+function isOwnSenderGroup(
+  group: Pick<MessageGroup, "sender">,
+  userId: string | null | undefined,
+): boolean {
+  if (!userId) {
+    return false;
+  }
+  const identity = group.sender?.identity;
+  return identity?.type === "profile" && identity.id === userId;
 }
 
 export function renderActivityGroup(
@@ -393,8 +405,7 @@ export function resolveMessageGroupSenderLabel(
     avatar: opts.userAvatar ?? null,
   });
   const userLabel = group.senderLabel?.trim();
-  const isPeerGroup = normalizedRole === "user" && isPeerSenderGroup(group, opts.userId);
-  const isCurrentUser = normalizedRole === "user" && Boolean(group.sender) && !isPeerGroup;
+  const isCurrentUser = normalizedRole === "user" && isOwnSenderGroup(group, opts.userId);
   return normalizedRole === "user"
     ? isCurrentUser
       ? resolvedUserName
