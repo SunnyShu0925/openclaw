@@ -51,10 +51,10 @@ export async function closeOwnedStdioProcess(
   process: OwnedStdioProcess,
   options: { graceMs?: number; force?: boolean } = {},
 ): Promise<void> {
+  const rootExit = process.wait();
   const settled = Promise.allSettled([
-    process.wait(),
-    process.waitForExtinction?.() ??
-      Promise.reject(new Error("stdio process cleanup cannot confirm descendant extinction")),
+    rootExit,
+    process.waitForExtinction?.() ?? rootExit.then(() => undefined),
   ]);
   try {
     if (!options.force) {

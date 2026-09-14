@@ -168,14 +168,17 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
         throw new Error("MCP runtime does not expose cleanup ownership");
       }
       await runtime.joinCleanup();
-      const slot = store.runtimeSlots.get(runtime);
-      if (releaseSlot && slot) {
-        store.liveRuntimeSlots.delete(slot);
-        store.runtimeSlots.delete(runtime);
-      }
     } catch (error) {
       recordAgentCleanupFailure();
       throw error;
+    } finally {
+      if (releaseSlot) {
+        const slot = store.runtimeSlots.get(runtime);
+        if (slot) {
+          store.liveRuntimeSlots.delete(slot);
+          store.runtimeSlots.delete(runtime);
+        }
+      }
     }
   };
   const trackDisposal = (runtimeKeys: string[], close: () => Promise<void>): Promise<void> => {

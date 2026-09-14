@@ -212,6 +212,27 @@ describe("MCP manager creation ownership", () => {
     expect(manager.listRuntimeKeys()).toEqual([]);
   });
 
+  it("releases the capacity slot when cleanup fails", async () => {
+    const configured = { mcp: { servers: { fixture: { command: "true" } } } };
+    const manager = createManager(createRuntimeFixture);
+    for (let index = 0; index < 256; index += 1) {
+      await manager.getOrCreate({ ...params, sessionId: `session-${index}`, cfg: configured });
+    }
+    await expect(
+      manager.getOrCreate({ ...params, sessionId: "overflow", cfg: configured }),
+    ).rejects.toThrow("live runtime limit (256)");
+
+    const runtime = manager.peekSession({ sessionId: "session-0" });
+    expectDefined(runtime, "session-0 runtime");
+    runtime!.joinCleanup = async () => {
+      throw new Error("cleanup owner lost");
+    };
+    await manager.disposeSession("session-0").catch(() => {});
+
+    await manager.getOrCreate({ ...params, sessionId: "reclaimed", cfg: configured });
+    expect(manager.listSessionIds()).toContain("reclaimed");
+  });
+
   it("constructs and retires an empty manager without binding or importing transports", async () => {
     const manager = createManager();
 

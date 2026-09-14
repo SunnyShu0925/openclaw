@@ -799,29 +799,37 @@ describe("bundle LSP runtime", () => {
     );
   });
 
-  it.each(["rejected", "unsupported"] as const)(
-    "records uncertain cleanup when LSP descendant settlement is %s",
-    async (extinction) => {
-      configureSingleLspServer();
-      const child = new MockChildProcess();
-      if (extinction === "rejected") {
-        child.extinction.reject(new Error("descendant settlement failed"));
-      } else {
-        Object.defineProperty(child, "waitForExtinction", { value: undefined });
-      }
-      spawnMock.mockReturnValue(child);
-      const runtime = await createBundleLspToolRuntime({ workspaceDir: "/tmp/workspace" });
-      expect(runtime.tools.map((tool) => tool.name)).toContain("lsp_hover_typescript");
-      const cleanupScope = createAgentCleanupScope();
+  it("confirms cleanup when LSP adapter has no waitForExtinction (unsupported)", async () => {
+    configureSingleLspServer();
+    const child = new MockChildProcess();
+    Object.defineProperty(child, "waitForExtinction", { value: undefined });
+    spawnMock.mockReturnValue(child);
+    const runtime = await createBundleLspToolRuntime({ workspaceDir: "/tmp/workspace" });
+    expect(runtime.tools.map((tool) => tool.name)).toContain("lsp_hover_typescript");
+    const cleanupScope = createAgentCleanupScope();
 
-      // Global/manual cleanup can precede an automatic owner joining the same resources.
-      await runtime.dispose();
-      await cleanupScope.run(() => runtime.dispose());
+    await runtime.dispose();
+    await cleanupScope.run(() => runtime.dispose());
 
-      expect(cleanupScope.outcome).toBe("uncertain");
-      expect(child.dispose).toHaveBeenCalledOnce();
-    },
-  );
+    expect(cleanupScope.outcome).toBe("closed");
+    expect(child.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("records uncertain cleanup when LSP descendant extinction is rejected", async () => {
+    configureSingleLspServer();
+    const child = new MockChildProcess();
+    child.extinction.reject(new Error("descendant settlement failed"));
+    spawnMock.mockReturnValue(child);
+    const runtime = await createBundleLspToolRuntime({ workspaceDir: "/tmp/workspace" });
+    expect(runtime.tools.map((tool) => tool.name)).toContain("lsp_hover_typescript");
+    const cleanupScope = createAgentCleanupScope();
+
+    await runtime.dispose();
+    await cleanupScope.run(() => runtime.dispose());
+
+    expect(cleanupScope.outcome).toBe("uncertain");
+    expect(child.dispose).toHaveBeenCalledOnce();
+  });
 
   it("records uncertain cleanup when process construction cannot confirm reclamation", async () => {
     configureSingleLspServer();
