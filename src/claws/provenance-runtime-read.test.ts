@@ -104,6 +104,10 @@ describe("Claw runtime provenance cache", () => {
     closeOpenClawStateDatabaseForTest();
 
     initializeCachedClawInstallSchemaVersions(options);
+    expect(readCachedClawInstallSchemaVersions(options)).toMatchObject({
+      kind: "ready",
+      schemaVersions: new Map(),
+    });
 
     const stateDir = join(root, "state");
     expect(existsSync(join(stateDir, "openclaw.sqlite-wal"))).toBe(false);
