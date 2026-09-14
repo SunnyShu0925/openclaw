@@ -125,7 +125,10 @@ describe("config form array integrity", () => {
       container.querySelector<HTMLInputElement>("input[aria-label='Values']"),
       "changed repeated scalar input",
     );
-    expect(changed).toBe(first);
+    // A value change generates a new row identity, so the keyed renderer
+    // replaces the DOM element. The replacement carries the new value and
+    // resets validity, while the surviving row's invalid draft is discarded.
+    expect(changed).not.toBe(first);
     expect(changed.value).toBe("444");
     expect(changed.getAttribute("aria-invalid")).toBe("false");
     expect(changed.validationMessage).toBe("");

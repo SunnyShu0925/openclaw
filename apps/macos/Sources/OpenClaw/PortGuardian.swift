@@ -118,6 +118,15 @@ actor PortGuardian {
                 self.logger.info("\(message, privacy: .public)")
                 continue
             }
+            if mode == .remote {
+                let message = """
+                port \(port, privacy: .public) held by \
+                \(listener.command, privacy: .public) \
+                (pid \(listener.pid)) in remote mode — not killing
+                """
+                self.logger.warning(message)
+                continue
+            }
             if AppProfile.current.isActive {
                 self.logger.error(
                     "profile port \(port, privacy: .public) held by \(listener.command, privacy: .public) " +
@@ -713,6 +722,7 @@ actor PortGuardian {
 
     private static func isExpected(
         _ listener: Listener,
+        port: Int,
         mode: AppState.ConnectionMode,
         tunnelPort: Int? = nil,
         localGatewayPort: Int? = nil,

@@ -656,4 +656,107 @@ suite.define(() => {
       },
     );
   });
+
+  it("preserves an invalid draft through structural concurrent save replay", async () => {
+    await suite.withPage(
+      {
+        colorScheme: "dark",
+        locale: "en-US",
+        serviceWorkers: "block",
+        viewport: { height: 1000, width: 1440 },
+      },
+      async ({ page }) => {
+        const fixture = configFormIntegrityMocks();
+        const gateway = await installMockGateway(page, { methodResponses: fixture });
+        const response = await page.goto(
+          `${suite.server.baseUrl}settings/advanced?section=laboratory`,
+        );
+        expect(response?.status()).toBe(200);
+        await gateway.waitForRequest("config.get");
+        await gateway.waitForRequest("config.schema");
+
+        // Build a two-row Codes array. Each committed item renders as a text
+        // input whose @change handler does not normalize invalid values, so a
+        // pattern-invalid draft persists inside the edited array row itself.
+        const codes = page.locator(".cfg-array").filter({ hasText: "Codes" });
+        const codeDraft = codes.locator(".cfg-collection-draft");
+        const codeDraftInput = codeDraft.getByRole("textbox", { name: "Add: Codes" });
+        for (const value of ["123", "456"]) {
+          await codes.getByRole("button", { name: "Add" }).click();
+          await codeDraftInput.fill(value);
+          await codeDraft.getByRole("button", { name: "Add" }).click();
+        }
+        const codeRows = codes.locator("input[aria-label='Codes']");
+        await expect.poll(() => codeRows.count()).toBe(2);
+        expect(await codeRows.nth(0).inputValue()).toBe("123");
+        expect(await codeRows.nth(1).inputValue()).toBe("456");
+
+        // Enter a pattern-invalid value in the first row ("ab" violates both
+        // minLength: 3 and pattern: ^[0-9]+$). The text @change handler returns
+        // without normalizing when the value is invalid, so the rejected draft
+        // persists inside the array row after blur.
+        const firstRow = codeRows.nth(0);
+        await firstRow.fill("ab");
+        await firstRow.blur();
+        await expect.poll(() => firstRow.getAttribute("aria-invalid")).toBe("true");
+        const firstRowError = page
+          .locator(".cfg-scalar-input")
+          .filter({ has: firstRow })
+          .locator(".cfg-field__error");
+        await expect.poll(() => firstRowError.isVisible()).toBe(true);
+        expect(await firstRowError.textContent()).not.toBe("");
+
+        // Defer the next config.set so we can observe a pending save before the
+        // structural edit.
+        const before = (await gateway.getRequests("config.set")).length;
+        await gateway.deferNext("config.set");
+        // Change the second row to a valid value to trigger a save submission.
+        // This save is held by the deferred mock, establishing a genuinely
+        // pending request before the structural change.
+        await codeRows.nth(1).fill("789");
+        await codeRows.nth(1).blur();
+        const request = await gateway.waitForRequest("config.set", { after: before });
+        const params = request.params as { raw?: string };
+        const submitted = JSON.parse(String(params.raw)) as {
+          laboratory: { codes: string[] };
+        };
+        // The first row's invalid draft "ab" was never committed, so the
+        // submitted config still carries "123" in that position.
+        expect(submitted.laboratory.codes).toEqual(["123", "789"]);
+
+        // While the save is pending, remove the second row (structural change:
+        // 2 -> 1). This edit folds into a trailing autosave that fires after the
+        // deferred ack resolves.
+        const removeButtons = codes.getByRole("button", { name: "Remove item" });
+        await removeButtons.nth(1).click();
+
+        // Resolve the deferred ack with the acknowledged config (codes ["123",
+        // "789"]). The replay matches the surviving first row by value ("123")
+        // and preserves its row identity, control, invalid draft, and error.
+        await gateway.resolveDeferred("config.set");
+
+        // Acknowledgement adoption: the array now reflects the structural
+        // removal (2 -> 1 row), proving the ack replay ran.
+        await expect.poll(() => codeRows.count()).toBe(1);
+
+        // The surviving first row retains its rejected draft and error state
+        // through the concurrent save replay.
+        await expect.poll(() => firstRow.inputValue()).toBe("ab");
+        await expect.poll(() => firstRow.getAttribute("aria-invalid")).toBe("true");
+        await expect.poll(() => firstRowError.isVisible()).toBe(true);
+        expect(await firstRowError.textContent()).not.toBe("");
+
+        if (captureUiProofEnabled) {
+          await page.locator("#config-section-panel").screenshot({
+            animations: "disabled",
+            path: path.join(uiProofArtifactDir, "05-structural-replay-preserved-draft.png"),
+          });
+          await writeFile(
+            path.join(uiProofArtifactDir, "05-structural-replay-preserved-draft.yml"),
+            await page.locator("#config-section-panel").ariaSnapshot(),
+          );
+        }
+      },
+    );
+  });
 });

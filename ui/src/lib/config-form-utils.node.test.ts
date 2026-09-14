@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { hintForPath, localizedHintForPath } from "../components/config-form.shared.ts";
 import { i18n } from "../i18n/index.ts";
 import { configHintTranslationKey } from "../i18n/lib/config-hint-translation.ts";
-import { hintForPath, localizedHintForPath } from "../components/config-form.shared.ts";
 import {
   cloneConfigObject,
   removePathValue,

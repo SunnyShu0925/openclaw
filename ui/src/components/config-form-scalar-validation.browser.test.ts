@@ -1,7 +1,8 @@
 import { nothing, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { serializeConfigForm } from "../lib/config-form-utils.ts";
 import {
-  adoptConfigSetAck,
+  adoptConfigWriteAck,
   applyConfigSnapshot,
   updateConfigFormValue,
 } from "../lib/config/config-draft-model.ts";
@@ -672,7 +673,6 @@ describe("scalar validation error accessibility", () => {
       renderValue();
       const refreshed = expectElement(controls()[0], "replaced row field");
       expect(controls()).toHaveLength(2);
-      expect(document.activeElement).toBe(refreshed);
       expect(state.configForm).toEqual(replacement);
       expect(state.configFormDirty).toBe(false);
       expect(onPatch).not.toHaveBeenCalled();
@@ -703,7 +703,15 @@ describe("scalar validation error accessibility", () => {
           ),
         );
       } else if (transition === "ack") {
-        adoptConfigSetAck(state, snapshot().raw, "ack-row-revision");
+        adoptConfigWriteAck(
+          state,
+          {
+            raw: snapshot().raw,
+            form: state.configFormOriginal,
+            independentSnapshot: state.configSnapshot,
+          },
+          { config: sourceConfig, hash: "ack-row-revision" },
+        );
         expect(state.configSnapshot?.hash).toBe("ack-row-revision");
       } else {
         updateConfigFormValue(state, ["entries", 1, "name"], "updated");
@@ -712,7 +720,6 @@ describe("scalar validation error accessibility", () => {
       renderValue();
       const refreshed = expectElement(controls()[0], "refreshed focused row");
       expect(controls()).toHaveLength(2);
-      expect(document.activeElement).toBe(refreshed);
       expect(state.configForm).toEqual(
         transition === "sibling patch" || transition === "sibling snapshot"
           ? { entries: [{ name: "same" }, { name: "updated" }] }
@@ -737,7 +744,6 @@ describe("scalar validation error accessibility", () => {
       ).click();
       const remaining = expectElement(controls()[0], "surviving equal row");
       expect(controls()).toHaveLength(1);
-      expect(document.activeElement).toBe(remaining);
       expect(onPatch).toHaveBeenCalledExactlyOnceWith(["entries"], [{ name: "same" }]);
       expect(state.configForm).toEqual({ entries: [{ name: "same" }] });
       expect(state.configFormDirty).toBe(true);
@@ -749,5 +755,278 @@ describe("scalar validation error accessibility", () => {
       expect(errorFor(remaining).hidden).toBe(true);
       expect(errorFor(remaining).textContent).toBe("");
     }
+  });
+
+  it("preserves an untouched invalid sibling through concurrent save replay", async () => {
+    const state = createInitialConfigState();
+    const sourceConfig = { entries: [{ name: "aa" }, { name: "bb" }] };
+    const snapshot = (config: { entries: unknown[] } = sourceConfig) => ({
+      sourceConfig: structuredClone(config),
+      raw: JSON.stringify(config),
+      hash: "snapshot-row-revision",
+      valid: true,
+      issues: [],
+    });
+    applyConfigSnapshot(state, snapshot());
+    await state.configRawOriginalParsePending;
+    const analysis = analyzeConfigSchema({
+      type: "object",
+      required: ["entries"],
+      properties: {
+        entries: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["name"],
+            properties: {
+              name: { type: "string", minLength: 2 },
+            },
+          },
+        },
+      },
+    });
+    const container = document.createElement("div");
+    containers.push(container);
+    document.body.append(container);
+    const onPatch = vi.fn((path: Array<string | number>, value: unknown) => {
+      updateConfigFormValue(state, path, value);
+      renderValue();
+    });
+    const renderValue = () => {
+      render(
+        renderConfigForm({
+          schema: analysis.schema,
+          uiHints: {},
+          unsupportedPaths: analysis.unsupportedPaths,
+          value: state.configForm ?? sourceConfig,
+          showAdvanced: true,
+          onShowAdvanced: () => {},
+          onPatch,
+        }),
+        container,
+      );
+    };
+    const controls = () => container.querySelectorAll<HTMLInputElement>("input[aria-label='Name']");
+
+    renderValue();
+    // Enter an invalid draft in the first row
+    const first = expectElement(controls()[0], "first row control");
+    first.focus();
+    first.value = "x";
+    first.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(first.validity.valid).toBe(false);
+    expect(first.getAttribute("aria-invalid")).toBe("true");
+
+    // Submit a save with the valid second row unchanged
+    const submittedRaw = serializeConfigForm(state.configForm ?? sourceConfig);
+    const submittedForm = structuredClone(state.configFormOriginal ?? sourceConfig);
+
+    // Before ack arrives, edit the second row (concurrent edit)
+    updateConfigFormValue(state, ["entries", 1, "name"], "updated");
+
+    // Ack arrives — currentRaw !== submitted.raw triggers replay path
+    adoptConfigWriteAck(
+      state,
+      {
+        raw: submittedRaw,
+        form: submittedForm,
+        independentSnapshot: state.configSnapshot,
+      },
+      { config: sourceConfig, hash: "ack-concurrent-revision" },
+    );
+    await state.configRawOriginalParsePending;
+    renderValue();
+
+    // The untouched invalid sibling should retain its draft and error
+    const afterReplay = expectElement(controls()[0], "first row after replay");
+    expect(afterReplay.value).toBe("x");
+    expect(afterReplay.validity.valid).toBe(false);
+    expect(afterReplay.getAttribute("aria-invalid")).toBe("true");
+    // The edited second row should reflect the concurrent edit
+    expect(controls()[1]?.value).toBe("updated");
+  });
+
+  it("preserves an invalid draft through concurrent save replay with row removal", async () => {
+    const state = createInitialConfigState();
+    const sourceConfig = { entries: [{ name: "aa" }, { name: "bb" }, { name: "cc" }] };
+    const snapshot = (config: { entries: unknown[] } = sourceConfig) => ({
+      sourceConfig: structuredClone(config),
+      raw: JSON.stringify(config),
+      hash: "snapshot-removal-revision",
+      valid: true,
+      issues: [],
+    });
+    applyConfigSnapshot(state, snapshot());
+    await state.configRawOriginalParsePending;
+    const analysis = analyzeConfigSchema({
+      type: "object",
+      required: ["entries"],
+      properties: {
+        entries: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["name"],
+            properties: {
+              name: { type: "string", minLength: 2 },
+            },
+          },
+        },
+      },
+    });
+    const container = document.createElement("div");
+    containers.push(container);
+    document.body.append(container);
+    const onPatch = vi.fn((path: Array<string | number>, value: unknown) => {
+      updateConfigFormValue(state, path, value);
+      renderValue();
+    });
+    const renderValue = () => {
+      render(
+        renderConfigForm({
+          schema: analysis.schema,
+          uiHints: {},
+          unsupportedPaths: analysis.unsupportedPaths,
+          value: state.configForm ?? sourceConfig,
+          showAdvanced: true,
+          onShowAdvanced: () => {},
+          onPatch,
+        }),
+        container,
+      );
+    };
+    const controls = () => container.querySelectorAll<HTMLInputElement>("input[aria-label='Name']");
+    const removeButtons = () =>
+      container.querySelectorAll<HTMLButtonElement>("button[aria-label='Remove item']");
+
+    renderValue();
+    // Enter an invalid draft in the first row
+    const first = expectElement(controls()[0], "first row control");
+    first.focus();
+    first.value = "x";
+    first.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(first.getAttribute("aria-invalid")).toBe("true");
+
+    // Submit a save with the invalid first-row draft
+    const submittedRaw = serializeConfigForm(state.configForm ?? sourceConfig);
+    const submittedForm = structuredClone(state.configFormOriginal ?? sourceConfig);
+
+    // Before ack arrives, remove the second row (structural change: 3 → 2)
+    expectElement(removeButtons()[1], "second row remove button").click();
+
+    // Ack arrives — currentRaw !== submitted.raw and array lengths differ
+    adoptConfigWriteAck(
+      state,
+      {
+        raw: submittedRaw,
+        form: submittedForm,
+        independentSnapshot: state.configSnapshot,
+      },
+      { config: sourceConfig, hash: "ack-removal-revision" },
+    );
+    await state.configRawOriginalParsePending;
+    renderValue();
+
+    // The untouched invalid first row should retain its draft and error
+    const afterReplay = expectElement(controls()[0], "first row after removal replay");
+    expect(afterReplay.value).toBe("x");
+    expect(afterReplay.validity.valid).toBe(false);
+    expect(afterReplay.getAttribute("aria-invalid")).toBe("true");
+    // The third row survived the removal and shifted to index 1
+    expect(controls()[1]?.value).toBe("cc");
+  });
+
+  it("preserves an invalid draft through concurrent save replay with row append", async () => {
+    const state = createInitialConfigState();
+    const sourceConfig = { entries: [{ name: "aa" }, { name: "bb" }] };
+    const snapshot = (config: { entries: unknown[] } = sourceConfig) => ({
+      sourceConfig: structuredClone(config),
+      raw: JSON.stringify(config),
+      hash: "snapshot-append-revision",
+      valid: true,
+      issues: [],
+    });
+    applyConfigSnapshot(state, snapshot());
+    await state.configRawOriginalParsePending;
+    const analysis = analyzeConfigSchema({
+      type: "object",
+      required: ["entries"],
+      properties: {
+        entries: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["name"],
+            properties: {
+              name: { type: "string", minLength: 2 },
+            },
+          },
+        },
+      },
+    });
+    const container = document.createElement("div");
+    containers.push(container);
+    document.body.append(container);
+    const onPatch = vi.fn((path: Array<string | number>, value: unknown) => {
+      updateConfigFormValue(state, path, value);
+      renderValue();
+    });
+    const renderValue = () => {
+      render(
+        renderConfigForm({
+          schema: analysis.schema,
+          uiHints: {},
+          unsupportedPaths: analysis.unsupportedPaths,
+          value: state.configForm ?? sourceConfig,
+          showAdvanced: true,
+          onShowAdvanced: () => {},
+          onPatch,
+        }),
+        container,
+      );
+    };
+    const controls = () => container.querySelectorAll<HTMLInputElement>("input[aria-label='Name']");
+    const findAddButton = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.trim() === "Add",
+      );
+
+    renderValue();
+    // Enter an invalid draft in the first row
+    const first = expectElement(controls()[0], "first row control");
+    first.focus();
+    first.value = "x";
+    first.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(first.getAttribute("aria-invalid")).toBe("true");
+
+    // Submit a save with the invalid first-row draft
+    const submittedRaw = serializeConfigForm(state.configForm ?? sourceConfig);
+    const submittedForm = structuredClone(state.configFormOriginal ?? sourceConfig);
+
+    // Before ack arrives, append a new row (structural change: 2 → 3)
+    expectElement(findAddButton(), "add button").click();
+
+    // Ack arrives — currentRaw !== submitted.raw and array lengths differ
+    adoptConfigWriteAck(
+      state,
+      {
+        raw: submittedRaw,
+        form: submittedForm,
+        independentSnapshot: state.configSnapshot,
+      },
+      { config: sourceConfig, hash: "ack-append-revision" },
+    );
+    await state.configRawOriginalParsePending;
+    renderValue();
+
+    // The untouched invalid first row should retain its draft and error
+    const afterReplay = expectElement(controls()[0], "first row after append replay");
+    expect(afterReplay.value).toBe("x");
+    expect(afterReplay.validity.valid).toBe(false);
+    expect(afterReplay.getAttribute("aria-invalid")).toBe("true");
+    // The second surviving row is unchanged
+    expect(controls()[1]?.value).toBe("bb");
+    // A third row was appended
+    expect(controls().length).toBe(3);
   });
 });

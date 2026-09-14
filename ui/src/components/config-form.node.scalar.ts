@@ -469,88 +469,85 @@ export function renderNumberInput(params: ConfigNodeRenderParams): TemplateResul
     }
   };
   const control = html`
-    <span class="cfg-scalar-input">
-      <button
-        type="button"
-        class="btn btn--sm btn--icon"
-        aria-label=${`${label}: -${numericStep}`}
-        ?disabled=${disabled}
-        @click=${() => step(-1)}
-      >
-        −
-      </button>
-      <input
-        ${ref((element) =>
-          syncScalarInputIdentity(
-            element,
-            controlIdentity,
-            sourceIdentity,
-            params.rowIdentity,
-            controlPathKey,
-            "number",
-            renderedValue,
-            revalidate,
-          ),
-        )}
-        type="number"
-        class="settings-input"
-        aria-label=${label}
-        aria-describedby=${describedBy || nothing}
-        aria-invalid="false"
-        placeholder=${
-          schema.default !== undefined
-            ? t("configForm.defaultValue", { value: formatConfigValueText(schema.default) })
-            : nothing
+    <button
+      type="button"
+      class="btn btn--sm btn--icon"
+      aria-label=${`${label}: -${numericStep}`}
+      ?disabled=${disabled}
+      @click=${() => step(-1)}
+    >
+      −
+    </button>
+    <input
+      ${ref((element) =>
+        syncScalarInputIdentity(
+          element,
+          controlIdentity,
+          sourceIdentity,
+          params.rowIdentity,
+          controlPathKey,
+          "number",
+          renderedValue,
+          revalidate,
+        ),
+      )}
+      type="number"
+      class="settings-input"
+      aria-label=${label}
+      aria-describedby=${describedBy || nothing}
+      aria-invalid="false"
+      placeholder=${
+        schema.default !== undefined
+          ? t("configForm.defaultValue", { value: formatConfigValueText(schema.default) })
+          : nothing
+      }
+      min=${constraints.min ?? nothing}
+      max=${constraints.max ?? nothing}
+      step=${constraints.step}
+      .value=${renderedValue}
+      ?disabled=${disabled}
+      @keydown=${(event: KeyboardEvent) => {
+        if (
+          value === undefined &&
+          effectiveValue !== undefined &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          step(event.key === "ArrowUp" ? 1 : -1);
         }
-        min=${constraints.min ?? nothing}
-        max=${constraints.max ?? nothing}
-        step=${constraints.step}
-        .value=${renderedValue}
-        ?disabled=${disabled}
-        @keydown=${(event: KeyboardEvent) => {
-          if (
-            value === undefined &&
-            effectiveValue !== undefined &&
-            (event.key === "ArrowUp" || event.key === "ArrowDown")
-          ) {
-            event.preventDefault();
-            step(event.key === "ArrowUp" ? 1 : -1);
-          }
-        }}
-        @input=${(event: Event) => {
-          const target = event.target as HTMLInputElement;
-          applyNumericInputState(
-            target,
-            resolveNumericInputState(target, schema),
-            params,
-            (candidate) => commitScalarValue(target, candidate),
-          );
-        }}
-        @change=${(event: Event) => {
-          const target = event.target as HTMLInputElement;
-          const state = resolveNumericInputState(target, schema);
-          if (state.kind !== "value") {
-            setControlValidity(target, numericStateMessage(state, params.isRequired === true));
-            return;
-          }
-          const normalized = normalizeNumericValue(state.parsed, schema);
-          target.value = formatConfigValueText(normalized);
-          if (setControlValidity(target, numericConstraintMessage(normalized, schema))) {
-            commitScalarValue(target, normalized);
-          }
-        }}
-      />
-      <button
-        type="button"
-        class="btn btn--sm btn--icon"
-        aria-label=${`${label}: +${numericStep}`}
-        ?disabled=${disabled}
-        @click=${() => step(1)}
-      >
-        +
-      </button>
-      <span id=${errorId} class="cfg-field__error" role="alert" hidden></span>
-    </span>
+      }}
+      @input=${(event: Event) => {
+        const target = event.target as HTMLInputElement;
+        applyNumericInputState(
+          target,
+          resolveNumericInputState(target, schema),
+          params,
+          (candidate) => commitScalarValue(target, candidate),
+        );
+      }}
+      @change=${(event: Event) => {
+        const target = event.target as HTMLInputElement;
+        const state = resolveNumericInputState(target, schema);
+        if (state.kind !== "value") {
+          setControlValidity(target, numericStateMessage(state, params.isRequired === true));
+          return;
+        }
+        const normalized = normalizeNumericValue(state.parsed, schema);
+        target.value = formatConfigValueText(normalized);
+        if (setControlValidity(target, numericConstraintMessage(normalized, schema))) {
+          commitScalarValue(target, normalized);
+        }
+      }}
+    />
+    <button
+      type="button"
+      class="btn btn--sm btn--icon"
+      aria-label=${`${label}: +${numericStep}`}
+      ?disabled=${disabled}
+      @click=${() => step(1)}
+    >
+      +
+    </button>
   `;
 
   return renderFieldRow({
