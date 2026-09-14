@@ -356,6 +356,10 @@ suite.define(() => {
         document.documentElement.dataset.themeMode = "light";
       });
       await ownerTyping(draft);
+      await expect(previewBubble).toHaveText(draft);
+      await expect(
+        typingRow.locator(".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)"),
+      ).toBeVisible();
       const beforeSend = await geometry();
       await gateway.emitGatewayEvent("session.message", {
         sessionKey: "main",
