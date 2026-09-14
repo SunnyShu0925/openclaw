@@ -39,10 +39,7 @@ import {
   normalizeUsageDisplay,
   resolveSupportedThinkingLevel,
 } from "../auto-reply/thinking.js";
-import {
-  resolveAgentMainSessionKey,
-  type InternalSessionEntry as SessionEntry,
-} from "../config/sessions.js";
+import type { InternalSessionEntry as SessionEntry } from "../config/sessions.js";
 import {
   buildSessionCreationStamp,
   type SessionCreatedVia,
@@ -344,11 +341,7 @@ function* projectSessionPatchSteps(
     }
   }
 
-  const pinnable = isPinnableSessionEntry(
-    storeKey,
-    next,
-    resolveAgentMainSessionKey({ cfg, agentId: sessionAgentId }),
-  );
+  const pinnable = isPinnableSessionEntry(storeKey, next);
   if (!pinnable) {
     delete next.pinnedAt;
   }
