@@ -28,7 +28,7 @@ import {
 } from "./node-command-policy.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { createChatRunState, createSessionMessageSubscriberRegistry } from "./server-chat-state.js";
-import { MAX_BUFFERED_BYTES } from "./server-constants.js";
+import { MAX_BUFFERED_BYTES, WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
 import { handleNodeInvokeResult } from "./server-methods/nodes.handlers.invoke-result.js";
 import type * as GatewayMethodTypes from "./server-methods/types.js";
 import { formatError, normalizeVoiceWakeTriggers } from "./server-utils.js";
@@ -418,6 +418,7 @@ describe("gateway broadcaster", () => {
   });
 
   it("closes a slow authoritative-session subscriber while delivering to healthy clients", () => {
+    vi.useFakeTimers();
     const slowSocket = makeRecordingSocket();
     slowSocket.bufferedAmount = MAX_BUFFERED_BYTES + 1;
     const healthySocket = makeRecordingSocket();
@@ -439,6 +440,7 @@ describe("gateway broadcaster", () => {
     broadcastToConnIds("session.message", payload, new Set(["slow-session", "healthy-session"]));
 
     expect(slowSocket.close).toHaveBeenCalledWith(1008, "slow consumer");
+    vi.advanceTimersByTime(WEBSOCKET_CLOSE_GRACE_MS);
     expect(slowSocket.terminate).toHaveBeenCalledOnce();
     expect(slowSocket.send).not.toHaveBeenCalled();
     expect(healthySocket.sent).toEqual([
