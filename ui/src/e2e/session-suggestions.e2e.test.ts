@@ -324,10 +324,6 @@ suite.define(() => {
           "draft".repeat(35);
         await ownerTyping(multiline);
         await expect(previewBubble).toHaveText(multiline);
-        await page.mouse.move(0, 0);
-        await page.locator(".agent-chat__composer-combobox textarea").focus();
-        await expect(typingRow.locator(".agent-chat__typing-preview-label")).toHaveText("Owner");
-        await expect(typingRow.locator(".chat-group-footer")).toHaveCSS("opacity", "1");
         await expect(typingRow.locator(".agent-chat__typing-state")).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
           true,
@@ -357,9 +353,13 @@ suite.define(() => {
       });
       await ownerTyping(draft);
       await expect(previewBubble).toHaveText(draft);
-      await expect(
-        typingRow.locator(".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)"),
-      ).toBeVisible();
+      await expect
+        .poll(() =>
+          typingRow
+            .locator(".chat-group")
+            .evaluate((row) => Number.parseFloat(getComputedStyle(row).gridTemplateColumns)),
+        )
+        .toBeGreaterThan(0);
       const beforeSend = await geometry();
       await gateway.emitGatewayEvent("session.message", {
         sessionKey: "main",

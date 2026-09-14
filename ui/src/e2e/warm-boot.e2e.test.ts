@@ -1,7 +1,6 @@
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Page } from "playwright";
-import { expect as expectPage } from "playwright/test";
 import { expect, it } from "vitest";
 import type { ApplicationRuntime } from "../app/bootstrap.ts";
 import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
@@ -17,31 +16,16 @@ const suite = createControlUiE2eSuite({
 const sessionKey = "agent:main:main";
 const transcriptText = "This conversation is ready before the Gateway reconnects.";
 
-function attributedMessage(id: string, name: string, text: string, seq: number) {
-  return {
-    role: "user",
-    content: text,
-    __openclaw: {
-      id: `message-${id}`,
-      seq,
-      senderId: id,
-      senderIdentity: { type: "profile", id },
-      senderName: name,
-    },
-  };
-}
-
-async function expectSender(page: Page, text: string, name: string, peer: boolean) {
-  const group = page.locator(".chat-group.user", { hasText: text });
-  await page.mouse.move(0, 0);
-  await page.locator(".agent-chat__composer-combobox textarea").focus();
+async function expectOwnMessageAlignment(page: Page): Promise<void> {
+  const own = page.locator(".chat-group.user", { hasText: "Morgan's saved message." });
   await expect
-    .poll(() => group.evaluate((row) => row.classList.contains("chat-group--peer")))
-    .toBe(peer);
-  await expectPage(group).toHaveCSS("justify-content", peer ? "start" : "end");
-  await expectPage(group.locator(".chat-sender-name")).toHaveText(name);
-  await expectPage(group.locator(".chat-group-footer")).toHaveCSS("opacity", "1");
-  return group;
+    .poll(() =>
+      own.evaluate((row) => ({
+        peer: row.classList.contains("chat-group--peer"),
+        alignment: getComputedStyle(row).justifyContent,
+      })),
+    )
+    .toEqual({ peer: false, alignment: "end" });
 }
 
 async function waitForPersistedWarmState(page: Page, eligible = true): Promise<void> {
@@ -137,9 +121,10 @@ suite.define(() => {
           presenceUsers: [
             {
               id: "profile-a",
-              identity: { type: "profile", id: "profile-a" },
-              name: "Morgan",
               self: true,
+              ...(profile === "matching"
+                ? { identity: { type: "profile" as const, id: "profile-a" } }
+                : {}),
             },
           ],
           sessions: [
@@ -157,13 +142,26 @@ suite.define(() => {
               sessionId: "warm-reload-session",
               sessionInfo: currentRow,
               messages: [
-                attributedMessage("profile-a", "Morgan", "Morgan's saved message.", 1),
-                attributedMessage("profile-b", "Riley", "Riley's saved message.", 2),
                 {
                   role: "assistant",
                   content: transcriptText,
-                  __openclaw: { id: "cached-message", seq: 3 },
+                  __openclaw: { id: "cached-message", seq: 1 },
                 },
+                ...(profile === "matching"
+                  ? [
+                      {
+                        role: "user",
+                        content: "Morgan's saved message.",
+                        __openclaw: {
+                          id: "own-message",
+                          seq: 2,
+                          senderId: "profile-a",
+                          senderIdentity: { type: "profile", id: "profile-a" },
+                          senderName: "Morgan",
+                        },
+                      },
+                    ]
+                  : []),
               ],
               deltaCursor: "warm-reload-cursor",
               hasMore: false,
@@ -183,8 +181,9 @@ suite.define(() => {
         const transcript = page.locator(".chat-thread-inner");
         await sidebar.getByText("Cached only session", { exact: true }).waitFor();
         await transcript.getByText(transcriptText, { exact: true }).waitFor();
-        await expectSender(page, "Morgan's saved message.", "Morgan", false);
-        await expectSender(page, "Riley's saved message.", "Riley", true);
+        if (profile === "matching") {
+          await expectOwnMessageAlignment(page);
+        }
         await waitForPersistedWarmState(page, profile !== "trusted-proxy");
         const hello = await page.evaluate(() => {
           const app = document.querySelector<HTMLElement & { runtime?: ApplicationRuntime }>(
@@ -218,11 +217,9 @@ suite.define(() => {
         await transcript.getByText(transcriptText, { exact: true }).waitFor();
         expect(await gateway.getRequests("sessions.list")).toEqual([]);
         expect(await gateway.getRequests("chat.startup")).toEqual([]);
-        await expectSender(page, "Morgan's saved message.", "Morgan", false);
-        const unresolvedPeer = await expectSender(page, "Riley's saved message.", "Riley", false);
-        await expectPage(
-          unresolvedPeer.locator(".chat-group-footer .chat-author-avatar"),
-        ).toBeVisible();
+        if (profile === "matching") {
+          await expectOwnMessageAlignment(page);
+        }
         await page.screenshot({
           path: path.join(suite.artifactDir, `warm-${profile}-before-hello.png`),
         });
@@ -263,15 +260,7 @@ suite.define(() => {
                 ? hello.snapshot
                 : {}),
               presence: [
-                {
-                  instanceId: client.instanceId,
-                  reason: "connect",
-                  user: {
-                    id: "profile-b",
-                    identity: { type: "profile", id: "profile-b" },
-                    name: "Riley",
-                  },
-                },
+                { instanceId: client.instanceId, reason: "connect", user: { id: "profile-b" } },
               ],
             },
           });
@@ -288,11 +277,7 @@ suite.define(() => {
           await gateway.resolveDeferred("chat.startup", {
             sessionId: "profile-b-session",
             sessionInfo: { ...currentRow, sessionId: "profile-b-session" },
-            messages: [
-              attributedMessage("profile-a", "Morgan", "Morgan's replacement message.", 1),
-              attributedMessage("profile-b", "Riley", "Riley's replacement message.", 2),
-              { role: "assistant", content: "This is profile B's conversation." },
-            ],
+            messages: [{ role: "assistant", content: "This is profile B's conversation." }],
             hasMore: false,
             deltaCursor: "profile-b-cursor",
             metadata: { models: [] },
@@ -310,126 +295,21 @@ suite.define(() => {
             { exact: true },
           )
           .waitFor();
-        const replaced = profile === "different";
-        const morganText = replaced ? "Morgan's replacement message." : "Morgan's saved message.";
-        const rileyText = replaced ? "Riley's replacement message." : "Riley's saved message.";
-        await expectSender(page, morganText, "Morgan", replaced);
-        const resolvedPeer = await expectSender(page, rileyText, "Riley", !replaced);
-        await expectPage(
-          resolvedPeer.locator(
-            ".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)",
-          ),
-        ).toBeVisible();
-        await resolvedPeer.hover();
-        await resolvedPeer.getByRole("button", { name: "Reply to message" }).click();
-        await expectPage(page.locator(".chat-reply-preview__label")).toHaveText(
-          "Replying to Riley",
-        );
-        await page.locator(".chat-reply-preview__dismiss").click();
         await page.screenshot({
           path: path.join(suite.artifactDir, `warm-${profile}-after-hello.png`),
         });
-
-        if (profile !== "matching") {
-          return;
+        if (profile === "matching") {
+          await expectOwnMessageAlignment(page);
+          const connectCount = (await gateway.getRequests("connect")).length;
+          const startupCount = (await gateway.getRequests("chat.startup")).length;
+          await gateway.deferNext("connect");
+          await gateway.closeLatest(1001, "Own-message alignment reconnect");
+          await gateway.waitForRequest("connect", { after: connectCount });
+          await expectOwnMessageAlignment(page);
+          await gateway.resolveDeferred("connect");
+          await gateway.waitForRequest("chat.startup", { after: startupCount });
+          await expectOwnMessageAlignment(page);
         }
-        let connectCount = (await gateway.getRequests("connect")).length;
-        let startupCount = (await gateway.getRequests("chat.startup")).length;
-        await gateway.deferNext("connect");
-        await gateway.closeLatest(1001, "Identity reconnect");
-        await gateway.waitForRequest("connect", { after: connectCount });
-        await expectSender(page, morganText, "You", false);
-        const retainedPeer = await expectSender(page, rileyText, "Riley", true);
-        await expectPage(
-          retainedPeer.locator(
-            ".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)",
-          ),
-        ).toBeVisible();
-        await gateway.resolveDeferred("connect");
-        await gateway.waitForRequest("chat.startup", { after: startupCount });
-        await expectSender(page, morganText, "Morgan", false);
-        await expectSender(page, rileyText, "Riley", true);
-        const newPeer = attributedMessage("profile-c", "Casey", "Casey joined after reconnect.", 4);
-        await gateway.emitGatewayEvent("session.message", {
-          sessionKey,
-          messageId: newPeer.__openclaw.id,
-          messageSeq: newPeer.__openclaw.seq,
-          message: newPeer,
-        });
-        await expectSender(page, newPeer.content, "Casey", true);
-
-        connectCount = (await gateway.getRequests("connect")).length;
-        startupCount = (await gateway.getRequests("chat.startup")).length;
-        await gateway.setMethodResponse("chat.startup", {
-          sessionId: currentRow.sessionId,
-          sessionInfo: currentRow,
-          messages: [
-            attributedMessage("profile-a", "Morgan", morganText, 1),
-            attributedMessage("profile-b", "Riley", rileyText, 2),
-            newPeer,
-          ],
-          hasMore: false,
-          deltaCursor: "replacement-account-cursor",
-          metadata: { models: [] },
-        });
-        await gateway.deferNext("connect");
-        await gateway.closeLatest(1001, "Account replacement");
-        const replacementConnect = await gateway.waitForRequest("connect", { after: connectCount });
-        const client = isRecord(replacementConnect.params)
-          ? replacementConnect.params.client
-          : null;
-        if (!isRecord(client) || typeof client.instanceId !== "string") {
-          throw new Error("Expected a client instance ID in the replacement connect request");
-        }
-        await gateway.resolveDeferred("connect", {
-          ...hello,
-          snapshot: {
-            ...hello.snapshot,
-            presence: [
-              {
-                instanceId: client.instanceId,
-                reason: "connect",
-                user: {
-                  id: "profile-b",
-                  identity: { type: "profile", id: "profile-b" },
-                  name: "Riley",
-                },
-              },
-            ],
-          },
-        });
-        const replacementStartup = await gateway.waitForRequest("chat.startup", {
-          after: startupCount,
-        });
-        expect(replacementStartup.params).not.toHaveProperty("cursor");
-        await expectSender(page, morganText, "Morgan", true);
-        await expectSender(page, rileyText, "Riley", false);
-        await expectSender(page, newPeer.content, "Casey", true);
-
-        await page.evaluate(() => {
-          const app = document.querySelector<HTMLElement & { runtime?: ApplicationRuntime }>(
-            "openclaw-app",
-          );
-          app!.runtime!.context.navigate("connection");
-        });
-        const connection = page.locator("openclaw-connection-page");
-        const replacementUrl = "ws://127.0.0.1:19998";
-        await connection.getByLabel("Gateway URL", { exact: true }).fill(replacementUrl);
-        await connection.getByRole("button", { name: "Apply and reconnect", exact: true }).click();
-        await connection.getByText("Connected", { exact: true }).waitFor();
-        expect((await gateway.getSocketUrls()).at(-1)).toBe(replacementUrl);
-        await page.evaluate(
-          (pathname) => {
-            const app = document.querySelector<HTMLElement & { runtime?: ApplicationRuntime }>(
-              "openclaw-app",
-            );
-            app!.runtime!.context.navigate("chat", { pathname });
-          },
-          new URL(controlUiSessionUrl(suite.server.baseUrl, sessionKey)).pathname,
-        );
-        await expectSender(page, morganText, "Morgan", false);
-        await expectSender(page, rileyText, "Riley", true);
-        await expectSender(page, newPeer.content, "Casey", true);
       });
     },
   );

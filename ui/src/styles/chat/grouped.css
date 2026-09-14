@@ -1266,8 +1266,8 @@ img.chat-avatar {
 }
 
 @media (max-width: 768px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape) {
-  /* Keep sender names visible before identity resolves and on narrow peer rows. */
-  .chat-group.user:is(.chat-group--peer, [data-show-sender-identity]) {
+  /* Peer names carry identity when narrow rows have no avatar column. */
+  .chat-group.user.chat-group--peer {
     --chat-persistent-footer-opacity: 1;
   }
 }

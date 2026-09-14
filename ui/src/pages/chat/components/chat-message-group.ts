@@ -441,9 +441,10 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
   const normalizedRole = normalizeRoleForGrouping(group.role);
   const sourceOnly = isSourceOnlyUserGroup(group);
   const assistantName = opts.assistantName ?? "Assistant";
-  const showSenderIdentity =
-    normalizedRole === "user" && Boolean(group.sender) && !isOwnSenderGroup(group, opts.userId);
-  const isPeerGroup = Boolean(opts.userId) && showSenderIdentity;
+  const isPeerGroup =
+    normalizedRole === "user" &&
+    Boolean(opts.userId && group.sender) &&
+    !isOwnSenderGroup(group, opts.userId);
   const isForwarded = normalizedRole === "assistant" && hasForwardedSource(group);
   const sourceSessionKey = group.senderSession?.sessionKey;
   const who = resolveMessageGroupSenderLabel(group, opts);
@@ -554,7 +555,6 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
       }${senderHue === null ? "" : " chat-group--sender-tint"}"
       style=${senderHue === null ? nothing : `--chat-sender-hue: ${senderHue}`}
       data-chat-row-key=${group.key}
-      ?data-show-sender-identity=${showSenderIdentity}
     >
       ${inlineUserAvatar ? nothing : avatar}
       <div class="chat-group-messages">
@@ -627,7 +627,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
           : html`<div
               class="chat-group-footer ${
                 normalizedRole === "user" &&
-                (group.sourceClients?.length || showSenderIdentity || avatarPlacement !== "footer")
+                (group.sourceClients?.length || isPeerGroup || avatarPlacement !== "footer")
                   ? "chat-group-footer--persistent-identity"
                   : ""
               }${sendStatus ? " chat-group-footer--send-status" : ""}"
