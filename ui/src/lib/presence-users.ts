@@ -174,3 +174,22 @@ export function hasSessionPresenceViewers(
 export function hasMultiplePresenceIdentities(value: unknown): boolean {
   return projectPresencePayload(value).users.length >= 2;
 }
+
+// Last viewer identity resolved per pane scope. Reused while a reconnect briefly
+// clears selfUser so peer alignment does not flash right then left. The cached id
+// is presentation-only (alignment + sender label); it is never authorization.
+const lastPresentationUserIdByScope = new WeakMap<object, string>();
+
+/** Viewer profile id for presentation, retaining the last resolved identity across
+ *  a transient reconnect-driven null. A never-resolved viewer returns null so own
+ *  messages still right-align on warm boot. */
+export function resolvePresentationUserId(
+  viewer: AuthenticatedUser | null | undefined,
+  scope: object,
+): string | null {
+  const currentId = viewer?.identity?.type === "profile" ? viewer.identity.id : null;
+  if (currentId) {
+    lastPresentationUserIdByScope.set(scope, currentId);
+  }
+  return currentId ?? lastPresentationUserIdByScope.get(scope) ?? null;
+}

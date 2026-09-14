@@ -192,10 +192,30 @@ function isPeerSenderGroup(
   group: Pick<MessageGroup, "sender">,
   userId: string | null | undefined,
 ): boolean {
+  // Until the viewer's own identity is known, don't left-align attributed
+  // user messages as peer — otherwise own messages flash left then snap
+  // right once selfUser arrives on refresh.
+  if (!userId) {
+    return false;
+  }
   const identity = group.sender?.identity;
-  return Boolean(
-    group.sender && !(userId && identity?.type === "profile" && identity.id === userId),
-  );
+  return Boolean(group.sender && !(identity?.type === "profile" && identity.id === userId));
+}
+
+// Positively identifies a user group as the current viewer's own, requiring a
+// resolved viewer identity. Separate from isPeerSenderGroup: alignment can be
+// decided before the viewer is known (don't left-align), but sender ownership
+// must not be inferred from "not a peer" while the viewer is unknown — that
+// would replace a recorded peer name (e.g. "Alice") with the local user's name.
+function isOwnSenderGroup(
+  group: Pick<MessageGroup, "sender">,
+  userId: string | null | undefined,
+): boolean {
+  if (!userId) {
+    return false;
+  }
+  const identity = group.sender?.identity;
+  return identity?.type === "profile" && identity.id === userId;
 }
 
 export function renderActivityGroup(
@@ -393,8 +413,7 @@ export function resolveMessageGroupSenderLabel(
     avatar: opts.userAvatar ?? null,
   });
   const userLabel = group.senderLabel?.trim();
-  const isPeerGroup = normalizedRole === "user" && isPeerSenderGroup(group, opts.userId);
-  const isCurrentUser = normalizedRole === "user" && Boolean(group.sender) && !isPeerGroup;
+  const isCurrentUser = normalizedRole === "user" && isOwnSenderGroup(group, opts.userId);
   return normalizedRole === "user"
     ? isCurrentUser
       ? resolvedUserName
