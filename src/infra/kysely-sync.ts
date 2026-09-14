@@ -180,6 +180,17 @@ export function prepareSqliteQuerySync<Params, Row = unknown>(
     });
 }
 
+/** Compile a fixed first-row read once and bind fresh values on every execution. */
+export function prepareSqliteQueryTakeFirstSync<Params, Row = unknown>(
+  db: DatabaseSync,
+  build: SqliteQueryBindingBuilder<Params, Row>,
+): (params: Params) => Row | undefined {
+  const { compiled, bind } = compileSqliteQueryBindings(build);
+  return (params) =>
+    executeCompiledSqliteQuerySync<Row>(db, { ...compiled, parameters: bind(params) }, true)
+      .rows[0];
+}
+
 /** Compile once and capture fresh bindings before lazily opening each private iterator. */
 export function prepareSqliteQueryIterator<Params, Row = unknown>(
   db: DatabaseSync,

@@ -532,7 +532,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       ),
       githubRepo: this.githubRepo,
       pullRequestsBranch: this.sessionPullRequestsBranch,
-      pullRequestsRateLimited: this.sessionPullRequestsRateLimited,
+      pullRequestsStatus: this.sessionPullRequestsStatus,
       pullRequestsExpanded: this.sessionPullRequestsExpanded,
       onOpenSessionDiff: sessionWorkspace.onOpenDiff,
       onExpandPullRequests: () => {

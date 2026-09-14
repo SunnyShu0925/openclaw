@@ -6,8 +6,10 @@ import { configHintTranslationKey } from "../../ui/src/i18n/lib/config-hint-tran
 import { registerActivityEnglish } from "../../ui/src/i18n/locales/en-activity.ts";
 import { registerAgentsHomeEnglish } from "../../ui/src/i18n/locales/en-agents-home.ts";
 import { registerAppsEnglish } from "../../ui/src/i18n/locales/en-apps.ts";
+import { registerBackgroundTasksEnglish } from "../../ui/src/i18n/locales/en-background-tasks.ts";
 import { registerBoardWebsiteEnglish } from "../../ui/src/i18n/locales/en-board-website.ts";
 import { registerBrowserEnglish } from "../../ui/src/i18n/locales/en-browser.ts";
+import { registerCronEnglish } from "../../ui/src/i18n/locales/en-cron.ts";
 import { registerDebugEnglish } from "../../ui/src/i18n/locales/en-debug.ts";
 import { registerDesktopEnglish } from "../../ui/src/i18n/locales/en-desktop.ts";
 import { registerDevicesEnglish } from "../../ui/src/i18n/locales/en-devices.ts";
@@ -43,8 +45,10 @@ const sourceFiles = [
   "en-activity.ts",
   "en-agents-home.ts",
   "en-apps.ts",
+  "en-background-tasks.ts",
   "en-board-website.ts",
   "en-browser.ts",
+  "en-cron.ts",
   "en-debug.ts",
   "en-desktop.ts",
   "en-devices.ts",
@@ -64,6 +68,19 @@ const sourceFiles = [
 ];
 
 export function loadControlUiSourceCatalog(): TranslationMap {
+  const newSession: TranslationMap = {};
+  for (const [key, value] of Object.entries(en.newSession)) {
+    newSession[key] = value;
+    if (key === "worktree") {
+      for (const workspaceKey of [
+        "newWorkspace",
+        "newWorkspaceDescription",
+        "remoteSourceUnavailable",
+      ] as const) {
+        newSession[workspaceKey] = registerNewSessionSetupEnglish.catalog.newSession[workspaceKey];
+      }
+    }
+  }
   const boardWidget: TranslationMap = {};
   for (const [key, value] of Object.entries(en.board.widget)) {
     boardWidget[key] = value;
@@ -79,13 +96,16 @@ export function loadControlUiSourceCatalog(): TranslationMap {
     {
       ...en,
       board: { ...en.board, widget: boardWidget },
+      newSession,
       debug: registerDebugEnglish.catalog.debug,
       desktop: registerDesktopEnglish.catalog.desktop,
     },
     registerActivityEnglish.catalog,
     registerAgentsHomeEnglish.catalog,
     registerAppsEnglish.catalog,
+    registerBackgroundTasksEnglish.catalog,
     registerBrowserEnglish.catalog,
+    registerCronEnglish.catalog,
     registerDevicesEnglish.catalog,
     registerLoginEnglish.catalog,
     registerMeetingsEnglish.catalog,
