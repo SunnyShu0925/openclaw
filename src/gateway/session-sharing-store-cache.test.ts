@@ -324,10 +324,11 @@ describe("session mutation authorization store caches", () => {
         const parseSpy = vi.spyOn(JSON, "parse");
         expect(canAccessTaskRequesterSession(access)).toBe(true);
         expect(canAccessTaskRequesterSession(access)).toBe(true);
-        // A cold handle validates the store once; candidate aliases must share that admission.
+        // A cold handle validates the store once; the path-based cache lets the
+        // second fresh read-only connection reuse that validation without re-scanning.
         expect(
           parseSpy.mock.calls.filter(([value]) => value.includes("unrelated-task-access-session-")),
-        ).toHaveLength(mode === "warm" ? 0 : 48);
+        ).toHaveLength(mode === "warm" ? 0 : 24);
         if (mode !== "warm") {
           expect(listOpenClawAgentDatabasesForTest()).toHaveLength(0);
         }

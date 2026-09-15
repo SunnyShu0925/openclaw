@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import {
   executeSqliteQuerySync,
@@ -38,6 +39,35 @@ type CanonicalSessionDatabase = Pick<
 >;
 const validatedDatabases = new WeakMap<DatabaseSync, string>();
 const mainKeyReaders = new WeakMap<DatabaseSync, () => { main_key: string } | undefined>();
+// Path-based cache for fresh read-only connections that share no DatabaseSync object.
+// One fingerprint per path; overwriting on change keeps the entry count bounded.
+const validatedDatabasePaths = new Map<string, string>();
+
+function resolveDatabasePath(db: DatabaseSync): string {
+  // SAFETY: PRAGMA database_list always returns { seq, name, file }.
+  const row = db.prepare("PRAGMA database_list").get() as { file?: unknown }; // sqlite-allow-raw -- Read-only file path for cache identity; no row data accessed.
+  // In-memory databases (empty path) cannot share validation across connections.
+  return typeof row.file === "string" ? row.file : "";
+}
+
+function resolveDatabaseFingerprint(filePath: string): string | undefined {
+  try {
+    const stat = fs.statSync(filePath);
+    // Include the WAL sidecar so committed-but-uncheckpointed writes invalidate the cache.
+    // WAL commits change the -wal file's mtime/size even when the main file is untouched.
+    let fingerprint = `${stat.mtimeMs}:${stat.size}`;
+    try {
+      const walStat = fs.statSync(`${filePath}-wal`);
+      fingerprint += `:${walStat.mtimeMs}:${walStat.size}`;
+    } catch {
+      // No WAL file (fresh DB or fully checkpointed) — main file fingerprint is sufficient.
+    }
+    return fingerprint;
+  } catch {
+    // File deleted or renamed mid-run — treat as uncacheable so the caller revalidates.
+    return undefined;
+  }
+}
 
 type CanonicalSessionMetadata = {
   entries: Map<string, SessionEntry>;
@@ -268,6 +298,13 @@ export function scanCanonicalSqliteSessionEntries(
     count += 1;
   }
   validatedDatabases.set(database.db, normalizeMainKey(storedMainKey));
+  const cachePath = resolveDatabasePath(database.db);
+  if (cachePath) {
+    const fingerprint = resolveDatabaseFingerprint(cachePath);
+    if (fingerprint) {
+      validatedDatabasePaths.set(cachePath, fingerprint);
+    }
+  }
   return count;
 }
 
@@ -283,6 +320,15 @@ export function assertCanonicalSqliteSessionKeysCurrent(
     validatedMainKey === readCanonicalSessionMainKey(database)
   ) {
     return undefined;
+  }
+  // Fresh read-only connections share no DatabaseSync object; fall back to a
+  // path-based fingerprint so an unchanged file reuses validation without re-scanning.
+  const cachePath = resolveDatabasePath(database.db);
+  if (cachePath) {
+    const fingerprint = resolveDatabaseFingerprint(cachePath);
+    if (fingerprint && validatedDatabasePaths.get(cachePath) === fingerprint) {
+      return undefined;
+    }
   }
   const metadata: ValidatedSessionMetadata | undefined = collectMetadata
     ? { dataVersion: readSqliteDataVersion(database.db), entries: new Map(), keys: [] }
@@ -317,6 +363,10 @@ export function setCanonicalSqliteSessionMainKey(
       ),
   );
   validatedDatabases.delete(database.db);
+  const cachePath = resolveDatabasePath(database.db);
+  if (cachePath) {
+    validatedDatabasePaths.delete(cachePath);
+  }
 }
 
 /** Checks the startup contract without joining the writable database lifecycle. */
@@ -342,4 +392,9 @@ export function isCanonicalSqliteSessionMainKeyCurrent(
     );
   }, options);
   return result.found && result.value;
+}
+
+/** Clears the path-based validation cache so fresh connections revalidate. */
+export function clearValidatedDatabasePaths(): void {
+  validatedDatabasePaths.clear();
 }

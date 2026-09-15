@@ -20,7 +20,10 @@ import {
 import { scanDoctorSessionEntriesStrict } from "./session-accessor.sqlite-canonical-inventory.js";
 import { readSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
 import { ensureTranscriptSessionRoot } from "./session-accessor.sqlite-transcript-state.js";
-import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
+import {
+  assertCanonicalSqliteSessionKeysCurrent,
+  setCanonicalSqliteSessionMainKey,
+} from "./session-canonical-key.js";
 import type { SessionEntry } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -306,5 +309,39 @@ describe("cold canonical session validation", () => {
     closeOpenClawStateDatabaseForTest();
 
     expect(() => loadSessionEntryReadOnly(scope)).toThrow("openclaw doctor --fix");
+  });
+
+  it("revalidates after a WAL-only commit that introduces divergent lineage", () => {
+    const scope = createScope();
+    replaceSessionEntrySync(scope, {
+      sessionId: "cold-key",
+      updatedAt: 1,
+      parentSessionKey: "agent:main:parent",
+    });
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+
+    // Warm the path cache with a fresh read-only connection.
+    const warmDb = new DatabaseSync(scope.storePath, { readOnly: true });
+    assertCanonicalSqliteSessionKeysCurrent({ agentId: scope.agentId, db: warmDb });
+    warmDb.close();
+
+    // Commit a divergent lineage through an external writer and keep it open
+    // so the WAL is not checkpointed (the main file's mtime stays unchanged).
+    // Without the WAL fingerprint in the cache key, this stale path-cache hit
+    // would skip validation and miss the tampered lineage.
+    const writer = new DatabaseSync(scope.storePath);
+    writer.exec("PRAGMA journal_mode = WAL");
+    writer
+      .prepare("UPDATE session_nodes SET parent_session_key = ? WHERE session_key = ?")
+      .run("agent:main:different", scope.sessionKey);
+
+    // A fresh read-only connection must NOT hit the stale path cache.
+    const reader = new DatabaseSync(scope.storePath, { readOnly: true });
+    expect(() =>
+      assertCanonicalSqliteSessionKeysCurrent({ agentId: scope.agentId, db: reader }),
+    ).toThrow("openclaw doctor --fix");
+    reader.close();
+    writer.close();
   });
 });

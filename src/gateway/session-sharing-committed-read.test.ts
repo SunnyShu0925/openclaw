@@ -59,15 +59,17 @@ describe("committed session mutation authorization", () => {
         parse.mock.calls.filter(([value]) => value.includes("unrelated-committed-probe-")).length;
       inWriterTransaction(owner.db, () => {
         // The same writer's uncommitted edit cannot grant or revoke committed authority.
+        // The path-based cache warmed by the initial authorization lets the companion
+        // reader skip a full re-scan when the WAL fingerprint is unchanged (no commit).
         owner.db
           .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
           .run(JSON.stringify({ ...shared, visibility: "draft" }), sessionKey);
         expect(() => authorization.assertCurrent()).not.toThrow();
-        expect(unrelatedParses()).toBe(unrelatedCount);
+        expect(unrelatedParses()).toBe(0);
         for (let index = 0; index < 4; index += 1) {
           expect(() => authorization.assertCurrent()).not.toThrow();
         }
-        expect(unrelatedParses()).toBe(unrelatedCount);
+        expect(unrelatedParses()).toBe(0);
       });
 
       replaceSessionEntrySync(scope, { ...shared, visibility: "draft", updatedAt: 2 });
@@ -82,6 +84,8 @@ describe("committed session mutation authorization", () => {
       inWriterTransaction(owner.db, () => {
         expect(() => authorization.assertCurrent()).toThrow("session changed before chat.send");
       });
+      // The first committed change invalidates the path cache (WAL fingerprint mismatch),
+      // triggering one re-scan. Subsequent calls reuse the companion reader's WeakMap entry.
       expect(unrelatedParses()).toBe(unrelatedCount);
     });
   });

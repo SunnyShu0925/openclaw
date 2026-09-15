@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { resolveStateDir } from "../config/paths.js";
+import { clearValidatedDatabasePaths } from "../config/sessions/session-canonical-key.js";
 import { isGatewayExternallySupervised } from "../infra/gateway-supervision.js";
 import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync.js";
 import {
@@ -665,6 +666,7 @@ export { withAgentDatabaseMaintenanceLease } from "./openclaw-agent-db-maintenan
 export function closeOpenClawAgentDatabasesForTest(rootPath?: string): void {
   closeOpenClawAgentDatabases(rootPath);
   clearOpenClawAgentDatabaseValidationCache(rootPath);
+  clearValidatedDatabasePaths();
   cache.terminal.clearAll(rootPath);
 }
 
