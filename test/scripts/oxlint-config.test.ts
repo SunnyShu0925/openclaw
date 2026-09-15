@@ -524,12 +524,6 @@ describe("oxlint config", () => {
           "max-lines": ["error", { max: 1200, skipBlankLines: true, skipComments: true }],
         },
       },
-      {
-        files: ["src/config/sessions/session-accessor.sqlite-read.ts"],
-        rules: {
-          "max-lines": ["error", { max: 800, skipBlankLines: true, skipComments: true }],
-        },
-      },
     ]);
   });
 

@@ -172,9 +172,14 @@ The exporter also bounds input size:
 - total exported events: 250,000
 - individual runtime event lines are truncated above 256 KiB
 
-Sources above these limits are rejected before any events are parsed, so an
-oversized store or file fails with a typed size error instead of exhausting
-memory.
+The source byte limits are checked before parsing events. SQLite sources use
+UTF-8 JSONL size, including separators between rows, regardless of the database
+encoding. SQLite runtime event counts are also checked before loading rows.
+Oversized sources fail with a size error before an export bundle is created.
+
+These are per-source limits, not a bound on total process memory. Parsing,
+projection, redaction, and output serialization can retain additional copies;
+large exports can still require more memory than their source size.
 
 Review bundles before sharing them outside your team. Redaction is best-effort
 and cannot know every application-specific secret.

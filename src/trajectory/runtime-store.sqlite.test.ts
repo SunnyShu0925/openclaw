@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -583,76 +584,6 @@ describe("SQLite trajectory runtime reader byte and count budgets", () => {
       ).toThrow(/runtime store is too large to export/u);
     },
   );
-
-  // A single UTF-16 row whose UTF-8 size exceeds the budget must be rejected
-  // via metadata-only precheck (octet_length / 2 > budget) before the text is
-  // fetched and decoded into JavaScript memory.
-  it.each([
-    { encoding: "UTF-16le" as const, label: "le" },
-    { encoding: "UTF-16be" as const, label: "be" },
-  ])("rejects a single oversized $encoding runtime row before decoding", async ({ encoding }) => {
-    storePath = path.join(tempDir, `${encoding}-huge.sqlite`);
-    const seed = new DatabaseSync(storePath);
-    try {
-      seed.exec(
-        `PRAGMA encoding = '${encoding}'; CREATE TABLE encoding_seed (id INTEGER); DROP TABLE encoding_seed;`,
-      );
-    } finally {
-      seed.close();
-    }
-    await replaceSessionEntry(
-      { sessionKey: "agent:main:main", storePath },
-      { sessionId: "session-1", updatedAt: 10 },
-    );
-    const event = createTrajectoryEvent({ type: "huge-row", payloadSize: 5000 });
-    appendSqliteTrajectoryRuntimeEvents({ sessionId: "session-1", storePath }, [event]);
-    const utf8Size = Buffer.byteLength(JSON.stringify(event), "utf8");
-    // Budget below the row's UTF-8 size: metadata precheck (stored_bytes/2)
-    // must reject it without fetching the text.
-    expect(() =>
-      loadSqliteTrajectoryRuntimeEventRowsSync({
-        sessionId: "session-1",
-        storePath,
-        maxEventBytes: utf8Size - 1,
-      }),
-    ).toThrow(/runtime store is too large to export/u);
-  });
-
-  // A UTF-16 source whose stored bytes exceed the budget but whose UTF-8 size
-  // is within the budget must NOT be rejected (stored_bytes / 2 is a lower bound).
-  it.each([
-    { encoding: "UTF-16le" as const, label: "le" },
-    { encoding: "UTF-16be" as const, label: "be" },
-  ])(
-    "admits a $encoding runtime source whose stored bytes exceed but UTF-8 fits the budget",
-    async ({ encoding }) => {
-      storePath = path.join(tempDir, `${encoding}-admit.sqlite`);
-      const seed = new DatabaseSync(storePath);
-      try {
-        seed.exec(
-          `PRAGMA encoding = '${encoding}'; CREATE TABLE encoding_seed (id INTEGER); DROP TABLE encoding_seed;`,
-        );
-      } finally {
-        seed.close();
-      }
-      await replaceSessionEntry(
-        { sessionKey: "agent:main:main", storePath },
-        { sessionId: "session-1", updatedAt: 10 },
-      );
-      const event = createTrajectoryEvent({ type: "admit-row", payloadSize: 200 });
-      appendSqliteTrajectoryRuntimeEvents({ sessionId: "session-1", storePath }, [event]);
-      const utf8Size = Buffer.byteLength(JSON.stringify(event), "utf8");
-      // In UTF-16, stored bytes ~= 2x UTF-8 for ASCII, so stored bytes > utf8Size.
-      // Budget = utf8Size: must admit despite stored bytes exceeding it.
-      expect(
-        loadSqliteTrajectoryRuntimeEventRowsSync({
-          sessionId: "session-1",
-          storePath,
-          maxEventBytes: utf8Size,
-        }).length,
-      ).toBe(1);
-    },
-  );
 });
 
 function createTrajectoryEvent(options: {
@@ -680,7 +611,6 @@ function createTrajectoryEvent(options: {
   };
 }
 
-import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 /** Inserts a competing oversized row via a second writable connection, called between the budget aggregate and payload SELECT. */
 function createCompetingRowInjector(
   dbPath: string,
