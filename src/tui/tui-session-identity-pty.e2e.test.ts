@@ -456,7 +456,7 @@ it("keeps an explicit launch session authoritative over remembered state", async
   }
 }, 65_000);
 
-it("falls back to the default session when remembered lookup fails", async () => {
+it("falls back after a remembered lookup error and retries on reconnect", async () => {
   const stateDir = tempDirs.make("openclaw-tui-restore-failure-");
   const marker = "restore failure fallback proof";
   await seedRememberedSession(stateDir);
@@ -465,6 +465,7 @@ it("falls back to the default session when remembered lookup fails", async () =>
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_TUI_PTY_PICKER_FIXTURE: "1",
       OPENCLAW_TUI_PTY_RESTORE_FAILURES: "1",
+      OPENCLAW_TUI_PTY_DISCONNECT_REASON: "fixture restore lookup retry",
     },
   });
 
@@ -488,6 +489,28 @@ it("falls back to the default session when remembered lookup fails", async () =>
     );
     expect(sent.payload).toMatchObject({ sessionKey: "main" });
     expect(markerSends(await readFixtureLog(fixture.logPath), marker)).toHaveLength(1);
+    await fixture.run.waitForOutput(`PTY_RESPONSE: ${marker}`, STARTUP_TIMEOUT_MS);
+
+    // Another TUI can replace the scoped pointer after fallback. A transient
+    // validation error must leave the next connection eligible to restore it.
+    await seedRememberedSession(stateDir);
+    await fixture.run.write("/gateway-status\r", { delay: false });
+    await fixture.waitForLogEntry((entry) => entry.method === "disconnect", STARTUP_TIMEOUT_MS);
+    await waitForSynchronizedFrameRows(
+      fixture.run,
+      (frame) =>
+        frame.some((row) => row.includes("local ready")) &&
+        frame.some((row) => row.includes("session picker-target")),
+      STARTUP_TIMEOUT_MS,
+    );
+    const retryMarker = "restore lookup retry proof";
+    await fixture.run.write(`${retryMarker}\r`, { delay: false });
+    const retried = await fixture.waitForLogEntry(
+      (entry) => entry.method === "sendChat" && objectFieldEquals(entry, "message", retryMarker),
+      STARTUP_TIMEOUT_MS,
+    );
+    expect(retried.payload).toMatchObject({ sessionKey: REMEMBERED_SESSION_KEY });
+    expect(markerSends(await readFixtureLog(fixture.logPath), retryMarker)).toHaveLength(1);
   } finally {
     await fixture.cleanup();
   }

@@ -1111,12 +1111,12 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       return;
     }
     const candidate = await resolveRememberedCandidate();
+    if (expectedConnectionGeneration !== connectionGeneration || exitRequested) {
+      return;
+    }
     if (!candidate) {
       provisionalSessionLabel = null;
       rememberedSessionApplied = true;
-      return;
-    }
-    if (expectedConnectionGeneration !== connectionGeneration || exitRequested) {
       return;
     }
     const rememberedKey = candidate.key;
@@ -1133,10 +1133,9 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       return;
     }
     if (!sessions) {
-      // A rejected listSessions means the remembered key cannot be validated;
-      // clear the provisional label so the header reflects the actual session.
+      // A failed lookup clears the preview, but leaves restoration eligible
+      // for a later connection to validate the remembered session.
       provisionalSessionLabel = null;
-      rememberedSessionApplied = true;
       return;
     }
     // An abandoned connection must leave restoration eligible for the next handshake.
