@@ -112,23 +112,10 @@ function observeModelCallIterator<T>(
         lifecycle.observer.maybeEmitStreamProgress(lifecycle.eventBase);
         yield next.value;
       }
-      // A bare-EOF stream (no terminal done/error chunk) leaves terminalError unset.
-      // When the stream exposes result(), the resolved/rejected result is the
-      // authoritative terminal — observe it now so a rejected result() publishes
-      // model.call.error instead of being deduped away by an early
-      // model.call.completed. The shared observation is cached, so a consumer that
-      // later calls result() reuses the same promise and the terminalEventEmitted
-      // fence keeps it exactly-once. A terminalError already captured from a
-      // streamed error event stays authoritative via emitCompleted. Consumers that
-      // never call result() (e.g. worker inference) still get exactly one terminal
-      // because the shared observer fires here. Iterator-only streams (no result())
-      // have no later terminal signal, so they complete here as before.
-      if (observeSharedResult) {
-        if (lifecycle.observer.state.terminalError) {
-          lifecycle.emitCompleted();
-        } else {
-          void observeSharedResult();
-        }
+      // EOF can precede result decorators' settlement. Retain that work through
+      // owner cleanup without delaying drain-only consumers or losing failures.
+      if (observeSharedResult && !lifecycle.observer.state.terminalError) {
+        void trackCleanup(observeSharedResult).catch(() => undefined);
       } else {
         lifecycle.emitCompleted();
       }
@@ -143,8 +130,6 @@ function observeModelCallIterator<T>(
         // Close the underlying iterator for provider cleanup (idle-timeout abort
         // listeners, SSE readers) even when result() already emitted the terminal
         // event; lifecycle completion self-dedupes via state.terminalEventEmitted.
-        // The consumer abandoned the iterator, so result() will not settle the
-        // terminal; emit completion here to avoid leaving the call without one.
         await safeReturnIterator(iterator, trackCleanup);
         lifecycle.emitCompleted();
       }
@@ -165,11 +150,9 @@ function createSharedResultObserver(
   if (!isRecord(stream) || typeof stream.result !== "function") {
     return undefined;
   }
-  const resultFn = stream.result as (...args: unknown[]) => unknown; // SAFETY: isRecord(stream) and typeof stream.result === "function" above narrow the unknown result to a callable signature; no further structural claim.
-  // Cache the underlying result() promise so iterator-done and consumer-side
-  // result() calls share one observation; terminalEventEmitted keeps the
-  // terminal exactly-once. The pre-attached catch keeps iterator-only observers
-  // (which never await the returned promise) free of unhandled rejections.
+  const resultFn = stream.result;
+  // The stream contract exposes one no-argument final result. Share observation
+  // across iterator exhaustion and explicit callers, including rejected results.
   let cached: Promise<unknown> | undefined;
   return () => {
     if (!cached) {
@@ -182,30 +165,10 @@ function createSharedResultObserver(
             throw err;
           },
         );
-      cached.catch(() => undefined);
+      // Drain-only consumers never await this promise; retain rejection for callers.
+      void cached.catch(() => undefined);
     }
     return cached;
-  };
-}
-
-function createObservedResultFunction(
-  observeSharedResult: () => Promise<unknown>,
-  stream: unknown,
-): (...args: unknown[]) => unknown {
-  // The consumer-facing result() forwards to the shared observer so the
-  // terminal is settled by whichever fires first: iterator natural done or
-  // an explicit result() call. result() is a no-arg stream contract; the shared
-  // cache serves the no-arg path. A caller passing arguments (not part of the
-  // contract) falls through to the underlying function without caching.
-  const resultFn =
-    isRecord(stream) && typeof stream.result === "function"
-      ? (stream.result as (...args: unknown[]) => unknown) // SAFETY: the conjunction above narrows stream.result to a function; the (...args) => unknown signature makes no further structural claim.
-      : undefined;
-  return (...args: unknown[]) => {
-    if (args.length > 0 && resultFn) {
-      return resultFn.apply(stream, args);
-    }
-    return observeSharedResult();
   };
 }
 
@@ -214,14 +177,9 @@ function observeModelCallStream(
   createIterator: () => AsyncIterator<unknown>,
   lifecycle: ModelCallLifecycle,
 ): AsyncIterable<unknown> {
-  const observeSharedResult = createSharedResultObserver(stream, lifecycle);
-  const observedResult = observeSharedResult
-    ? createObservedResultFunction(observeSharedResult, stream)
-    : undefined;
+  const observedResult = createSharedResultObserver(stream, lifecycle);
   const observedIterator = () =>
-    observeModelCallIterator(createIterator(), lifecycle, observeSharedResult)[
-      Symbol.asyncIterator
-    ]();
+    observeModelCallIterator(createIterator(), lifecycle, observedResult)[Symbol.asyncIterator]();
   let hasNonConfigurableIterator;
   try {
     hasNonConfigurableIterator =
