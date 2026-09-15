@@ -93,6 +93,7 @@ import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { isUserModelAuthProfileId } from "../state/user-model-account-id.js";
 import { isUserModelAuthProfileOwner } from "../state/user-model-accounts.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
+import type { AgentRuntimeSpawnModelAutoSelection } from "./agent-runtime-session-spawn-context.js";
 import type {
   ModelAccountConnectAction,
   UserModelAccountSelection,
@@ -385,6 +386,8 @@ export async function createGatewaySession(params: {
     actor?: SessionCreatedActor;
     sandbox?: "required";
     skillLibrarySelections?: import("../../packages/gateway-protocol/src/schema/skill-library.js").SkillLibrarySelection[];
+    /** Trusted config-resolved spawn model provenance for the `model` field. */
+    spawnModelAutoSelection?: AgentRuntimeSpawnModelAutoSelection;
   };
   /** Exact harness namespace authorized by the scoped plugin runtime. */
   authorizedAgentHarnessId?: string;
@@ -1304,6 +1307,17 @@ export async function createGatewaySession(params: {
         if (!patched.ok) {
           return patched;
         }
+        // A trusted config-resolved spawn model keeps auto provenance so the child
+        // retains the configured fallback ladder. The stored selection must match
+        // the trusted pair before provenance is restamped; anything else stays a
+        // user pin exactly like a hand-picked model.
+        const spawnModelAutoOrigin =
+          params.creation?.spawnModelAutoSelection &&
+          patched.entry.modelOverride === params.creation.spawnModelAutoSelection.model &&
+          (params.creation.spawnModelAutoSelection.provider === undefined ||
+            patched.entry.providerOverride === params.creation.spawnModelAutoSelection.provider)
+            ? params.creation.spawnModelAutoSelection
+            : undefined;
         if (
           requestedToolOverrides &&
           existingEntry !== undefined &&
@@ -1358,6 +1372,22 @@ export async function createGatewaySession(params: {
           ...patched.entry,
           ...inheritedWorkspace,
           ...(createdNewEntry && displayName ? { displayName } : {}),
+          // A config-resolved spawn model carries auto provenance and the primary
+          // origin that keeps auto-fallback recovery working, exactly like hidden
+          // subagent spawns store their initial selection.
+          ...(createdNewEntry && spawnModelAutoOrigin
+            ? {
+                modelOverrideSource: "auto" as const,
+                ...(spawnModelAutoOrigin.fallbackOriginProvider &&
+                spawnModelAutoOrigin.fallbackOriginModel
+                  ? {
+                      modelOverrideFallbackOriginProvider:
+                        spawnModelAutoOrigin.fallbackOriginProvider,
+                      modelOverrideFallbackOriginModel: spawnModelAutoOrigin.fallbackOriginModel,
+                    }
+                  : {}),
+              }
+            : {}),
           // New rows must expose the same canonical delivery shape to callbacks
           // that the SQLite writer persists, or guarded finalization sees its own write as drift.
           ...(existingEntry === undefined && patched.entry.delivery === undefined

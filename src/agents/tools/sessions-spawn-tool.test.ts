@@ -1109,16 +1109,15 @@ describe("sessions_spawn tool", () => {
     { name: "caller passed model=default", modelArg: "default" },
     { name: "caller passed empty model", modelArg: "" },
     { name: "caller passed whitespace model", modelArg: "   " },
-  ])("omits model from sessions.create when $name", async ({ modelArg }) => {
-    // A config-resolved model must not ride sessions.create: the create service records a
-    // present model as a user override (modelOverrideSource: "user"), which disables the
-    // configured fallback chain. The target agent's subagents.model is configured here,
-    // but the caller passed no explicit `model`, so the child must resolve its own default.
-    const callGateway = vi.fn(async () => ({
+  ])("forwards the config-resolved model with auto provenance when $name", async ({ modelArg }) => {
+    // The target agent's subagents.model is configured and the caller passed no
+    // explicit `model`, so the visible child must carry the config-resolved model
+    // with auto provenance (not a user pin) to keep the configured fallback chain.
+    hoisted.inProcessCreationMock.mockResolvedValue({
       key: "agent:reviewer:dashboard:child",
       runStarted: true,
       runId: "run-reviewer",
-    }));
+    });
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",
       config: {
@@ -1130,7 +1129,6 @@ describe("sessions_spawn tool", () => {
           ],
         },
       },
-      callGateway: callGateway as never,
       registerRun: vi.fn(),
       countActiveRuns: () => 0,
     });
@@ -1142,24 +1140,30 @@ describe("sessions_spawn tool", () => {
       ...(modelArg !== undefined ? { model: modelArg } : {}),
     });
 
-    expect(callGateway).toHaveBeenCalledWith(
+    expect(hoisted.inProcessCreationMock).toHaveBeenCalledWith(
       "sessions.create",
       expect.objectContaining({
         agentId: "reviewer",
+        model: "anthropic/claude-sonnet-4-6",
         parentSessionKey: "agent:main:main",
         spawnDepth: 1,
       }),
+      expect.objectContaining({
+        via: "spawn",
+        spawnModelAutoSelection: expect.objectContaining({
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+        }),
+      }),
     );
-    expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("model");
-    expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
   });
 
-  it("forwards an explicit caller model to sessions.create for visible sessions", async () => {
-    const callGateway = vi.fn(async () => ({
+  it("keeps a caller-selected visible spawn model as a user pin without auto provenance", async () => {
+    hoisted.inProcessCreationMock.mockResolvedValue({
       key: "agent:main:dashboard:child",
       runStarted: true,
       runId: "run-visible-model",
-    }));
+    });
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",
       config: {
@@ -1170,7 +1174,6 @@ describe("sessions_spawn tool", () => {
           list: [{ id: "main" }],
         },
       },
-      callGateway: callGateway as never,
       registerRun: vi.fn(),
       countActiveRuns: () => 0,
     });
@@ -1181,7 +1184,7 @@ describe("sessions_spawn tool", () => {
       model: "anthropic/claude-sonnet-4-6",
     });
 
-    expect(callGateway).toHaveBeenCalledWith(
+    expect(hoisted.inProcessCreationMock).toHaveBeenCalledWith(
       "sessions.create",
       expect.objectContaining({
         agentId: "main",
@@ -1189,7 +1192,15 @@ describe("sessions_spawn tool", () => {
         parentSessionKey: "agent:main:main",
         spawnDepth: 1,
       }),
+      expect.objectContaining({
+        via: "spawn",
+        inheritedToolPolicy: expect.objectContaining({ version: 1 }),
+      }),
     );
+    const creation = hoisted.inProcessCreationMock.mock.calls[0]?.[2] as
+      | Record<string, unknown>
+      | undefined;
+    expect(creation?.spawnModelAutoSelection).toBeUndefined();
   });
 
   it("rejects cross-agent visible transcript forks", async () => {
@@ -1424,7 +1435,7 @@ describe("sessions_spawn tool", () => {
         parentSessionKey: "agent:main:main",
         spawnDepth: 1,
       }),
-      {
+      expect.objectContaining({
         via: "spawn",
         actor: { type: "agent", id: "main" },
         requesterSessionKey: "agent:main:main",
@@ -1434,7 +1445,9 @@ describe("sessions_spawn tool", () => {
           allow: ["read", "sessions_spawn"],
           deny: ["exec"],
         },
-      },
+        // The config-resolved default model rides as an auto selection, not a user pin.
+        spawnModelAutoSelection: expect.objectContaining({ model: "gpt-6-astra" }),
+      }),
     );
     expect(registerRun).toHaveBeenCalledWith(
       expect.objectContaining({

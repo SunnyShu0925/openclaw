@@ -3,6 +3,9 @@ import type {
   SessionCreatedVia,
 } from "../../config/sessions/session-entry-provenance.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
+import type { AgentRuntimeSpawnModelAutoSelection } from "../agent-runtime-session-spawn-context.js";
+
+export type { AgentRuntimeSpawnModelAutoSelection } from "../agent-runtime-session-spawn-context.js";
 
 export type TrustedSessionCreation = {
   skillLibrarySelections?: import("../../../packages/gateway-protocol/src/schema/skill-library.js").SkillLibrarySelection[];
@@ -20,6 +23,13 @@ export type TrustedSessionCreation = {
     allow: string[];
     deny: string[];
   };
+  /**
+   * Trusted provenance for a spawn-owned creation's `model`: the spawning agent
+   * tool resolved it from agent config instead of a caller-selected pin, so the
+   * child persists it as an auto selection that keeps the configured fallback
+   * ladder available (mirrors hidden subagent spawn storage).
+   */
+  spawnModelAutoSelection?: AgentRuntimeSpawnModelAutoSelection;
 };
 
 /**
@@ -55,6 +65,12 @@ export function resolveOperatorSessionCreation(
           }
         : {}),
       inheritedToolPolicy: agentRuntimeIdentity.sessionSpawnContext.inheritedToolPolicy,
+      ...(agentRuntimeIdentity.sessionSpawnContext.spawnModelAutoSelection
+        ? {
+            spawnModelAutoSelection:
+              agentRuntimeIdentity.sessionSpawnContext.spawnModelAutoSelection,
+          }
+        : {}),
     };
   }
   const profileId = client?.authenticatedUserProfile?.profileId;

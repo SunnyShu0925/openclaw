@@ -30,7 +30,11 @@ import {
 import { deleteSubagentSessionForCleanup } from "../subagents/registry/subagent-session-cleanup.js";
 import { getSubagentDepthFromSessionStore } from "../subagents/spawn/subagent-depth.js";
 import { resolveSubagentSpawnOwnership } from "../subagents/spawn/subagent-spawn-ownership.js";
-import { resolveConfiguredSubagentRunTimeoutSeconds } from "../subagents/spawn/subagent-spawn-plan.js";
+import {
+  resolveConfiguredSubagentRunTimeoutSeconds,
+  resolveSubagentModelAndThinkingPlan,
+  splitModelRef,
+} from "../subagents/spawn/subagent-spawn-plan.js";
 import { buildSubagentTaskMessage } from "../subagents/spawn/subagent-system-prompt.js";
 import { resolveSubagentTargetPolicy } from "../subagents/spawn/subagent-target-policy.js";
 import { resolveAgentTimeoutMs } from "../timeout.js";
@@ -251,10 +255,40 @@ export async function maybeSpawnVisibleSession(params: {
   if (!targetPolicy.ok) {
     return { status: "forbidden", error: targetPolicy.error };
   }
-  // Only an explicit caller `model` is a user selection. A config-resolved model must
-  // stay unset on sessions.create: the create service records a present model as a user
-  // override (modelOverrideSource: "user"), which disables the configured fallback chain.
-  // Without `model` the child resolves the agent default like a hidden spawn and keeps fallbacks.
+  // Visible children share the hidden-spawn model plan so a config-resolved model
+  // keeps auto provenance; a caller-selected model still pins the child as a user
+  // selection and disables the configured fallback ladder.
+  const modelPlan = resolveSubagentModelAndThinkingPlan({
+    cfg,
+    targetAgentId,
+    modelOverride,
+  });
+  if (modelPlan.status === "error") {
+    return { status: "error", error: modelPlan.error };
+  }
+  const resolvedModel = modelPlan.resolvedModel;
+  const spawnModelAutoSelection =
+    modelPlan.initialSessionPatch.modelOverrideSource === "auto"
+      ? (() => {
+          const { provider, model } = splitModelRef(resolvedModel);
+          if (!model) {
+            return undefined;
+          }
+          const fallbackOriginProvider = normalizeOptionalString(
+            modelPlan.initialSessionPatch.modelOverrideFallbackOriginProvider,
+          );
+          const fallbackOriginModel = normalizeOptionalString(
+            modelPlan.initialSessionPatch.modelOverrideFallbackOriginModel,
+          );
+          return {
+            ...(provider ? { provider } : {}),
+            model,
+            ...(fallbackOriginProvider && fallbackOriginModel
+              ? { fallbackOriginProvider, fallbackOriginModel }
+              : {}),
+          };
+        })()
+      : undefined;
   const runTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
     cfg,
     runTimeoutSeconds: params.runTimeoutSeconds,
@@ -330,6 +364,7 @@ export async function maybeSpawnVisibleSession(params: {
           actor: { type: "agent", id: requesterAgentId },
           requesterSessionKey: requesterKey,
           completionOwnerSessionKey: ownership.completionRequesterSessionKey,
+          ...(spawnModelAutoSelection ? { spawnModelAutoSelection } : {}),
           inheritedToolPolicy: {
             version: 1,
             allow: [...(params.options?.inheritedToolAllowlist ?? [])],
@@ -350,9 +385,10 @@ export async function maybeSpawnVisibleSession(params: {
         ...(params.label ? { label: params.label } : {}),
         // sessions.create persists the group under the legacy wire field `category`.
         ...(group ? { category: group } : {}),
-        // Explicit caller selection only; the config-resolved default is applied by the
-        // create service (auto provenance), keeping the configured fallback chain intact.
-        ...(modelOverride ? { model: modelOverride } : {}),
+        // The resolved model (config default or caller selection) is always sent; the
+        // trusted `spawnModelAutoSelection` marks it auto when config-resolved, and the
+        // create service records a caller-selected model as a user pin.
+        model: resolvedModel,
         task: buildSubagentTaskMessage({
           task: params.task,
           spawnMode: "session",
