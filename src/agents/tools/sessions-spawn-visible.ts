@@ -21,7 +21,6 @@ import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js
 import { listAgentIds, resolveAgentConfig, resolveSessionAgentId } from "../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../child-admission.js";
 import { resolveAgentIdentity } from "../identity.js";
-import { resolveSubagentSpawnModelSelection } from "../model-selection.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { resolveSpawnedWorkspaceInheritance, type SpawnedToolContext } from "../spawned-context.js";
 import {
@@ -252,8 +251,10 @@ export async function maybeSpawnVisibleSession(params: {
   if (!targetPolicy.ok) {
     return { status: "forbidden", error: targetPolicy.error };
   }
-  const resolvedModel =
-    modelOverride ?? resolveSubagentSpawnModelSelection({ cfg, agentId: targetAgentId });
+  // Only an explicit caller `model` is a user selection. A config-resolved model must
+  // stay unset on sessions.create: the create service records a present model as a user
+  // override (modelOverrideSource: "user"), which disables the configured fallback chain.
+  // Without `model` the child resolves the agent default like a hidden spawn and keeps fallbacks.
   const runTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
     cfg,
     runTimeoutSeconds: params.runTimeoutSeconds,
@@ -349,7 +350,9 @@ export async function maybeSpawnVisibleSession(params: {
         ...(params.label ? { label: params.label } : {}),
         // sessions.create persists the group under the legacy wire field `category`.
         ...(group ? { category: group } : {}),
-        model: resolvedModel,
+        // Explicit caller selection only; the config-resolved default is applied by the
+        // create service (auto provenance), keeping the configured fallback chain intact.
+        ...(modelOverride ? { model: modelOverride } : {}),
         task: buildSubagentTaskMessage({
           task: params.task,
           spawnMode: "session",

@@ -1104,7 +1104,11 @@ describe("sessions_spawn tool", () => {
     },
   );
 
-  it("uses the target agent model for cross-agent visible sessions", async () => {
+  it("omits model from sessions.create when the caller did not pick one", async () => {
+    // A config-resolved model must not ride sessions.create: the create service records a
+    // present model as a user override (modelOverrideSource: "user"), which disables the
+    // configured fallback chain. The target agent's subagents.model is configured here,
+    // but the caller passed no `model`, so the child must resolve its own default.
     const callGateway = vi.fn(async () => ({
       key: "agent:reviewer:dashboard:child",
       runStarted: true,
@@ -1136,12 +1140,50 @@ describe("sessions_spawn tool", () => {
       "sessions.create",
       expect.objectContaining({
         agentId: "reviewer",
+        parentSessionKey: "agent:main:main",
+        spawnDepth: 1,
+      }),
+    );
+    expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("model");
+    expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
+  });
+
+  it("forwards an explicit caller model to sessions.create for visible sessions", async () => {
+    const callGateway = vi.fn(async () => ({
+      key: "agent:main:dashboard:child",
+      runStarted: true,
+      runId: "run-visible-model",
+    }));
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      config: {
+        agents: {
+          defaults: {
+            subagents: { model: "openai/gpt-5.4", runTimeoutSeconds: 120 },
+          },
+          list: [{ id: "main" }],
+        },
+      },
+      callGateway: callGateway as never,
+      registerRun: vi.fn(),
+      countActiveRuns: () => 0,
+    });
+
+    await tool.execute("visible-model", {
+      task: "inspect issue",
+      visible: true,
+      model: "anthropic/claude-sonnet-4-6",
+    });
+
+    expect(callGateway).toHaveBeenCalledWith(
+      "sessions.create",
+      expect.objectContaining({
+        agentId: "main",
         model: "anthropic/claude-sonnet-4-6",
         parentSessionKey: "agent:main:main",
         spawnDepth: 1,
       }),
     );
-    expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
   });
 
   it("rejects cross-agent visible transcript forks", async () => {
