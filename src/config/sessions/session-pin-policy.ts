@@ -1,5 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { buildAgentMainSessionKey, DEFAULT_MAIN_KEY } from "@openclaw/session-url-contract";
+import { buildAgentMainSessionKey } from "@openclaw/session-url-contract";
 import { isSubagentSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import type { SessionEntry } from "./types.js";
 
@@ -9,7 +9,6 @@ import type { SessionEntry } from "./types.js";
 export function isPinnableSessionEntry(
   storeKey: string,
   entry: Pick<SessionEntry, "spawnedBy" | "parentSessionKey"> | undefined,
-  agentMainSessionKey?: string,
 ): boolean {
   if (isSubagentSessionKey(storeKey) || normalizeOptionalString(entry?.spawnedBy)) {
     return false;
@@ -18,14 +17,6 @@ export function isPinnableSessionEntry(
   if (!parentSessionKey) {
     return true;
   }
-  const resolvedRootKey = agentMainSessionKey ?? resolveDefaultAgentMainSessionKey(storeKey);
-  return parentSessionKey === resolvedRootKey;
-}
-
-function resolveDefaultAgentMainSessionKey(storeKey: string): string | undefined {
   const parsed = parseAgentSessionKey(storeKey);
-  if (!parsed?.agentId) {
-    return undefined;
-  }
-  return buildAgentMainSessionKey({ agentId: parsed.agentId, mainKey: DEFAULT_MAIN_KEY });
+  return !!parsed && parentSessionKey === buildAgentMainSessionKey({ agentId: parsed.agentId });
 }

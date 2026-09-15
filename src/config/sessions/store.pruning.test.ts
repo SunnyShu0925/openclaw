@@ -158,19 +158,23 @@ describe("pruneStaleEntries", () => {
     );
   });
 
-  it.each(["archivedAt", "pinnedAt"] as const)(
-    "preserves %s until protection is removed, then archives the same identity",
-    (field) => {
+  it.each([
+    ["archivedAt", "protected", {}],
+    ["pinnedAt", "protected", {}],
+    ["pinnedAt", "agent:main:dashboard:protected", { parentSessionKey: "agent:main:main" }],
+  ] as const)(
+    "preserves %s on %s until protection is removed, then archives the same identity",
+    (field, key, lineage) => {
       const now = Date.now();
-      const original = { ...makeEntry(now - 31 * DAY_MS), [field]: now - DAY_MS };
-      const store = makeStore([["protected", { ...original }]]);
+      const original = { ...makeEntry(now - 31 * DAY_MS), [field]: now - DAY_MS, ...lineage };
+      const store = makeStore([[key, { ...original }]]);
 
       expect(pruneStaleEntries(store, 30 * DAY_MS)).toBe(0);
-      expect(store.protected).toEqual(original);
+      expect(store[key]).toEqual(original);
 
-      delete store.protected?.[field];
+      delete store[key]?.[field];
       expect(pruneStaleEntries(store, 30 * DAY_MS)).toBe(0);
-      expect(store.protected).toMatchObject({
+      expect(store[key]).toMatchObject({
         sessionId: original.sessionId,
         archivedAt: expect.any(Number),
         archiveReason: "age-retention",
@@ -774,11 +778,13 @@ describe("capEntryCount", () => {
     expect(Object.keys(store)).toHaveLength(4);
   });
 
-  it("preserves model-locked harness sessions when capping", () => {
+  it.each([
+    ["agent:main:harness-owned:locked", { modelSelectionLocked: true }],
+    ["agent:main:dashboard:pinned", { pinnedAt: 1, parentSessionKey: "agent:main:main" }],
+  ])("preserves protected %s when capping", (lockedKey, protection) => {
     const now = Date.now();
-    const lockedKey = "agent:main:harness-owned:locked";
     const store = makeStore([
-      [lockedKey, { ...makeEntry(now - 10 * DAY_MS), modelSelectionLocked: true }],
+      [lockedKey, { ...makeEntry(now - 10 * DAY_MS), ...protection }],
       ["recent", makeEntry(now)],
       ["old", makeEntry(now - DAY_MS)],
     ]);
