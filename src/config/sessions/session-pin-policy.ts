@@ -18,5 +18,7 @@ export function isPinnableSessionEntry(
     return true;
   }
   const parsed = parseAgentSessionKey(storeKey);
-  return !!parsed && parentSessionKey === buildAgentMainSessionKey({ agentId: parsed.agentId });
+  return (
+    parsed !== null && parentSessionKey === buildAgentMainSessionKey({ agentId: parsed.agentId })
+  );
 }

@@ -747,9 +747,8 @@ describe("capEntryCount", () => {
       ["newest", makeEntry(now)],
     ]);
 
-    const evicted = capEntryCount(store, 3);
+    expect(capEntryCount(store, 3)).toBe(2);
 
-    expect(evicted).toBe(2);
     expect(Object.keys(store)).toHaveLength(5);
     expect(store).toHaveProperty(threadKey);
     expect(store.newest?.archivedAt).toBeUndefined();
@@ -770,11 +769,10 @@ describe("capEntryCount", () => {
       ["agent:main:slack:channel:C3:thread:3", makeEntry(now - DAY_MS)],
     ]);
 
-    const evicted = capEntryCount(store, 2);
+    expect(capEntryCount(store, 2)).toBe(0);
 
     // Every entry is now protected (main + threads), so nothing is evicted and `main` survives.
     expect(store).toHaveProperty(mainKey);
-    expect(evicted).toBe(0);
     expect(Object.keys(store)).toHaveLength(4);
   });
 
@@ -789,9 +787,8 @@ describe("capEntryCount", () => {
       ["old", makeEntry(now - DAY_MS)],
     ]);
 
-    const evicted = capEntryCount(store, 2);
+    expect(capEntryCount(store, 2)).toBe(1);
 
-    expect(evicted).toBe(1);
     expect(store).toHaveProperty(lockedKey);
     expect(store).toHaveProperty("recent");
     expect(store.old?.archivedAt).toEqual(expect.any(Number));
