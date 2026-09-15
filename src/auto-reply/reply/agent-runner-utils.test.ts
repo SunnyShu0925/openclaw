@@ -102,6 +102,7 @@ describe("agent-runner-utils", () => {
       hasSessionModelOverride: true,
       modelOverrideSource: "user",
       hasAutoFallbackProvenance: false,
+      subagentFallbackOrigin: false,
     });
     expect(resolved).toEqual({
       cfg: run.config,
@@ -135,6 +136,7 @@ describe("agent-runner-utils", () => {
       hasSessionModelOverride: true,
       modelOverrideSource: undefined,
       hasAutoFallbackProvenance: true,
+      subagentFallbackOrigin: false,
     });
     expect(resolved.fallbacksOverride).toEqual(["fallback-model"]);
   });
@@ -151,6 +153,7 @@ describe("agent-runner-utils", () => {
       hasSessionModelOverride: false,
       modelOverrideSource: undefined,
       hasAutoFallbackProvenance: false,
+      subagentFallbackOrigin: false,
       modelSelectionLocked: true,
     });
     expect(resolved.fallbacksOverride).toEqual([]);
@@ -172,6 +175,7 @@ describe("agent-runner-utils", () => {
       hasSessionModelOverride: false,
       modelOverrideSource: undefined,
       hasAutoFallbackProvenance: false,
+      subagentFallbackOrigin: false,
     });
     expect(resolved.fallbacksOverride).toEqual(["fallback-model"]);
   });
@@ -320,6 +324,7 @@ describe("agent-runner-utils", () => {
       hasSessionModelOverride: true,
       modelOverrideSource: undefined,
       hasAutoFallbackProvenance: true,
+      subagentFallbackOrigin: false,
     });
     expect(resolved.modelFallbackAvailability).toEqual({
       kind: "active",
@@ -350,6 +355,7 @@ describe("agent-runner-utils", () => {
       hasSessionModelOverride: false,
       modelOverrideSource: undefined,
       hasAutoFallbackProvenance: false,
+      subagentFallbackOrigin: false,
       modelSelectionLocked: true,
     });
     expect(resolved.modelFallbacksOverride).toEqual([]);
@@ -680,5 +686,72 @@ describe("agent-runner-utils", () => {
 
     expect(context.currentChannelId).toBe("whatsapp:+15550002");
     expect(context.currentMessageId).toBe("provider-reply-id");
+  });
+});
+
+describe("spawn lineage fallback routing", () => {
+  it("passes subagentFallbackOrigin from spawnedBy for resolveModelFallbackOptions", () => {
+    hoisted.resolveModelFallbackAvailabilityMock.mockReturnValue({
+      kind: "active",
+      models: ["subagent-fallback"],
+    });
+    const run = makeRun({
+      hasSessionModelOverride: true,
+      modelOverrideSource: "auto",
+      spawnedBy: "agent:main:main",
+    });
+
+    resolveModelFallbackOptions(run);
+
+    expect(hoisted.resolveModelFallbackAvailabilityMock).toHaveBeenCalledWith(
+      expect.objectContaining({ subagentFallbackOrigin: true }),
+    );
+  });
+
+  it("does not set subagentFallbackOrigin for an ordinary session without spawnedBy", () => {
+    hoisted.resolveModelFallbackAvailabilityMock.mockReturnValue({
+      kind: "active",
+      models: ["agent-fallback"],
+    });
+    // An ordinary session that has auto-fallback provenance (from a prior
+    // provider failover) but was NOT spawned by another session.
+    const run = makeRun({
+      hasSessionModelOverride: true,
+      hasAutoFallbackProvenance: true,
+    });
+
+    resolveModelFallbackOptions(run);
+
+    expect(hoisted.resolveModelFallbackAvailabilityMock).toHaveBeenCalledWith(
+      expect.objectContaining({ subagentFallbackOrigin: false }),
+    );
+  });
+
+  it("passes subagentFallbackOrigin from spawnedBy for buildEmbeddedRunBaseParams", async () => {
+    hoisted.resolveModelFallbackAvailabilityMock.mockReturnValue({
+      kind: "active",
+      models: ["subagent-fallback"],
+    });
+    const run = makeRun({
+      hasSessionModelOverride: true,
+      modelOverrideSource: "auto",
+      spawnedBy: "agent:main:main",
+    });
+    const authProfile = resolveProviderScopedAuthProfile({
+      provider: "openai",
+      primaryProvider: "openai",
+    });
+
+    await buildEmbeddedRunBaseParams({
+      run,
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      runId: "run-1",
+      authProfile,
+    });
+
+    expect(hoisted.resolveModelFallbackAvailabilityMock).toHaveBeenCalledWith(
+      expect.objectContaining({ subagentFallbackOrigin: true }),
+    );
   });
 });

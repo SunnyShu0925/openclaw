@@ -2842,5 +2842,53 @@ describe("sessions_spawn tool", () => {
     expect(spawnContext.agentSessionKey).toBe("agent:main:telegram:default:direct:456");
     expect(spawnContext.completionOwnerKey).toBe("agent:main:main");
   });
+
+  it("keeps a configured auth profile suffix on the visible child's wire model", async () => {
+    // The configured subagent model carries an auth profile suffix. The planner
+    // strips it into authProfileOverride; the wire model must re-append it so the
+    // create path persists the child's authProfileOverride instead of dropping it.
+    hoisted.inProcessCreationMock.mockResolvedValue({
+      key: "agent:reviewer:dashboard:child",
+      runStarted: true,
+      runId: "run-reviewer-profile",
+    });
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      config: {
+        agents: {
+          defaults: { subagents: { allowAgents: ["reviewer"] } },
+          list: [
+            { id: "main" },
+            { id: "reviewer", subagents: { model: "anthropic/claude-sonnet-4-6@work" } },
+          ],
+        },
+      },
+      registerRun: vi.fn(),
+      countActiveRuns: () => 0,
+    });
+
+    await tool.execute("visible-reviewer-profile", {
+      task: "review patch",
+      agentId: "reviewer",
+      visible: true,
+    });
+
+    expect(hoisted.inProcessCreationMock).toHaveBeenCalledWith(
+      "sessions.create",
+      expect.objectContaining({
+        agentId: "reviewer",
+        model: "anthropic/claude-sonnet-4-6@work",
+        parentSessionKey: "agent:main:main",
+        spawnDepth: 1,
+      }),
+      expect.objectContaining({
+        via: "spawn",
+        spawnModelAutoSelection: expect.objectContaining({
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+        }),
+      }),
+    );
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

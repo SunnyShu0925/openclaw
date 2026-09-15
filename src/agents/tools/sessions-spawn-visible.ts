@@ -267,6 +267,12 @@ export async function maybeSpawnVisibleSession(params: {
     return { status: "error", error: modelPlan.error };
   }
   const resolvedModel = modelPlan.resolvedModel;
+  // The wire model must carry any auth profile suffix so the create path re-parses
+  // it into the child's authProfileOverride (splitTrailingAuthProfile strips the
+  // suffix from resolvedModel, so forwarding the bare model would drop the profile).
+  const wireModel = modelPlan.initialSessionPatch.authProfileOverride
+    ? `${resolvedModel}@${modelPlan.initialSessionPatch.authProfileOverride}`
+    : resolvedModel;
   const spawnModelAutoSelection =
     modelPlan.initialSessionPatch.modelOverrideSource === "auto"
       ? (() => {
@@ -387,8 +393,9 @@ export async function maybeSpawnVisibleSession(params: {
         ...(group ? { category: group } : {}),
         // The resolved model (config default or caller selection) is always sent; the
         // trusted `spawnModelAutoSelection` marks it auto when config-resolved, and the
-        // create service records a caller-selected model as a user pin.
-        model: resolvedModel,
+        // create service records a caller-selected model as a user pin. Any auth profile
+        // suffix rides along so the create path preserves the child's authProfileOverride.
+        model: wireModel,
         task: buildSubagentTaskMessage({
           task: params.task,
           spawnMode: "session",

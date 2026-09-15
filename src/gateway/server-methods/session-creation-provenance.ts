@@ -5,8 +5,6 @@ import type {
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
 import type { AgentRuntimeSpawnModelAutoSelection } from "../agent-runtime-session-spawn-context.js";
 
-export type { AgentRuntimeSpawnModelAutoSelection } from "../agent-runtime-session-spawn-context.js";
-
 export type TrustedSessionCreation = {
   skillLibrarySelections?: import("../../../packages/gateway-protocol/src/schema/skill-library.js").SkillLibrarySelection[];
   via: SessionCreatedVia;

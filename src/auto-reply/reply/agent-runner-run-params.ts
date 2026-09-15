@@ -36,6 +36,7 @@ export function resolveModelFallbackOptions(
     hasSessionModelOverride: run.hasSessionModelOverride === true,
     modelOverrideSource: run.modelOverrideSource,
     hasAutoFallbackProvenance: run.hasAutoFallbackProvenance === true,
+    subagentFallbackOrigin: Boolean(run.spawnedBy),
     modelSelectionLocked: run.modelSelectionLocked,
   });
   return {
@@ -128,6 +129,7 @@ export async function buildEmbeddedRunBaseParams(params: {
     hasSessionModelOverride: params.run.hasSessionModelOverride === true,
     modelOverrideSource: params.run.modelOverrideSource,
     hasAutoFallbackProvenance: params.run.hasAutoFallbackProvenance === true,
+    subagentFallbackOrigin: Boolean(params.run.spawnedBy),
     modelSelectionLocked: params.run.modelSelectionLocked,
   });
   const modelFallbacksOverride = modelFallbackOverrideFromAvailability(modelFallbackAvailability);

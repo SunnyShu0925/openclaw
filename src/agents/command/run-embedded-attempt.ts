@@ -261,6 +261,11 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
             hasAutoFallbackProvenance: hasExplicitRunOverride
               ? false
               : hasStoredAutoFallbackProvenance,
+            // Spawn lineage (spawnedBy) routes visible children onto the subagent
+            // fallback ladder. Legacy auto-fallback provenance alone does not imply
+            // the session was spawned — an ordinary session that failover-ed would
+            // be misrouted onto the subagent ladder.
+            subagentFallbackOrigin: hasExplicitRunOverride ? false : Boolean(spawnedBy),
           }));
 
       const fallbackRuntimeState: { originRuntime?: "cli" | "embedded" } = {};

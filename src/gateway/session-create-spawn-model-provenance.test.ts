@@ -141,4 +141,117 @@ describe("spawn-owned session creation model provenance", () => {
       expect(created.entry.modelOverrideFallbackOriginModel).toBeUndefined();
     });
   });
+
+  it("routes a visible spawn child onto the subagent fallback ladder, not the agent default", async () => {
+    // A visible child is persisted under a dashboard: key, which isSubagentSessionKey
+    // does not recognize. But its auto provenance only ever comes from a subagent
+    // spawn, so the fallback decision must still consult subagents.model fallbacks.
+    const subagentCfg: OpenClawConfig = {
+      agents: {
+        entries: {
+          main: {
+            model: { primary: primaryRef, fallbacks: [fallbackRef] },
+            subagents: {
+              model: {
+                primary: "openai/gpt-test-primary",
+                fallbacks: ["custom/subagent-fallback"],
+              },
+            },
+          },
+        },
+      },
+    };
+    expect(
+      resolveModelFallbackAvailability({
+        cfg: subagentCfg,
+        agentId: "main",
+        sessionKey: "agent:main:dashboard:visible-child",
+        hasSessionModelOverride: true,
+        modelOverrideSource: "auto",
+        subagentFallbackOrigin: true,
+      }),
+    ).toEqual({ kind: "active", models: ["custom/subagent-fallback"], source: "explicit" });
+    // Without the origin flag the same dashboard key falls back to the agent ladder.
+    expect(
+      resolveModelFallbackAvailability({
+        cfg: subagentCfg,
+        agentId: "main",
+        sessionKey: "agent:main:dashboard:visible-child",
+        hasSessionModelOverride: true,
+        modelOverrideSource: "auto",
+      }),
+    ).toEqual({ kind: "active", models: [fallbackRef], source: "explicit" });
+  });
+
+  it("preserves an auth profile suffix on the wire model without breaking auto provenance", async () => {
+    await withOpenClawTestState({ label: "spawn-model-profile" }, async () => {
+      const created = await createGatewaySession({
+        cfg,
+        key: "agent:main:dashboard:spawn-profile",
+        agentId: "main",
+        // A visible spawn forwards the config-resolved model with its auth profile
+        // suffix so the child keeps authProfileOverride instead of dropping it.
+        model: `${primaryRef}@work`,
+        commandSource: "test",
+        operatorRoleActor: { kind: "system" },
+        creation: {
+          via: "spawn",
+          actor: { type: "agent", id: "main" },
+          spawnModelAutoSelection: {
+            provider: "openai",
+            model: "gpt-test-primary",
+            fallbackOriginProvider: "openai",
+            fallbackOriginModel: "gpt-test-primary",
+          },
+        },
+        loadGatewayModelCatalogSnapshot: loadCatalog,
+      });
+      expect(created.ok, created.ok ? undefined : created.error?.message).toBe(true);
+      if (!created.ok) {
+        throw new Error(created.error?.message);
+      }
+      expect(created.entry).toMatchObject({
+        providerOverride: "openai",
+        modelOverride: "gpt-test-primary",
+        modelOverrideSource: "auto",
+        authProfileOverride: "work",
+        modelOverrideFallbackOriginProvider: "openai",
+        modelOverrideFallbackOriginModel: "gpt-test-primary",
+      });
+    });
+  });
+});
+
+describe("spawn lineage vs legacy auto-fallback provenance", () => {
+  it("does not route an ordinary session with legacy auto-fallback onto the subagent ladder", () => {
+    // An ordinary (non-spawned) session that has auto-fallback provenance from
+    // a prior provider failover must still use the agent ladder, not subagents.model.
+    const subagentCfg: OpenClawConfig = {
+      agents: {
+        entries: {
+          main: {
+            model: { primary: primaryRef, fallbacks: [fallbackRef] },
+            subagents: {
+              model: {
+                primary: "openai/gpt-test-primary",
+                fallbacks: ["custom/subagent-fallback"],
+              },
+            },
+          },
+        },
+      },
+    };
+    // Without subagentFallbackOrigin, the dashboard key uses the agent ladder.
+    // This is the correct behavior for an ordinary session — it was not spawned.
+    expect(
+      resolveModelFallbackAvailability({
+        cfg: subagentCfg,
+        agentId: "main",
+        sessionKey: "agent:main:dashboard:ordinary-session",
+        hasSessionModelOverride: true,
+        modelOverrideSource: "auto",
+        // No subagentFallbackOrigin — ordinary session, even with auto provenance
+      }),
+    ).toEqual({ kind: "active", models: [fallbackRef], source: "explicit" });
+  });
 });
