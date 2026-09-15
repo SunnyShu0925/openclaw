@@ -699,10 +699,12 @@ suite.define(() => {
         await firstRow.fill("ab");
         await firstRow.blur();
         await expect.poll(() => firstRow.getAttribute("aria-invalid")).toBe("true");
-        const firstRowError = page
-          .locator(".cfg-scalar-input")
-          .filter({ has: firstRow })
-          .locator(".cfg-field__error");
+        const firstRowErrorId = (await firstRow.getAttribute("aria-describedby"))
+          ?.split(/\s+/)
+          .find((id) => id.includes("scalar-error"));
+        const firstRowError = firstRowErrorId
+          ? page.locator(`#${firstRowErrorId}`)
+          : firstRow.locator("+ .cfg-field__error, ~ .cfg-scalar-input .cfg-field__error").first();
         await expect.poll(() => firstRowError.isVisible()).toBe(true);
         expect(await firstRowError.textContent()).not.toBe("");
 

@@ -8,6 +8,7 @@ import {
 } from "../lib/config/config-draft-model.ts";
 import { createInitialConfigState } from "../lib/config/config-state-model.ts";
 import { analyzeConfigSchema, renderConfigForm } from "./config-form.ts";
+import "../styles/settings.css";
 
 function expectElement<T extends Element>(element: T | null | undefined, label: string): T {
   expect(element instanceof Element, label).toBe(true);
@@ -18,6 +19,10 @@ function expectElement<T extends Element>(element: T | null | undefined, label: 
 }
 
 describe("scalar validation error accessibility", () => {
+  function isErrorVisible(element: HTMLElement): boolean {
+    return getComputedStyle(element).display !== "none";
+  }
+
   const containers: HTMLDivElement[] = [];
   afterEach(() => {
     for (const container of containers) {
@@ -100,14 +105,14 @@ describe("scalar validation error accessibility", () => {
     expect(help.map((element) => element.textContent)).toEqual([
       "Use at least two lowercase letters.",
     ]);
-    expect(error.hidden).toBe(true);
+    expect(isErrorVisible(error)).toBe(false);
 
     input.value = "1";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     expect(input.value).toBe("1");
     expect(input.validity.valid).toBe(false);
     expect(input.getAttribute("aria-invalid")).toBe("true");
-    expect(error.hidden).toBe(false);
+    expect(isErrorVisible(error)).toBe(true);
     expect(error.textContent).toBe(input.validationMessage);
     expect(input.validationMessage).not.toBe("");
     expect(onPatch).not.toHaveBeenCalled();
@@ -118,7 +123,7 @@ describe("scalar validation error accessibility", () => {
     expect(onPatch).toHaveBeenLastCalledWith(["settings", "name"], "ab");
     expect(input.validity.valid).toBe(true);
     expect(input.getAttribute("aria-invalid")).toBe("false");
-    expect(error.hidden).toBe(true);
+    expect(isErrorVisible(error)).toBe(false);
     expect(error.textContent).toBe("");
     expect(feedback(input).help.map((element) => element.textContent)).toEqual([
       "Use at least two lowercase letters.",
@@ -157,7 +162,7 @@ describe("scalar validation error accessibility", () => {
     expect(input.value).toBe(value);
     expect(input.validity.valid).toBe(false);
     expect(input.getAttribute("aria-invalid")).toBe("true");
-    expect(error.hidden).toBe(false);
+    expect(isErrorVisible(error)).toBe(true);
     expect(error.textContent).toBe(input.validationMessage);
     expect(input.validationMessage).not.toBe("");
     expect(onPatch).not.toHaveBeenCalled();
@@ -168,7 +173,7 @@ describe("scalar validation error accessibility", () => {
     expect(onPatch).toHaveBeenLastCalledWith(["settings", "count"], 6);
     expect(input.validity.valid).toBe(true);
     expect(input.getAttribute("aria-invalid")).toBe("false");
-    expect(error.hidden).toBe(true);
+    expect(isErrorVisible(error)).toBe(false);
     expect(error.textContent).toBe("");
   });
 
@@ -193,7 +198,7 @@ describe("scalar validation error accessibility", () => {
     );
     input.value = "";
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(feedback(input).error.hidden).toBe(false);
+    expect(isErrorVisible(feedback(input).error)).toBe(true);
     expect(onPatch).not.toHaveBeenCalled();
 
     renderValue({ settings: { port: 8080 } });
@@ -204,7 +209,7 @@ describe("scalar validation error accessibility", () => {
     expect(refreshed.value).toBe("8080");
     expect(refreshed.validity.valid).toBe(true);
     expect(refreshed.getAttribute("aria-invalid")).toBe("false");
-    expect(feedback(refreshed).error.hidden).toBe(true);
+    expect(isErrorVisible(feedback(refreshed).error)).toBe(false);
     expect(feedback(refreshed).error.textContent).toBe("");
     expect(onPatch).not.toHaveBeenCalled();
   });
@@ -261,7 +266,7 @@ describe("scalar validation error accessibility", () => {
         expect(input.value).toBe(isJson ? JSON.stringify({ credential: "123" }, null, 2) : "123");
         expect(container.querySelector("button[aria-pressed='true']")).not.toBeNull();
         expect(input.getAttribute("aria-describedby")?.split(/\s+/)).toContain(error.id);
-        expect(error.hidden).toBe(true);
+        expect(isErrorVisible(error)).toBe(false);
 
         input.focus();
         input.value = isJson ? "{" : "abc";
@@ -270,7 +275,7 @@ describe("scalar validation error accessibility", () => {
         input.blur();
         expect(input.validity.valid).toBe(false);
         expect(input.getAttribute("aria-invalid")).toBe("true");
-        expect(error.hidden).toBe(false);
+        expect(isErrorVisible(error)).toBe(true);
         expect(error.textContent).toBe(input.validationMessage);
         expect(onPatch).not.toHaveBeenCalled();
 
@@ -289,7 +294,7 @@ describe("scalar validation error accessibility", () => {
           target === "nonempty",
         );
         expect(onPatch).not.toHaveBeenCalled();
-        expect(refreshedError.hidden).toBe(true);
+        expect(isErrorVisible(refreshedError)).toBe(false);
         expect(refreshedError.textContent).toBe("");
       } finally {
         render(null, container);
@@ -360,14 +365,14 @@ describe("scalar validation error accessibility", () => {
     expect(feedback(input).help.map((element) => element.textContent)).toEqual([
       "First value help.",
     ]);
-    expect(feedback(input).error.hidden).toBe(true);
+    expect(isErrorVisible(feedback(input).error)).toBe(false);
     input.focus();
     input.value = from === "number" ? "3" : "1";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.blur();
     expect(input.validity.valid).toBe(false);
     expect(input.getAttribute("aria-invalid")).toBe("true");
-    expect(feedback(input).error.hidden).toBe(false);
+    expect(isErrorVisible(feedback(input).error)).toBe(true);
     expect(feedback(input).error.textContent).toBe(input.validationMessage);
     expect(input.validationMessage).not.toBe("");
     expect(onPatch).not.toHaveBeenCalled();
@@ -383,7 +388,7 @@ describe("scalar validation error accessibility", () => {
       "Second value help.",
     ]);
     expect(onPatch).not.toHaveBeenCalled();
-    expect(feedback(refreshed).error.hidden).toBe(true);
+    expect(isErrorVisible(feedback(refreshed).error)).toBe(false);
     expect(feedback(refreshed).error.textContent).toBe("");
 
     refreshed.value = to === "number" ? "8" : "cc";
@@ -391,7 +396,7 @@ describe("scalar validation error accessibility", () => {
     expect(onPatch).toHaveBeenCalledTimes(1);
     expect(onPatch).toHaveBeenLastCalledWith(["second", "value"], to === "number" ? 8 : "cc");
     expect(refreshed.validity.valid).toBe(true);
-    expect(feedback(refreshed).error.hidden).toBe(true);
+    expect(isErrorVisible(feedback(refreshed).error)).toBe(false);
   });
 
   it.each(["masked", "revealed"] as const)(
@@ -442,7 +447,7 @@ describe("scalar validation error accessibility", () => {
       expect(accepted.readOnly).toBe(presentation === "masked");
       expect(accepted.classList.contains("cfg-redacted")).toBe(presentation === "masked");
       expect(accepted.getAttribute("aria-invalid")).toBe("false");
-      expect(feedback(accepted).error.hidden).toBe(true);
+      expect(isErrorVisible(feedback(accepted).error)).toBe(false);
       expect(onPatch).toHaveBeenCalledExactlyOnceWith(["apiKey"], "sample-value");
       expect(accepted.value).toBe(presentation === "masked" ? "" : "sample-value");
     },
@@ -542,7 +547,7 @@ describe("scalar validation error accessibility", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
     expect(document.activeElement).toBe(input);
     expect(input.validity.valid).toBe(false);
-    expect(feedback(input).error.hidden).toBe(false);
+    expect(isErrorVisible(feedback(input).error)).toBe(true);
     expect(onPatch).not.toHaveBeenCalled();
     renderSection("second");
     const next = getInput();
@@ -553,7 +558,7 @@ describe("scalar validation error accessibility", () => {
     expect(next.value).toBe("aa");
     expect(next.validity.valid).toBe(true);
     expect(next.getAttribute("aria-invalid")).toBe("false");
-    expect(feedback(next).error.hidden).toBe(true);
+    expect(isErrorVisible(feedback(next).error)).toBe(false);
     expect(feedback(next).error.textContent).toBe("");
   });
 
@@ -654,7 +659,7 @@ describe("scalar validation error accessibility", () => {
     expect(document.activeElement).toBe(input);
     expect(input.validity.valid).toBe(false);
     expect(input.getAttribute("aria-invalid")).toBe("true");
-    expect(errorFor(input).hidden).toBe(false);
+    expect(isErrorVisible(errorFor(input))).toBe(true);
     expect(errorFor(input).textContent).toBe(input.validationMessage);
     expect(input.validationMessage).not.toBe("");
     expect(onPatch).not.toHaveBeenCalled();
@@ -679,7 +684,7 @@ describe("scalar validation error accessibility", () => {
       expect(refreshed.value).toBe(isJson ? JSON.stringify(fieldValue, null, 2) : "same");
       expect(refreshed.validity.valid).toBe(true);
       expect(refreshed.getAttribute("aria-invalid")).toBe("false");
-      expect(errorFor(refreshed).hidden).toBe(true);
+      expect(isErrorVisible(errorFor(refreshed))).toBe(false);
       expect(errorFor(refreshed).textContent).toBe("");
 
       const nextValue = isJson ? { value: 2 } : "next";
@@ -735,7 +740,7 @@ describe("scalar validation error accessibility", () => {
       expect(refreshed.value).toBe(draft);
       expect(refreshed.validity.valid).toBe(false);
       expect(refreshed.getAttribute("aria-invalid")).toBe("true");
-      expect(errorFor(refreshed).hidden).toBe(false);
+      expect(isErrorVisible(errorFor(refreshed))).toBe(true);
       expect(errorFor(refreshed).textContent).toBe(refreshed.validationMessage);
     } else {
       expectElement(
@@ -752,7 +757,7 @@ describe("scalar validation error accessibility", () => {
       );
       expect(remaining.validity.valid).toBe(true);
       expect(remaining.getAttribute("aria-invalid")).toBe("false");
-      expect(errorFor(remaining).hidden).toBe(true);
+      expect(isErrorVisible(errorFor(remaining))).toBe(false);
       expect(errorFor(remaining).textContent).toBe("");
     }
   });
