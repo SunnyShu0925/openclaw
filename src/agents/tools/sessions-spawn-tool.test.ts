@@ -1104,11 +1104,16 @@ describe("sessions_spawn tool", () => {
     },
   );
 
-  it("omits model from sessions.create when the caller did not pick one", async () => {
+  it.each([
+    { name: "caller passed no model", modelArg: undefined },
+    { name: "caller passed model=default", modelArg: "default" },
+    { name: "caller passed empty model", modelArg: "" },
+    { name: "caller passed whitespace model", modelArg: "   " },
+  ])("omits model from sessions.create when $name", async ({ modelArg }) => {
     // A config-resolved model must not ride sessions.create: the create service records a
     // present model as a user override (modelOverrideSource: "user"), which disables the
     // configured fallback chain. The target agent's subagents.model is configured here,
-    // but the caller passed no `model`, so the child must resolve its own default.
+    // but the caller passed no explicit `model`, so the child must resolve its own default.
     const callGateway = vi.fn(async () => ({
       key: "agent:reviewer:dashboard:child",
       runStarted: true,
@@ -1134,6 +1139,7 @@ describe("sessions_spawn tool", () => {
       task: "review patch",
       agentId: "reviewer",
       visible: true,
+      ...(modelArg !== undefined ? { model: modelArg } : {}),
     });
 
     expect(callGateway).toHaveBeenCalledWith(
