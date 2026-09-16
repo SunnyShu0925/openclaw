@@ -142,16 +142,18 @@ describe("agent --local session affinity at HTTP egress", () => {
       expect(result, result.stderr).toMatchObject({ code: 0, signal: null });
       expect(JSON.parse(result.stdout)).toMatchObject({ payloads: [{ text: "affinity-ok" }] });
       expect(requests).toHaveLength(1);
-      expect(requests[0]).toMatchObject({
-        url: "/v1/chat/completions",
-        headers: { authorization: "Bearer synthetic-loopback-key" },
-      });
-      expect(JSON.parse(requests[0].body)).toMatchObject({
-        model: "affinity-fixture",
-        stream: true,
-      });
-      for (const header of ["session_id", "x-client-request-id", "x-session-affinity"]) {
-        expect(requests[0].headers[header], header).toBe(testCase.expected);
+      for (const request of requests) {
+        expect(request).toMatchObject({
+          url: "/v1/chat/completions",
+          headers: { authorization: "Bearer synthetic-loopback-key" },
+        });
+        expect(JSON.parse(request.body)).toMatchObject({
+          model: "affinity-fixture",
+          stream: true,
+        });
+        for (const header of ["session_id", "x-client-request-id", "x-session-affinity"]) {
+          expect(request.headers[header], header).toBe(testCase.expected);
+        }
       }
     } finally {
       await new Promise<void>((resolve, reject) => {
