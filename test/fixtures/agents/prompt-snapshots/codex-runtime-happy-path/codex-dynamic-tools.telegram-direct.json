@@ -159,6 +159,7 @@
     "inputSchema": {
       "properties": {
         "agentId": {
+          "description": "Configured agent id; native allowAgents policy or ACP harness id (codex, claude, gemini, opencode).",
           "type": "string"
         },
         "attachAs": {

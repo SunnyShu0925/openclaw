@@ -179,7 +179,12 @@ function createSessionsSpawnToolSchema(params: {
       params.acpAvailable ? SESSIONS_SPAWN_RUNTIMES : (["subagent"] as const),
       { description: 'Runtime; visible=true requires "subagent".' },
     ),
-    agentId: Type.Optional(Type.String()),
+    agentId: Type.Optional(
+      Type.String({
+        description:
+          "Configured agent id; native allowAgents policy or ACP harness id (codex, claude, gemini, opencode).",
+      }),
+    ),
     model: Type.Optional(Type.String()),
     runTimeoutSeconds: Type.Optional(
       Type.Integer({
