@@ -54,7 +54,9 @@ describe("agent --local session affinity at HTTP egress", () => {
       });
     });
     try {
-      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", resolve);
+      });
       const address = server.address();
       if (!address || typeof address === "string") {
         throw new Error("Loopback receiver did not bind");
@@ -152,9 +154,9 @@ describe("agent --local session affinity at HTTP egress", () => {
         expect(requests[0].headers[header], header).toBe(testCase.expected);
       }
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   });
 });

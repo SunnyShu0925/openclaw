@@ -84,12 +84,14 @@ describe("registered managed completion API session affinity", () => {
       });
     });
     try {
-      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", resolve);
+      });
       const address = server.address();
       if (!address || typeof address === "string") {
         throw new Error("Loopback receiver did not bind");
       }
-      const model: Model<"openai-completions"> = attachModelProviderRequestTransport(
+      const model = attachModelProviderRequestTransport<Model<"openai-completions">>(
         {
           id: "affinity-fixture",
           name: "Affinity fixture",
@@ -107,17 +109,16 @@ describe("registered managed completion API session affinity", () => {
           },
           headers: testCase.configured
             ? { "X-Session-ID": "configured" }
-            : {
-                Session_ID: "configured",
-                "X-Client-Request-ID": "configured",
-                "X-Session-Affinity": "configured",
-              },
+            : testCase.name === "caller precedence"
+              ? {
+                  Session_ID: "configured",
+                  "X-Client-Request-ID": "configured",
+                  "X-Session-Affinity": "configured",
+                }
+              : undefined,
         },
         { tls: { insecureSkipVerify: false } },
       );
-      if (testCase.name !== "caller precedence" && !testCase.configured) {
-        delete model.headers;
-      }
       const registry = createApiRegistry();
       const { registerProviderStreamForModel } = await import("./provider-stream.js");
       const streamFn = registerProviderStreamForModel({
@@ -131,8 +132,9 @@ describe("registered managed completion API session affinity", () => {
       ensureCustomApiRegistered(registry, "openclaw-openai-completions-transport", streamFn);
       const runtime = createLlmRuntime(registry);
       for (const api of ["openai-completions", "openclaw-openai-completions-transport"]) {
+        const dispatchModel: Model = { ...model, api };
         const response = await runtime.complete(
-          { ...model, api },
+          dispatchModel,
           {
             messages: [{ role: "user", content: "Reply affinity-ok", timestamp: 1 }],
           },
@@ -151,9 +153,9 @@ describe("registered managed completion API session affinity", () => {
         expect(headers["x-session-id"]).toBe(testCase.openrouter ? testCase.expected : undefined);
       }
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   });
 });
