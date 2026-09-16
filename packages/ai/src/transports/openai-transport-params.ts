@@ -23,6 +23,16 @@ import { isCodeModeModelVisibleToolName, sha256Hex } from "./transport-utils.js"
 const MAX_OPENAI_STRICT_TOOL_DOWNGRADE_DIAGNOSTIC_KEYS = 256;
 const loggedOpenAIStrictToolDowngradeDiagnosticKeys = new Set<string>();
 
+const OPENAI_COMPLETIONS_APIS: ReadonlySet<string> = new Set([
+  "openai-completions",
+  "openclaw-openai-completions-transport",
+]);
+
+function hasHeaderIgnoreCase(headers: Record<string, string>, name: string): boolean {
+  const lower = name.toLowerCase();
+  return Object.keys(headers).some((key) => key.toLowerCase() === lower);
+}
+
 function readToolPayloadField(record: Record<string, unknown>, field: string): unknown {
   try {
     return Object.hasOwn(record, field) ? record[field] : undefined;
@@ -307,6 +317,30 @@ export function buildOpenAIClientHeaders(
       providerHeaders,
       getAiTransportHost().buildCopilotDynamicHeaders(context.messages),
     );
+  }
+  if (OPENAI_COMPLETIONS_APIS.has(model.api) && sessionId && cacheRetention !== "none") {
+    const { sessionAffinity } = resolveOpenAICompletionsCompat(
+      // SAFETY: guarded by OPENAI_COMPLETIONS_APIS.has(model.api) above
+      model as Model<"openai-completions">,
+    );
+    if (sessionAffinity !== "none") {
+      const affinityValue = clampOpenAIPromptCacheKey(sessionId) ?? sessionId;
+      if (sessionAffinity === "openrouter") {
+        if (!hasHeaderIgnoreCase(providerHeaders, "x-session-id")) {
+          providerHeaders["x-session-id"] = affinityValue;
+        }
+      } else {
+        if (!hasHeaderIgnoreCase(providerHeaders, "session_id")) {
+          providerHeaders["session_id"] = affinityValue;
+        }
+        if (!hasHeaderIgnoreCase(providerHeaders, "x-client-request-id")) {
+          providerHeaders["x-client-request-id"] = affinityValue;
+        }
+        if (!hasHeaderIgnoreCase(providerHeaders, "x-session-affinity")) {
+          providerHeaders["x-session-affinity"] = affinityValue;
+        }
+      }
+    }
   }
   const callerHeaders = { ...optionHeaders, ...turnHeaders };
   const headers = resolveProviderRequestPolicyConfig(model, {

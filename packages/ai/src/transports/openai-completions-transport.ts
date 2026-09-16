@@ -7,6 +7,7 @@ import {
   reasoningTagTextPolicy,
   type OpenAICompletionsOptions,
 } from "../provider-options.js";
+import { resolveCacheRetention } from "../providers/cache-retention.js";
 import { finalizeOpenAICompletionsToolCalls } from "../providers/openai-completions-tool-calls.js";
 import { tagUnresolvedTextAsCommentary } from "../utils/assistant-text-phase.js";
 import {
@@ -34,6 +35,7 @@ import {
 import {
   createOpenAIProviderAcceptanceHook,
   resolveOpenAIClientBaseUrl,
+  resolvePromptCacheKey,
   type MutableAssistantOutput,
   type OpenAIModeModel,
 } from "./openai-transport-shared.js";
@@ -120,9 +122,17 @@ function createOpenAICompletionsClient(
   context: Context,
   apiKey: string,
   optionHeaders?: Record<string, string>,
+  sessionId?: string,
+  cacheRetention?: import("@openclaw/llm-core").CacheRetention,
   opts?: { fetch?: typeof globalThis.fetch },
 ) {
-  const clientConfig = buildOpenAICompletionsClientConfig(model, context, optionHeaders);
+  const clientConfig = buildOpenAICompletionsClientConfig(
+    model,
+    context,
+    optionHeaders,
+    sessionId,
+    cacheRetention,
+  );
   return new OpenAI({
     apiKey,
     baseURL: clientConfig.baseURL,
@@ -138,12 +148,21 @@ function buildOpenAICompletionsClientConfig(
   model: Model,
   context: Context,
   optionHeaders?: Record<string, string>,
+  sessionId?: string,
+  cacheRetention?: import("@openclaw/llm-core").CacheRetention,
 ): {
   baseURL: string | undefined;
   defaultHeaders: Record<string, string>;
   defaultQuery?: Record<string, string>;
 } {
-  const headers = buildOpenAIClientHeaders(model, context, optionHeaders);
+  const headers = buildOpenAIClientHeaders(
+    model,
+    context,
+    optionHeaders,
+    undefined,
+    sessionId,
+    cacheRetention,
+  );
   const defaultQuery: Record<string, string> = {};
   let baseURL = model.baseUrl;
   let isAzureHost = false;
@@ -247,11 +266,16 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
             statusText: response.statusText,
           });
         };
+        const cacheRetention = resolveCacheRetention(options?.cacheRetention);
+        const affinityValue =
+          cacheRetention !== "none" ? resolvePromptCacheKey(options, cacheRetention) : undefined;
         const client = createOpenAICompletionsClient(
           model,
           context,
           apiKey,
           { ...turnHeaders, ...optionHeaders },
+          affinityValue,
+          cacheRetention,
           {
             fetch: doneDetectingFetch,
           },
