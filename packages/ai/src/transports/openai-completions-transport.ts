@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Context, Model, StreamFn } from "@openclaw/llm-core";
+import type { Model, StreamFn } from "@openclaw/llm-core";
 import OpenAI from "openai";
 import { getEnvApiKey } from "../env-api-keys.js";
 import {
@@ -119,20 +119,11 @@ function createSseDoneDetector() {
 
 function createOpenAICompletionsClient(
   model: Model,
-  context: Context,
   apiKey: string,
-  optionHeaders?: Record<string, string>,
-  sessionId?: string,
-  cacheRetention?: import("@openclaw/llm-core").CacheRetention,
+  headers: Record<string, string>,
   opts?: { fetch?: typeof globalThis.fetch },
 ) {
-  const clientConfig = buildOpenAICompletionsClientConfig(
-    model,
-    context,
-    optionHeaders,
-    sessionId,
-    cacheRetention,
-  );
+  const clientConfig = buildOpenAICompletionsClientConfig(model, headers);
   return new OpenAI({
     apiKey,
     baseURL: clientConfig.baseURL,
@@ -146,23 +137,12 @@ function createOpenAICompletionsClient(
 
 function buildOpenAICompletionsClientConfig(
   model: Model,
-  context: Context,
-  optionHeaders?: Record<string, string>,
-  sessionId?: string,
-  cacheRetention?: import("@openclaw/llm-core").CacheRetention,
+  headers: Record<string, string>,
 ): {
   baseURL: string | undefined;
   defaultHeaders: Record<string, string>;
   defaultQuery?: Record<string, string>;
 } {
-  const headers = buildOpenAIClientHeaders(
-    model,
-    context,
-    optionHeaders,
-    undefined,
-    sessionId,
-    cacheRetention,
-  );
   const defaultQuery: Record<string, string> = {};
   let baseURL = model.baseUrl;
   let isAzureHost = false;
@@ -267,15 +247,17 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           });
         };
         const cacheRetention = resolveCacheRetention(options?.cacheRetention);
-        const affinityValue =
-          cacheRetention !== "none" ? resolvePromptCacheKey(options, cacheRetention) : undefined;
         const client = createOpenAICompletionsClient(
           model,
-          context,
           apiKey,
-          { ...turnHeaders, ...optionHeaders },
-          affinityValue,
-          cacheRetention,
+          buildOpenAIClientHeaders(
+            model,
+            context,
+            { ...turnHeaders, ...optionHeaders },
+            undefined,
+            resolvePromptCacheKey(options, cacheRetention),
+            cacheRetention,
+          ),
           {
             fetch: doneDetectingFetch,
           },

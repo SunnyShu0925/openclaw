@@ -28,11 +28,6 @@ const OPENAI_COMPLETIONS_APIS: ReadonlySet<string> = new Set([
   "openclaw-openai-completions-transport",
 ]);
 
-function hasHeaderIgnoreCase(headers: Record<string, string>, name: string): boolean {
-  const lower = name.toLowerCase();
-  return Object.keys(headers).some((key) => key.toLowerCase() === lower);
-}
-
 function readToolPayloadField(record: Record<string, unknown>, field: string): unknown {
   try {
     return Object.hasOwn(record, field) ? record[field] : undefined;
@@ -319,25 +314,19 @@ export function buildOpenAIClientHeaders(
     );
   }
   if (OPENAI_COMPLETIONS_APIS.has(model.api) && sessionId && cacheRetention !== "none") {
-    const { sessionAffinity } = resolveOpenAICompletionsCompat(
-      // SAFETY: guarded by OPENAI_COMPLETIONS_APIS.has(model.api) above
-      model as Model<"openai-completions">,
-    );
+    const { sessionAffinity } = resolveOpenAICompletionsCompat(model);
     if (sessionAffinity !== "none") {
       const affinityValue = clampOpenAIPromptCacheKey(sessionId) ?? sessionId;
-      if (sessionAffinity === "openrouter") {
-        if (!hasHeaderIgnoreCase(providerHeaders, "x-session-id")) {
-          providerHeaders["x-session-id"] = affinityValue;
-        }
-      } else {
-        if (!hasHeaderIgnoreCase(providerHeaders, "session_id")) {
-          providerHeaders["session_id"] = affinityValue;
-        }
-        if (!hasHeaderIgnoreCase(providerHeaders, "x-client-request-id")) {
-          providerHeaders["x-client-request-id"] = affinityValue;
-        }
-        if (!hasHeaderIgnoreCase(providerHeaders, "x-session-affinity")) {
-          providerHeaders["x-session-affinity"] = affinityValue;
+      const affinityHeaders =
+        sessionAffinity === "openrouter"
+          ? ["x-session-id"]
+          : ["session_id", "x-client-request-id", "x-session-affinity"];
+      const configuredHeaders = new Set(
+        Object.keys(providerHeaders).map((key) => key.toLowerCase()),
+      );
+      for (const name of affinityHeaders) {
+        if (!configuredHeaders.has(name)) {
+          providerHeaders[name] = affinityValue;
         }
       }
     }
