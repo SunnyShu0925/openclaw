@@ -6,6 +6,7 @@
       "inputSchema": {
         "properties": {
           "agentId": {
+            "description": "Configured agent id; for the native subagent runtime, omit to use the requester's agent, or pass the requester's own id.",
             "type": "string"
           },
           "attachAs": {
