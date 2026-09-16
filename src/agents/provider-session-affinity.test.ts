@@ -6,7 +6,13 @@ import { ensureCustomApiRegistered } from "./custom-api-registry.js";
 import { attachModelProviderRequestTransport } from "./provider-request-config.js";
 
 describe("registered managed completion API session affinity", () => {
-  it.each([
+  it.each<{
+    name: string;
+    options: StreamOptions;
+    expected: string | undefined;
+    openrouter?: boolean;
+    configured?: boolean;
+  }>([
     {
       name: "explicit cache key",
       options: { sessionId: "session", promptCacheKey: "cache-key" },
@@ -55,13 +61,7 @@ describe("registered managed completion API session affinity", () => {
       openrouter: true,
       configured: true,
     },
-  ] satisfies Array<{
-    name: string;
-    options: StreamOptions;
-    expected: string | undefined;
-    openrouter?: boolean;
-    configured?: boolean;
-  }>)("preserves $name through registered native and managed API aliases", async (testCase) => {
+  ])("preserves $name through registered native and managed API aliases", async (testCase) => {
     const requests: IncomingHttpHeaders[] = [];
     const server = createServer((request, response) => {
       requests.push(request.headers);
