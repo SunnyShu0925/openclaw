@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { isMainThread, threadId, type Worker } from "node:worker_threads";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
+import { captureStateDatabaseCoordinatorRuntime } from "../../infra/state-database-coordinator.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-identity.js";
@@ -12,17 +13,15 @@ import {
 } from "../../state/openclaw-agent-db-lease.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-lifecycle.js";
 import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
-import {
-  captureOpenClawStateDatabaseReadAdmission,
-  registerOpenClawStateDatabaseAsyncResource,
-} from "../../state/openclaw-state-db-cache.js";
+import { registerOpenClawStateDatabaseAsyncResource } from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import {
   createSqliteTranscriptArchiveWorker,
   runExclusiveSqliteTranscriptArchiveWorker,
 } from "./session-accessor.sqlite-archive.js";
 import type {
-  SqliteSessionReclamationAdmissionDiagnostics,
+  CanonicalSessionValidationResult,
   SqliteSessionReclamationDiagnostics,
 } from "./session-accessor.sqlite-contract.js";
 import type {
@@ -31,9 +30,14 @@ import type {
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import { revokeSqliteReclamationCommit } from "./session-accessor.sqlite-reclamation-commit.js";
 import {
+  withSqliteMutationWorkerCoordination,
+  type SqliteMutationWorkerCoordination,
+} from "./session-accessor.sqlite-worker-coordination.js";
+import {
   runSqliteMutationWorkerRequest,
   type SqliteMutationWorkerMessage,
   type SqliteMutationWorkerValidationOwner,
+  type SqliteWorkerWriteAdmission,
 } from "./session-accessor.sqlite-worker-request.js";
 
 type DatabaseOptions = SqliteSessionReclamationPlan["databaseOptions"];
@@ -42,6 +46,33 @@ export type SqliteReclamationWorkerRequest = {
   operationId: number;
   commitGate: SharedArrayBuffer;
   plan: SqliteSessionReclamationPlan;
+  coordination: SqliteMutationWorkerCoordination;
+};
+export type SqliteReclamationWorkerCloseRequest = {
+  type: "close";
+  operationId: number;
+  coordination: SqliteMutationWorkerCoordination;
+};
+export type SqliteCanonicalValidationWorkerRequest = {
+  type: "canonical-validation";
+  operationId: number;
+  commitGate: SharedArrayBuffer;
+  databaseOptions: DatabaseOptions;
+  maxRows: number;
+  maxBytes: number;
+  initializeCanonicalValidation: boolean;
+  coordination: SqliteMutationWorkerCoordination;
+};
+type SqliteMutationWorkerRequest =
+  | SqliteReclamationWorkerRequest
+  | SqliteCanonicalValidationWorkerRequest;
+type MutationRunParams<Result> = {
+  claim: OpenClawAgentDatabaseClaim;
+  validationOwner?: SqliteMutationWorkerValidationOwner;
+  diagnostics?: SqliteSessionReclamationDiagnostics;
+  commitGate: SharedArrayBuffer;
+  onCommitRequest: () => unknown[];
+  withWriteAdmission: SqliteWorkerWriteAdmission<Result>;
 };
 type WorkerCleanup = { cleanupWarnings: string[]; settled: boolean };
 export type SqliteReclamationWorkerMessage =
@@ -109,7 +140,7 @@ class SqliteReclamationWorker {
   private operationId = 0;
   private readonly unregisterAgent: () => void;
   private readonly unregisterState: () => void;
-  private readonly stateAdmission;
+  private readonly stateContext;
   private readonly beforeExit = () => {
     void this.close().catch((error: unknown) => log.error(String(error)));
   };
@@ -119,9 +150,7 @@ class SqliteReclamationWorker {
     private readonly identity: OpenClawAgentDatabaseClaim["identity"],
   ) {
     this.options = structuredClone(options);
-    this.stateAdmission = captureOpenClawStateDatabaseReadAdmission(
-      resolveOpenClawStateSqlitePath(options.env),
-    );
+    this.stateContext = captureOpenClawStateWorkerContext({ env: options.env });
     this.unregisterAgent = registerOpenClawAgentDatabaseAsyncResource({
       agentId: options.agentId,
       path: options.path,
@@ -131,7 +160,10 @@ class SqliteReclamationWorker {
     try {
       this.unregisterState = registerOpenClawStateDatabaseAsyncResource({
         close: async (closingIdentity) => {
-          if (!closingIdentity || closingIdentity.key === this.stateAdmission.identity.key) {
+          if (
+            !closingIdentity ||
+            closingIdentity.key === this.stateContext.admission.identity.key
+          ) {
             await this.close();
           }
         },
@@ -145,13 +177,18 @@ class SqliteReclamationWorker {
 
   matches(options: DatabaseOptions, claim: OpenClawAgentDatabaseClaim): boolean {
     return (
-      !this.revoked && isDeepStrictEqual(this.options, options) && this.identity === claim.identity
+      !this.revoked &&
+      isDeepStrictEqual(this.options, options) &&
+      this.identity === claim.identity &&
+      resolveOpenClawStateSqlitePath(options.env) === this.stateContext.admission.databasePath &&
+      captureStateDatabaseCoordinatorRuntime().directory ===
+        this.stateContext.coordinatorRuntime.directory
     );
   }
 
   assertCurrent(options: DatabaseOptions, claim: OpenClawAgentDatabaseClaim): void {
     claim.assertCurrent();
-    this.stateAdmission.assertCurrent();
+    this.stateContext.admission.assertCurrent();
     if (this.failure) {
       throw this.failure;
     }
@@ -181,21 +218,64 @@ class SqliteReclamationWorker {
     }
   }
 
-  run(params: {
-    claim: OpenClawAgentDatabaseClaim;
-    validationOwner?: SqliteMutationWorkerValidationOwner;
-    diagnostics?: SqliteSessionReclamationDiagnostics;
-    plan: SqliteSessionReclamationPlan;
-    commitGate: SharedArrayBuffer;
-    onCommitRequest: () => unknown[];
-    withWriteAdmission: (
-      run: (refusal?: { error: unknown }) => Promise<SqliteSessionReclamationResult | undefined>,
-      diagnostics: SqliteSessionReclamationAdmissionDiagnostics,
-    ) => Promise<void>;
-    transferList: ArrayBuffer[];
-  }): Promise<SqliteSessionReclamationResult> {
+  run(
+    params: MutationRunParams<SqliteSessionReclamationResult> & {
+      plan: SqliteSessionReclamationPlan;
+      transferList: ArrayBuffer[];
+    },
+  ): Promise<SqliteSessionReclamationResult> {
+    return this.runRequest({
+      ...params,
+      databaseOptions: params.plan.databaseOptions,
+      kind: params.plan.kind,
+      request: (operationId, coordination) => ({
+        type: "reclaim",
+        operationId,
+        commitGate: params.commitGate,
+        plan: params.plan,
+        coordination,
+      }),
+    });
+  }
+
+  runCanonicalValidation(
+    params: MutationRunParams<CanonicalSessionValidationResult> & {
+      databaseOptions: DatabaseOptions;
+      maxRows: number;
+      maxBytes: number;
+      initializeCanonicalValidation: boolean;
+    },
+  ): Promise<CanonicalSessionValidationResult> {
+    return this.runRequest({
+      ...params,
+      kind: "canonical-validation",
+      transferList: [],
+      request: (operationId, coordination) => ({
+        type: "canonical-validation",
+        operationId,
+        commitGate: params.commitGate,
+        databaseOptions: params.databaseOptions,
+        maxRows: params.maxRows,
+        maxBytes: params.maxBytes,
+        initializeCanonicalValidation: params.initializeCanonicalValidation,
+        coordination,
+      }),
+    });
+  }
+
+  private runRequest<Result>(
+    params: MutationRunParams<Result> & {
+      databaseOptions: DatabaseOptions;
+      kind: string;
+      request: (
+        operationId: number,
+        coordination: SqliteMutationWorkerCoordination,
+      ) => SqliteMutationWorkerRequest;
+      transferList: ArrayBuffer[];
+    },
+  ): Promise<Result> {
     const startedAt = performance.now();
-    this.assertCurrent(params.plan.databaseOptions, params.claim);
+    this.assertCurrent(params.databaseOptions, params.claim);
     this.worker ??= this.start();
     const worker = this.worker;
     if (params.diagnostics) {
@@ -204,36 +284,37 @@ class SqliteReclamationWorker {
     const operationId = ++this.operationId;
     this.commitGate = params.commitGate;
     let exitCode: number | undefined;
-    const operation = runSqliteMutationWorkerRequest<SqliteSessionReclamationResult>({
+    const operation = withSqliteMutationWorkerCoordination(
+      this.stateContext,
       worker,
       operationId,
-      completion: "result",
-      getFailure: () => this.failure,
-      onExit: (code) => {
-        exitCode = code;
-      },
-      onCommitRequest: () => {
-        const errors = params.onCommitRequest();
-        if (errors.length) {
-          log.warn("SQLite session reclamation recovered commit settlement errors", {
-            errors: errors.map(String),
-            path: this.options.path,
-          });
-        }
-      },
-      withWriteAdmission: params.withWriteAdmission,
-      validationOwner: params.validationOwner,
-      dispatch: () =>
-        worker.postMessage(
-          {
-            type: "reclaim",
-            operationId,
-            commitGate: params.commitGate,
-            plan: params.plan,
-          } satisfies SqliteReclamationWorkerRequest,
-          params.transferList,
-        ),
-    });
+      (coordination) =>
+        runSqliteMutationWorkerRequest<Result>({
+          worker,
+          operationId,
+          completion: "result",
+          getFailure: () => this.failure,
+          onExit: (code) => {
+            exitCode = code;
+          },
+          onCommitRequest: () => {
+            const errors = params.onCommitRequest();
+            if (errors.length) {
+              log.warn("SQLite session reclamation recovered commit settlement errors", {
+                errors: errors.map(String),
+                path: this.options.path,
+              });
+            }
+          },
+          withWriteAdmission: params.withWriteAdmission,
+          validationOwner: params.validationOwner,
+          dispatch: () =>
+            worker.postMessage(params.request(operationId, coordination), [
+              ...params.transferList,
+              ...(coordination.stateLifecycle ? [coordination.stateLifecycle] : []),
+            ]),
+        }),
+    );
     const observeCompletion = (outcome: "resolved" | "rejected") => {
       const elapsedMs = Math.round(performance.now() - startedAt);
       if (elapsedMs >= SLOW_RECLAMATION_WORKER_MS) {
@@ -241,7 +322,7 @@ class SqliteReclamationWorker {
           pid: process.pid,
           threadId,
           isMainThread,
-          reclamationKind: params.diagnostics?.kind ?? params.plan.kind,
+          reclamationKind: params.diagnostics?.kind ?? params.kind,
           workerThreadId: this.workerThreadId,
           elapsedMs,
           outcome,
@@ -275,7 +356,7 @@ class SqliteReclamationWorker {
           message.receipt.agentId !== this.options.agentId ||
           message.receipt.path !== this.options.path ||
           message.receipt.ownerPid !== process.pid ||
-          message.receipt.sharedStateIdentity !== this.stateAdmission.identity.key ||
+          message.receipt.sharedStateIdentity !== this.stateContext.admission.identity.key ||
           (this.lease && !isDeepStrictEqual(this.lease, message.receipt))
         ) {
           this.failure = new Error("SQLite reclamation Worker changed its lease receipt");
@@ -324,15 +405,33 @@ class SqliteReclamationWorker {
       if (worker) {
         worker.ref();
         await runOpenClawAgentWorkerWrite(this.options, async () => {
-          try {
-            worker.postMessage({ type: "close" }, []);
-          } catch (error) {
-            await worker.terminate();
-            throw error;
-          } finally {
-            // Checkpoint and native close retain admission even if dispatch fails.
-            await this.exited;
-          }
+          const operationId = ++this.operationId;
+          await withSqliteMutationWorkerCoordination(
+            {
+              ...this.stateContext,
+              coordinatorRuntime: { ...this.stateContext.coordinatorRuntime, keepAlive: false },
+            },
+            worker,
+            operationId,
+            async (coordination) => {
+              try {
+                worker.postMessage(
+                  {
+                    type: "close",
+                    operationId,
+                    coordination,
+                  } satisfies SqliteReclamationWorkerCloseRequest,
+                  coordination.stateLifecycle ? [coordination.stateLifecycle] : [],
+                );
+              } catch (error) {
+                await worker.terminate();
+                throw error;
+              } finally {
+                // Checkpoint and native close retain admission even if dispatch fails.
+                await this.exited;
+              }
+            },
+          );
         });
       }
       // Native exit is joined before exact receipt cleanup; PID-wide cleanup is never safe.

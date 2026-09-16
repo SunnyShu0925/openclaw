@@ -2836,8 +2836,8 @@ export const en: TranslationMap & {
       groupTitle: "Parallel tasks",
       defaultPhase: "Unphased",
       progress: "{complete} of {total}",
-      active: "{running} running · {queued} queued · {failed} failed",
-      finished: "{done} completed · {failed} failed",
+      active: "{running} running · {queued} queued · {failed} failed or stopped",
+      finished: "{done} completed · {failed} failed or stopped",
       completed: "{done} completed",
       childOutcome: "Child runs finished. Check the conversation for the final response.",
       childOutcomeProcessing: "Child runs finished. The parent is processing their results.",
@@ -4409,6 +4409,8 @@ export const en: TranslationMap & {
       sendMessage: "Send message",
     },
     queue: {
+      reviewEdit: "Review edit",
+      reloadBlocked: "Save or cancel your queued message edit before reloading.",
       connectionPending: "Finishing connection recovery. Try sending again when it is ready.",
       editSourceChanged:
         "This queued message changed while you were editing. Your edit is still here. Copy it, cancel the edit, and review the queue before trying again.",
@@ -4726,6 +4728,7 @@ export const en: TranslationMap & {
     },
     composer: {
       composerInput: "Chat composer",
+      emojiSuggestions: "Emoji suggestions",
       placeholder: "Message {name}",
       emptyHint: "Write a message to send.",
       placeholderWithAttachments: "Add a message or paste more images...",
@@ -4928,6 +4931,9 @@ export const en: TranslationMap & {
       preparing: "Preparing voice session...",
       connecting: "Connecting voice input...",
       listening: "Listening...",
+      selectionFailed: "Could not change voices. Restart the call.",
+      selectionTimedOut: "Voice change timed out. Restart the call.",
+      selectionConfirmationFailed: "Voice change unconfirmed.",
     },
     selectors: {
       loadMoreSessions: "Show more",
