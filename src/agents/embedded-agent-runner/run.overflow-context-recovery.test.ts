@@ -621,6 +621,55 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(state.overflowCompactionAttempts).toBe(1);
   });
 
+  it("renews tool-result truncation eligibility per episode after a successful model call", async () => {
+    // The once-per-run tool-result truncation fallback is reset alongside the overflow
+    // budget when a model call genuinely completes, so a later episode with fresh
+    // oversized tool results can truncate again (#150447 asks for each episode to get
+    // its own budget). Without this reset a single truncation in episode 1 would
+    // suppress the fallback for the rest of the run even after real progress.
+    const state = createEmbeddedRunContextRecoveryState();
+    const messagesSnapshot = [
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "read",
+        content: [{ type: "text", text: "x".repeat(64_000) }],
+        isError: false,
+        timestamp: 1,
+      },
+    ] as EmbeddedRunAttemptResult["messagesSnapshot"];
+
+    // Episode 1: compaction fails, oversized tool result triggers truncation.
+    mocks.compact.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "nothing to compact",
+    });
+    mocks.sessionLikelyHasOversizedToolResults.mockReturnValueOnce(true);
+    mocks.truncateOversizedToolResults.mockReturnValueOnce({ truncated: true, truncatedCount: 1 });
+    expect(
+      await recoverEmbeddedRunOverflow(makeInput({ state, attempt: { messagesSnapshot } })),
+    ).toEqual({ action: "retry" });
+    expect(state.toolResultTruncationAttempted).toBe(true);
+
+    // A genuinely completed model call renews the budget and truncation eligibility.
+    state.observeContextAccounting({ kind: "model", contextTokens: 40_000, successful: true });
+    expect(state.toolResultTruncationAttempted).toBe(false);
+
+    // Episode 2: a fresh oversized result truncates again because eligibility was renewed.
+    mocks.compact.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "nothing to compact",
+    });
+    mocks.sessionLikelyHasOversizedToolResults.mockReturnValueOnce(true);
+    mocks.truncateOversizedToolResults.mockReturnValueOnce({ truncated: true, truncatedCount: 1 });
+    expect(
+      await recoverEmbeddedRunOverflow(makeInput({ state, attempt: { messagesSnapshot } })),
+    ).toEqual({ action: "retry" });
+    expect(state.toolResultTruncationAttempted).toBe(true);
+  });
+
   it("bypasses compaction for a compaction_failure overflow", async () => {
     const promptError = new Error(
       "request_too_large: summarization failed - Request size exceeds model context window",
@@ -725,7 +774,11 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(input.runParams.onAutoCompactionSucceeded).toHaveBeenCalledWith(1);
   });
 
-  it("logs a no-op compaction honestly and withholds the success callback", async () => {
+  it("logs a no-op compaction honestly but still fires the success callback", async () => {
+    // A no-op compaction is still a committed compaction event (the engine may have
+    // rotated the transcript), so the success callback fires to keep this path
+    // consistent with the fallback candidate. Only the diagnostic log is honest about
+    // the lack of reduction (#150447).
     mocks.compact.mockResolvedValueOnce({
       ok: true,
       compacted: true,
@@ -734,8 +787,25 @@ describe("recoverEmbeddedRunOverflow", () => {
     const input = makeInput();
 
     expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
-    // A compaction that removed nothing must not be reported as a success.
-    expect(input.runParams.onAutoCompactionSucceeded).not.toHaveBeenCalled();
+    expect(input.runParams.onAutoCompactionSucceeded).toHaveBeenCalledOnce();
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.stringContaining("auto-compaction removed nothing"),
+    );
+  });
+
+  it("treats a compaction whose summary grew as a no-op", async () => {
+    // An engine's summary can come back larger than what it replaced; that is still
+    // "no measured token reduction" and must be diagnosed honestly rather than logged
+    // as "auto-compaction succeeded" (#150447).
+    mocks.compact.mockResolvedValueOnce({
+      ok: true,
+      compacted: true,
+      result: { tokensBefore: 40_437, tokensAfter: 45_000 },
+    });
+    const input = makeInput();
+
+    expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
+    expect(input.runParams.onAutoCompactionSucceeded).toHaveBeenCalledOnce();
     expect(mocks.info).toHaveBeenCalledWith(
       expect.stringContaining("auto-compaction removed nothing"),
     );
