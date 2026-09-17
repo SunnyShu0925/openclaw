@@ -336,6 +336,14 @@ export async function recoverEmbeddedRunOverflow(
     }
 
     if (compactResult.compacted) {
+      // A compaction that reports equal before/after token counts removed nothing;
+      // log it honestly instead of claiming "auto-compaction succeeded" (#150447).
+      // The compaction itself stays committed (the engine may have rotated the
+      // transcript), so the retry still proceeds — only the diagnostic and the
+      // success callback are withheld.
+      const noopCompaction =
+        compactResult.result?.tokensAfter !== undefined &&
+        compactResult.result.tokensAfter === compactResult.result.tokensBefore;
       if (preflightRecovery?.route === "compact_then_truncate") {
         const truncResult = await truncateToolResults();
         if (truncResult.truncated) {
@@ -349,7 +357,9 @@ export async function recoverEmbeddedRunOverflow(
         }
       }
       input.assertRecoveryActive();
-      input.runParams.onAutoCompactionSucceeded?.(input.state.autoCompactionCount);
+      if (!noopCompaction) {
+        input.runParams.onAutoCompactionSucceeded?.(input.state.autoCompactionCount);
+      }
       input.assertRecoveryActive();
       input.armPostCompactionGuard();
       if (parkedWorkBlocksContinuation) {
@@ -358,7 +368,9 @@ export async function recoverEmbeddedRunOverflow(
         );
       } else {
         log.info(
-          `auto-compaction succeeded for ${input.modelSelection.provider}/${input.modelSelection.model}; retrying prompt`,
+          noopCompaction
+            ? `auto-compaction removed nothing for ${input.modelSelection.provider}/${input.modelSelection.model} (tokensBefore == tokensAfter); retrying prompt`
+            : `auto-compaction succeeded for ${input.modelSelection.provider}/${input.modelSelection.model}; retrying prompt`,
         );
         input.markOwnedTranscriptRetry();
         if (requiresTranscriptContinuation) {

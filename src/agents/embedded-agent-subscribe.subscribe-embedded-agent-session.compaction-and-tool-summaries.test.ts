@@ -56,8 +56,8 @@ describe("synchronous context accounting", () => {
         completedCompactionEnd(false, 18_000, 8_000),
       ],
       expected: [
-        { kind: "model", contextTokens: 90_000 },
-        { kind: "model", contextTokens: 18_000 },
+        { kind: "model", contextTokens: 90_000, successful: true },
+        { kind: "model", contextTokens: 18_000, successful: true },
       ],
     },
     {
@@ -74,7 +74,7 @@ describe("synchronous context accounting", () => {
           },
         }),
       ],
-      expected: [{ kind: "model", contextTokens: undefined }],
+      expected: [{ kind: "model", contextTokens: undefined, successful: true }],
     },
     {
       name: "failed zero-usage retry without old assistant backfill",
@@ -84,9 +84,25 @@ describe("synchronous context accounting", () => {
         accountingAssistant(0, "error"),
       ],
       expected: [
-        { kind: "model", contextTokens: 90_000 },
-        { kind: "model", contextTokens: undefined },
+        { kind: "model", contextTokens: 90_000, successful: true },
+        { kind: "model", contextTokens: undefined, successful: false },
       ],
+    },
+    {
+      name: "length-stop model call does not renew the recovery budget",
+      events: [accountingAssistant(90_000, "length")],
+      expected: [{ kind: "model", contextTokens: 90_000, successful: false }],
+    },
+    {
+      // A tool_use stop is the issue's core renewal scenario: a long single-turn tool
+      // loop where every retried provider call succeeded. The model accepted the
+      // context and emitted a tool call, so this must classify as successful and
+      // renew the overflow-recovery budget for a later overflow in the same run
+      // (#150447). This pins the stopReason → successful contract end-to-end through
+      // the subscribe model-state observer, not just the recovery-state unit.
+      name: "tool_use stop renews the recovery budget",
+      events: [accountingAssistant(90_000, "toolUse")],
+      expected: [{ kind: "model", contextTokens: 90_000, successful: true }],
     },
   ])("records $name in producer order", ({ events, expected }) => {
     const observed: EmbeddedContextAccountingEvent[] = [];
@@ -143,8 +159,8 @@ describe("synchronous context accounting", () => {
       },
     });
     const expected: EmbeddedContextAccountingEvent[] = [
-      { kind: "model", contextTokens: 90_000 },
-      { kind: "model", contextTokens: 20_000 },
+      { kind: "model", contextTokens: 90_000, successful: true },
+      { kind: "model", contextTokens: 20_000, successful: true },
     ];
     try {
       const before = accountingAssistant(90_000);

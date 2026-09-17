@@ -575,6 +575,52 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(mocks.compact).toHaveBeenCalledTimes(3);
   });
 
+  it("renews the overflow-recovery budget after a successful model call", async () => {
+    const state = createEmbeddedRunContextRecoveryState();
+    // Two compact-routed overflows spend budget without any model progress between them.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await recoverEmbeddedRunOverflow(makeInput({ state }))).toEqual({ action: "retry" });
+    }
+    expect(state.overflowCompactionAttempts).toBe(2);
+
+    // A genuinely completed model call means the context was accepted again, so the
+    // prior overflow episode ends and the budget renews for later overflows.
+    state.observeContextAccounting({ kind: "model", contextTokens: 40_000, successful: true });
+    expect(state.overflowCompactionAttempts).toBe(0);
+    expect(state.toolResultTruncationAttempted).toBe(false);
+
+    // A later overflow in the same long turn gets its own three attempts.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      expect(await recoverEmbeddedRunOverflow(makeInput({ state }))).toEqual({ action: "retry" });
+    }
+    const exhausted = await recoverEmbeddedRunOverflow(makeInput({ state }));
+    expect(exhausted).toMatchObject({ action: "surface", kind: "context_overflow" });
+    expect(state.overflowCompactionAttempts).toBe(3);
+  });
+
+  it("does not renew the overflow-recovery budget after a failed model call", async () => {
+    const state = createEmbeddedRunContextRecoveryState();
+    expect(await recoverEmbeddedRunOverflow(makeInput({ state }))).toEqual({ action: "retry" });
+    expect(state.overflowCompactionAttempts).toBe(1);
+
+    // A model call that ended in error did not accept the context; renewing here would
+    // grant unlimited retries to failed recovery.
+    state.observeContextAccounting({ kind: "model", contextTokens: 40_000, successful: false });
+    expect(state.overflowCompactionAttempts).toBe(1);
+  });
+
+  it("does not renew the overflow-recovery budget after a length-stop model call", async () => {
+    const state = createEmbeddedRunContextRecoveryState();
+    expect(await recoverEmbeddedRunOverflow(makeInput({ state }))).toEqual({ action: "retry" });
+    expect(state.overflowCompactionAttempts).toBe(1);
+
+    // A length stop can be a zero-output overflow (input ≥ 99% of the window), so it
+    // must not renew the budget — otherwise a stalled length-overflow loop bypasses
+    // the three-attempt cap. The model-state observer marks length as not successful.
+    state.observeContextAccounting({ kind: "model", contextTokens: 40_000, successful: false });
+    expect(state.overflowCompactionAttempts).toBe(1);
+  });
+
   it("bypasses compaction for a compaction_failure overflow", async () => {
     const promptError = new Error(
       "request_too_large: summarization failed - Request size exceeds model context window",
@@ -677,6 +723,65 @@ describe("recoverEmbeddedRunOverflow", () => {
       undefined,
     );
     expect(input.runParams.onAutoCompactionSucceeded).toHaveBeenCalledWith(1);
+  });
+
+  it("logs a no-op compaction honestly and withholds the success callback", async () => {
+    mocks.compact.mockResolvedValueOnce({
+      ok: true,
+      compacted: true,
+      result: { tokensBefore: 40_437, tokensAfter: 40_437 },
+    });
+    const input = makeInput();
+
+    expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
+    // A compaction that removed nothing must not be reported as a success.
+    expect(input.runParams.onAutoCompactionSucceeded).not.toHaveBeenCalled();
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.stringContaining("auto-compaction removed nothing"),
+    );
+  });
+
+  it("does not let repeated no-op compactions bypass the three-attempt cap", async () => {
+    // This is the divergence from a refund-based approach: a no-op compaction
+    // withholds the success log but never refunds the attempt counter. Without an
+    // intervening successful model call to renew the budget, three consecutive
+    // no-op compactions still exhaust recovery and surface on the fourth overflow.
+    // An approach that refunds the counter on equal token counts would loop here.
+    const state = createEmbeddedRunContextRecoveryState();
+    const noopCompaction = () => ({
+      ok: true,
+      compacted: true,
+      result: { tokensBefore: 40_437, tokensAfter: 40_437 },
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      mocks.compact.mockResolvedValueOnce(noopCompaction());
+      expect(await recoverEmbeddedRunOverflow(makeInput({ state }))).toEqual({
+        action: "retry",
+      });
+    }
+    expect(state.overflowCompactionAttempts).toBe(3);
+
+    // The fourth overflow surfaces instead of retrying; the budget was never refunded.
+    const exhausted = await recoverEmbeddedRunOverflow(makeInput({ state }));
+    expect(exhausted).toMatchObject({ action: "surface", kind: "context_overflow" });
+    expect(state.overflowCompactionAttempts).toBe(3);
+  });
+
+  it("still reports a no-token-count compaction as success when the engine is opaque", async () => {
+    // An engine that does not report tokensBefore/tokensAfter cannot be proven to
+    // have removed nothing, so it must not be misclassified as a no-op: the success
+    // callback fires and the standard "auto-compaction succeeded" log is kept. This
+    // preserves committed work for opaque engines rather than silently withholding it.
+    mocks.compact.mockResolvedValueOnce({
+      ok: true,
+      compacted: true,
+      result: { tokensBefore: undefined, tokensAfter: undefined },
+    });
+    const input = makeInput();
+
+    expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
+    expect(input.runParams.onAutoCompactionSucceeded).toHaveBeenCalledOnce();
+    expect(mocks.info).toHaveBeenCalledWith(expect.stringContaining("auto-compaction succeeded"));
   });
 
   it("leaves overflow recovery to a transport-owning harness", async () => {

@@ -631,7 +631,8 @@ describe("subscribeEmbeddedAgentSession", () => {
         });
         expect(subscription.getLastAssistantUsage()).toMatchObject(expected);
         expect(subscription.getCurrentAttemptAssistant()).toEqual(completed);
-        expect(onContextAccountingEvent.mock.calls).toEqual([[{ kind: "model", contextTokens }]]);
+        const acct = onContextAccountingEvent.mock.calls[0]?.[0];
+        expect(acct).toMatchObject({ kind: "model", contextTokens });
         expect(
           onAgentEvent.mock.calls
             .map(([event]) => event)
@@ -825,9 +826,8 @@ describe("subscribeEmbeddedAgentSession", () => {
             }
           },
         );
-        expect(onContextAccountingEvent.mock.calls).toEqual([
-          [{ kind: "model", contextTokens: undefined }],
-        ]);
+        const acct2 = onContextAccountingEvent.mock.calls[0]?.[0];
+        expect(acct2).toMatchObject({ kind: "model", contextTokens: undefined, successful: true });
         const usageEvents = onAgentEvent.mock.calls
           .map(([event]) => event)
           .filter((event) => event.stream === "usage");

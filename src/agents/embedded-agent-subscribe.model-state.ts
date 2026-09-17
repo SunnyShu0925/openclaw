@@ -198,6 +198,12 @@ export function createEmbeddedModelState(
             contextTokens: deriveSessionTotalTokens({
               lastCallUsage: normalizeUsage(message.usage),
             }),
+            // Only a model call that genuinely accepted the context renews the
+            // run's overflow-recovery budget. "error" never accepted it; "length"
+            // can be a zero-output overflow (input ≥ 99% of the window), so it
+            // must not renew either — otherwise a stalled length-overflow loop
+            // would bypass the three-attempt cap (#150447).
+            successful: message.stopReason !== "error" && message.stopReason !== "length",
           });
       }
     },
