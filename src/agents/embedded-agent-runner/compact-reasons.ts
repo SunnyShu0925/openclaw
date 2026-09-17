@@ -50,7 +50,11 @@ export function classifyCompactionReason(reason?: string): string {
   ) {
     return "auth_failed";
   }
-  if (text.includes("nothing to compact") || text.includes("no real conversation messages")) {
+  if (
+    text.includes("nothing to compact") ||
+    text.includes("no real conversation messages") ||
+    text.includes("no claimable")
+  ) {
     return "no_compactable_entries";
   }
   // Backends use both phrases for the same harmless state: the transcript is
@@ -73,7 +77,7 @@ export function classifyCompactionReason(reason?: string): string {
   if (text.includes("guard")) {
     return "guard_blocked";
   }
-  if (text.includes("summary")) {
+  if (text.includes("summary failed")) {
     return "summary_failed";
   }
   if (text.includes("timed out") || text.includes("timeout")) {

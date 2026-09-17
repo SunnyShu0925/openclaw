@@ -99,6 +99,18 @@ describe("classifyCompactionReason", () => {
     );
   });
 
+  it("classifies context-engine idle states with 'no claimable' as no_compactable_entries", () => {
+    expect(classifyCompactionReason("no claimable pending summary nodes")).toBe(
+      "no_compactable_entries",
+    );
+  });
+
+  it("still classifies real summary failures as summary_failed", () => {
+    expect(classifyCompactionReason("Previous summary failed quality checks.")).toBe(
+      "summary_failed",
+    );
+  });
+
   it("classifies safeguard messages as guard-blocked", () => {
     expect(
       classifyCompactionReason(
@@ -157,6 +169,29 @@ describe("isBenignCompactionSkipReason", () => {
       expect(isBenignCompactionSkipReason(reason)).toBe(true);
     },
   );
+
+  it("does not treat deferred background maintenance as a standalone benign skip", () => {
+    expect(isBenignCompactionSkipReason("deferred to background context-engine maintenance")).toBe(
+      false,
+    );
+  });
+
+  it("treats a successful context-engine idle result as a benign skip", () => {
+    expect(
+      isBenignCompactionSkipResult({
+        ok: true,
+        compacted: false,
+        reason: "no claimable pending summary nodes",
+      }),
+    ).toBe(true);
+    expect(
+      isBenignCompactionSkipResult({
+        ok: false,
+        compacted: false,
+        reason: "no claimable pending summary nodes",
+      }),
+    ).toBe(false);
+  });
 
   it("requires an explicit successful-result opt-in for empty transcripts", () => {
     const reason = "no real conversation messages";
