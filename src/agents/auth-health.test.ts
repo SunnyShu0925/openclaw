@@ -396,6 +396,64 @@ describe("buildAuthHealthSummary", () => {
     expect(profile?.expiresAt).toBe(now + DEFAULT_OAUTH_WARN_MS + 60_000);
   });
 
+  it("preserves stored oauth type and expiry when runtime token has no expiry", () => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const store = {
+      version: 1,
+      profiles: {
+        "openai:default": {
+          type: "oauth" as const,
+          provider: "openai",
+          access: "stored-access",
+          refresh: "stored-refresh",
+          expires: now + DEFAULT_OAUTH_WARN_MS + 60_000,
+        },
+      },
+    };
+
+    const summary = buildAuthHealthSummary({
+      store,
+      warnAfterMs: DEFAULT_OAUTH_WARN_MS,
+      runtimeCredentialsByProvider: new Map([
+        ["openai", { type: "token", provider: "openai", token: "synthetic" }],
+      ]),
+    });
+
+    const profile = summary.profiles.find((entry) => entry.profileId === "openai:default");
+    expect(profile?.type).toBe("oauth");
+    expect(profile?.status).toBe("ok");
+    expect(profile?.expiresAt).toBe(now + DEFAULT_OAUTH_WARN_MS + 60_000);
+  });
+
+  it("preserves stored oauth type and expiry when runtime token has no expiry and stored oauth is expired", () => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const store = {
+      version: 1,
+      profiles: {
+        "openai:default": {
+          type: "oauth" as const,
+          provider: "openai",
+          access: "stored-access",
+          refresh: "stored-refresh",
+          expires: now - 10_000,
+        },
+      },
+    };
+
+    const summary = buildAuthHealthSummary({
+      store,
+      warnAfterMs: DEFAULT_OAUTH_WARN_MS,
+      runtimeCredentialsByProvider: new Map([
+        ["openai", { type: "token", provider: "openai", token: "synthetic" }],
+      ]),
+    });
+
+    const profile = summary.profiles.find((entry) => entry.profileId === "openai:default");
+    expect(profile?.type).toBe("oauth");
+    expect(profile?.status).toBe("expired");
+    expect(profile?.expiresAt).toBe(now - 10_000);
+  });
+
   it("does not let fresh .codex state override expired canonical health", () => {
     vi.spyOn(Date, "now").mockReturnValue(now);
     mockFreshCodexCliCredentials();

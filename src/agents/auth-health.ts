@@ -120,6 +120,22 @@ function resolveOAuthStatus(
   return { status: "ok", expiresAt: normalizedExpiresAt, remainingMs };
 }
 
+/**
+ * Selects the credential to evaluate for health reporting. A runtime
+ * credential with an expiry may report a fresher status than the stored one,
+ * but a runtime token without an expiry (e.g. codex-app-server synthetic auth)
+ * must not mask the stored credential type or expiry.
+ */
+function resolveHealthCredential(
+  stored: AuthProfileCredential,
+  runtime?: AuthProfileCredential,
+): AuthProfileCredential {
+  if (!runtime || (runtime.type !== "api_key" && runtime.expires !== undefined)) {
+    return runtime ?? stored;
+  }
+  return stored;
+}
+
 function buildProfileHealth(params: {
   profileId: string;
   credential: AuthProfileCredential;
@@ -142,7 +158,7 @@ function buildProfileHealth(params: {
   } = params;
   const label = resolveAuthProfileDisplayLabel({ cfg, store, profileId });
   const source: AuthProfileSource = "store";
-  const healthCredential = runtimeCredential ?? credential;
+  const healthCredential = resolveHealthCredential(credential, runtimeCredential);
   const provider = normalizeProviderId(healthCredential.provider);
 
   if (credential.setup?.replacement) {
