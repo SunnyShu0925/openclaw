@@ -1,7 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "../utils.js";
 import { getConfigValueAtPath, unsetConfigValueAtPath } from "./config-paths.js";
-import { isSameFixedSessionStoreConfig } from "./sessions/session-store-config.js";
+import {
+  isPerAgentSessionStoreConfig,
+  isSameFixedSessionStoreConfig,
+} from "./sessions/session-store-config.js";
 import type { OpenClawConfig } from "./types.js";
 
 const SESSION_STORE_OWNER_PATH = ["agents", "defaults", "sessionStore", "agentId"] as const;
@@ -20,6 +23,13 @@ export function prepareSessionStoreOwnershipForWrite(params: {
     params.targetConfig.session?.store,
     params.env,
   );
+  // Per-agent stores (unset or {agentId} template) share the same conceptual layout.
+  // Treat identical per-agent configs as the same store so unrelated writes preserve the owner.
+  const sameSessionStore =
+    sameFixedSessionStore ||
+    (isPerAgentSessionStoreConfig(params.currentStore) &&
+      isPerAgentSessionStoreConfig(params.targetConfig.session?.store) &&
+      (params.currentStore ?? "").trim() === (params.targetConfig.session?.store ?? "").trim());
   const previousOwner = params.currentConfig.agents?.defaults?.sessionStore?.agentId;
   const explicitSessionStore = getConfigValueAtPath(
     (params.explicitSetValueSource ?? params.targetConfig) as Record<string, unknown>,
@@ -36,7 +46,7 @@ export function prepareSessionStoreOwnershipForWrite(params: {
   );
   // A compatibility owner belongs to one physical fixed store. Copied runtime config must not
   // carry it to another store; only an owner-specific authored path establishes the new owner.
-  if (sameFixedSessionStore || !previousOwner || suppliesDestinationOwner) {
+  if (sameSessionStore || !previousOwner || suppliesDestinationOwner) {
     return { config: params.targetConfig, sameFixedSessionStore, ownershipPaths: [] };
   }
   const agents = structuredClone(params.targetConfig.agents ?? {});

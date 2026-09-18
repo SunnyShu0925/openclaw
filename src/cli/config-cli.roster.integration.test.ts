@@ -569,6 +569,97 @@ describe("config cli roster integration", () => {
     );
   });
 
+  it("preserves sessionStore.agentId across unrelated config set when session.store is unset", async () => {
+    await withConfigFileHarness(
+      "openclaw-config-cli-unset-store-owner-",
+      JSON.stringify({
+        agents: {
+          ownership: "explicit",
+          defaults: {
+            sessionStore: { agentId: "discord-main" },
+            systemAgent: { agentId: "discord-main" },
+            authInheritance: { agentId: "discord-main" },
+          },
+          entries: {
+            "discord-main": { name: "Discord Main" },
+            work: { name: "Worker" },
+          },
+        },
+      }),
+      async ({ configPath }) => {
+        await runRegisteredConfigCommand([
+          "config",
+          "set",
+          "agents.defaults.bootstrapMaxChars",
+          "30001",
+        ]);
+        const after = JSON5.parse(fs.readFileSync(configPath, "utf8"));
+        expect(after.agents.defaults.bootstrapMaxChars).toBe(30001);
+        expect(after.agents.defaults.sessionStore.agentId).toBe("discord-main");
+        expect(after.session?.store).toBeUndefined();
+      },
+    );
+  });
+
+  it("clears sessionStore.agentId when session.store transitions from unset to fixed", async () => {
+    await withConfigFileHarness(
+      "openclaw-config-cli-store-transition-owner-",
+      JSON.stringify({
+        agents: {
+          ownership: "explicit",
+          defaults: {
+            sessionStore: { agentId: "discord-main" },
+          },
+          entries: {
+            "discord-main": { name: "Discord Main" },
+          },
+        },
+      }),
+      async ({ configPath }) => {
+        await runRegisteredConfigCommand([
+          "config",
+          "set",
+          "session.store",
+          JSON.stringify("/data/sessions.sqlite"),
+          "--strict-json",
+        ]);
+        const after = JSON5.parse(fs.readFileSync(configPath, "utf8"));
+        expect(after.session.store).toBe("/data/sessions.sqlite");
+        expect(after.agents.defaults.sessionStore?.agentId).toBeUndefined();
+      },
+    );
+  });
+
+  it("clears sessionStore.agentId when session.store transitions between distinct {agentId} templates", async () => {
+    await withConfigFileHarness(
+      "openclaw-config-cli-template-transition-owner-",
+      JSON.stringify({
+        session: { store: "/old/{agentId}/sessions.sqlite" },
+        agents: {
+          ownership: "explicit",
+          defaults: {
+            sessionStore: { agentId: "discord-main" },
+          },
+          entries: {
+            "discord-main": { name: "Discord Main" },
+          },
+        },
+      }),
+      async ({ configPath }) => {
+        await runRegisteredConfigCommand([
+          "config",
+          "set",
+          "session.store",
+          JSON.stringify("/new/{agentId}/sessions.sqlite"),
+          "--strict-json",
+        ]);
+        const after = JSON5.parse(fs.readFileSync(configPath, "utf8"));
+        expect(after.session.store).toBe("/new/{agentId}/sessions.sqlite");
+        expect(after.agents.defaults.sessionStore?.agentId).toBeUndefined();
+      },
+    );
+  });
+
   it.each([
     {
       name: "duplicate default markers",
