@@ -324,6 +324,7 @@ src/config/byte-size.ts
 src/config/channel-config-metadata.ts
 src/config/channel-configured-shared.ts
 src/config/channel-configured.ts
+src/config/channel-compat-normalization.ts
 src/config/channel-schema-selection.ts
 src/config/cloud-worker-project-profiles.ts
 src/config/codex-plugin-diagnostics.ts

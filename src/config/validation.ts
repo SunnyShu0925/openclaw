@@ -1,6 +1,8 @@
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 // Owns core preparation and sync/async orchestration for config validation.
 import { listChannelIdsForOwnershipMigration } from "../plugins/channel-presence-policy.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
+import { normalizeLegacyDmAliases } from "./channel-compat-normalization.js";
 import { omitDeferredPluginMigrationConfig } from "./deferred-plugin-migration-config.js";
 import { migrateLegacyContextBudgetConfig } from "./legacy.context-budget.js";
 import {
@@ -138,6 +140,73 @@ type PreparedConfigWithPlugins = {
   parsedConfig: OpenClawConfig;
 };
 
+const CHANNELS_WITH_LEGACY_DM_ALIASES = new Set(["discord", "slack"]);
+
+/**
+ * Normalize legacy Discord/Slack DM aliases without mutating the caller-owned
+ * source. The preparation path receives config that `io.snapshot.ts` reuses as
+ * `sourceConfig` (including when validation later fails), so in-place writes
+ * here would rewrite the snapshot used for repair and write comparisons. We
+ * shallow-copy the `channels` container and each affected `accounts` container
+ * so the returned object shares no container references with the input.
+ */
+function normalizeChannelDmAliasesCopy(config: unknown): unknown {
+  const root = asNullableRecord(config);
+  if (!root?.channels) {
+    return config;
+  }
+  const channels = asNullableRecord(root.channels);
+  if (!channels) {
+    return config;
+  }
+  let nextChannels: Record<string, unknown> | undefined;
+  for (const [channelId, raw] of Object.entries(channels)) {
+    if (!CHANNELS_WITH_LEGACY_DM_ALIASES.has(channelId)) {
+      continue;
+    }
+    const entry = asNullableRecord(raw);
+    if (!entry) {
+      continue;
+    }
+    const normalized = normalizeLegacyDmAliases({
+      entry,
+      pathPrefix: `channels.${channelId}`,
+      changes: [],
+    });
+    const accounts = asNullableRecord(normalized.entry.accounts);
+    let nextAccounts: Record<string, unknown> | undefined;
+    if (accounts) {
+      for (const [accountId, rawAccount] of Object.entries(accounts)) {
+        const account = asNullableRecord(rawAccount);
+        if (!account) {
+          continue;
+        }
+        const accountNormalized = normalizeLegacyDmAliases({
+          entry: account,
+          pathPrefix: `channels.${channelId}.accounts.${accountId}`,
+          changes: [],
+        });
+        if (accountNormalized.changed) {
+          nextAccounts ??= { ...accounts };
+          nextAccounts[accountId] = accountNormalized.entry;
+        }
+      }
+    }
+    // Replace the channel entry only when something actually changed: either
+    // the root alias migration produced a new entry, or an account was rewritten.
+    if (normalized.changed || nextAccounts) {
+      nextChannels ??= { ...channels };
+      nextChannels[channelId] = nextAccounts
+        ? { ...normalized.entry, accounts: nextAccounts }
+        : normalized.entry;
+    }
+  }
+  if (!nextChannels) {
+    return config;
+  }
+  return { ...root, channels: nextChannels };
+}
+
 function prepareConfigObjectWithPlugins(
   raw: unknown,
   params: ValidateConfigWithPluginsParams | undefined,
@@ -146,7 +215,8 @@ function prepareConfigObjectWithPlugins(
     omitDeferredPluginMigrationConfig(raw, params?.deferredPluginMigrations),
   );
   const contextBudgetConfig = migrateLegacyContextBudgetConfig(copilotConfig).config;
-  const migrated = migratePersistedImplicitMainRoster(contextBudgetConfig, {
+  const dmAliasConfig = normalizeChannelDmAliasesCopy(contextBudgetConfig);
+  const migrated = migratePersistedImplicitMainRoster(dmAliasConfig, {
     env: params?.env,
     homedir: params?.homedir,
   }).config as OpenClawConfig;

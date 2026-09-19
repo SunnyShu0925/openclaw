@@ -2,6 +2,7 @@
 export {
   createAccountPolicyInheritanceCases,
   validateTestChannelConfig,
+  validateTestConfigWithPlugins,
 } from "./test-helpers/channel-config.js";
 export { createDirectoryTestRuntime, expectDirectorySurface } from "./test-helpers/directory.js";
 export { expectDirectoryIds, type DirectoryListFn } from "./test-helpers/directory-ids.js";

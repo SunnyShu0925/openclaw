@@ -14,6 +14,25 @@ export async function validateTestChannelConfig(
   return result.config;
 }
 
+/**
+ * Validate a raw config through the full plugin-aware preparation path (the same
+ * path the Gateway runs at startup), including DM alias normalization. This is
+ * the production-path validator extension tests should use when they need to
+ * prove migrated aliases survive through `prepareConfigObjectWithPlugins`.
+ */
+export async function validateTestConfigWithPlugins(raw: unknown): Promise<OpenClawConfig> {
+  const { validateConfigObjectRawWithPlugins } = await import("../../config/validation.js");
+  const { clearPluginMetadataLifecycleCaches } =
+    await import("../../plugins/plugin-metadata-lifecycle.js");
+  clearPluginMetadataLifecycleCaches();
+  const result = validateConfigObjectRawWithPlugins(raw);
+  if (!result.ok) {
+    const issues = result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n");
+    throw new Error(`Config validation failed:\n${issues}`);
+  }
+  return result.config;
+}
+
 export function createAccountPolicyInheritanceCases() {
   return [
     {
