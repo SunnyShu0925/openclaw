@@ -9,6 +9,7 @@ import {
   isSafeFenceBreak,
   scanFenceSpans,
 } from "../../packages/markdown-core/src/fences.js";
+import { findCodeRegions, isInsideCode } from "../shared/text/code-regions.js";
 
 export type BlockReplyChunking = {
   minChars: number;
@@ -42,6 +43,7 @@ type BlockChunkDrain = {
 function findSafeSentenceBreakIndex(
   text: string,
   fenceSpans: FenceSpan[],
+  codeRegions: ReturnType<typeof findCodeRegions>,
   minChars: number,
   offset = 0,
   openFence?: FenceSpan,
@@ -54,7 +56,11 @@ function findSafeSentenceBreakIndex(
       continue;
     }
     const candidate = at + 1;
-    if (offset + candidate !== openFence?.end && isSafeFenceBreak(fenceSpans, offset + candidate)) {
+    if (
+      offset + candidate !== openFence?.end &&
+      isSafeFenceBreak(fenceSpans, offset + candidate) &&
+      !isInsideCode(offset + candidate, codeRegions)
+    ) {
       sentenceIdx = candidate;
     }
   }
@@ -64,11 +70,12 @@ function findSafeSentenceBreakIndex(
 function findSafeParagraphBreakIndex(params: {
   text: string;
   fenceSpans: FenceSpan[];
+  codeRegions: ReturnType<typeof findCodeRegions>;
   minChars: number;
   reverse: boolean;
   offset?: number;
 }): number {
-  const { text, fenceSpans, minChars, reverse, offset = 0 } = params;
+  const { text, fenceSpans, codeRegions, minChars, reverse, offset = 0 } = params;
   let paragraphIdx = reverse ? text.lastIndexOf("\n\n") : text.indexOf("\n\n");
   while (reverse ? paragraphIdx >= minChars : paragraphIdx !== -1) {
     const candidates = [paragraphIdx, paragraphIdx + 1];
@@ -79,7 +86,10 @@ function findSafeParagraphBreakIndex(params: {
       if (candidate < 0 || candidate >= text.length) {
         continue;
       }
-      if (isSafeFenceBreak(fenceSpans, offset + candidate)) {
+      if (
+        isSafeFenceBreak(fenceSpans, offset + candidate) &&
+        !isInsideCode(offset + candidate, codeRegions)
+      ) {
         return candidate;
       }
     }
@@ -100,6 +110,9 @@ function findSafeNewlineBreakIndex(params: {
   const { text, fenceSpans, minChars, reverse, offset = 0 } = params;
   let newlineIdx = reverse ? text.lastIndexOf("\n") : text.indexOf("\n");
   while (reverse ? newlineIdx >= minChars : newlineIdx !== -1) {
+    // A single newline inside an indented code block is safe to break on:
+    // the next line carries its own indentation prefix. Only fenced code
+    // needs the reopen mechanism, so isSafeFenceBreak alone guards newlines.
     if (newlineIdx >= minChars && isSafeFenceBreak(fenceSpans, offset + newlineIdx)) {
       return newlineIdx;
     }
@@ -335,6 +348,7 @@ export class EmbeddedBlockChunker {
           index,
         ) - this.#reopenPrefix.length,
       );
+    const codeRegions = findCodeRegions(source);
     let start = 0;
     let reopenFence: FenceSplit | undefined;
     const emitSourceChunk = (chunk: string, from: number, to: number) => {
@@ -368,7 +382,13 @@ export class EmbeddedBlockChunker {
       }
 
       if (chunking.flushOnParagraph && !force) {
-        const paragraphBreak = findNextParagraphBreak(source, fenceSpans, start, minChars);
+        const paragraphBreak = findNextParagraphBreak(
+          source,
+          fenceSpans,
+          codeRegions,
+          start,
+          minChars,
+        );
         const paragraphLimit = Math.max(1, maxChars - reopenPrefix.length);
         if (paragraphBreak && paragraphBreak.index - start <= paragraphLimit) {
           const chunk = `${reopenPrefix}${source.slice(start, paragraphBreak.index)}`;
@@ -391,10 +411,20 @@ export class EmbeddedBlockChunker {
       const view = source.slice(start);
       const breakResult =
         force && remainingLength <= maxChars
-          ? this.#pickPreferredBreakIndex(view, fenceSpans, chunking, false, 1, start, openFence)
+          ? this.#pickPreferredBreakIndex(
+              view,
+              fenceSpans,
+              codeRegions,
+              chunking,
+              false,
+              1,
+              start,
+              openFence,
+            )
           : this.#pickBreakIndex(
               view,
               fenceSpans,
+              codeRegions,
               chunking,
               force ? 1 : undefined,
               start,
@@ -500,6 +530,7 @@ export class EmbeddedBlockChunker {
   #pickPreferredBreakIndex(
     buffer: string,
     fenceSpans: FenceSpan[],
+    codeRegions: ReturnType<typeof findCodeRegions>,
     chunking: BlockReplyChunking,
     reverse: boolean,
     minCharsOverride?: number,
@@ -516,6 +547,7 @@ export class EmbeddedBlockChunker {
       const paragraphIdx = findSafeParagraphBreakIndex({
         text: buffer,
         fenceSpans,
+        codeRegions,
         minChars,
         reverse,
         offset,
@@ -542,6 +574,7 @@ export class EmbeddedBlockChunker {
       const sentenceIdx = findSafeSentenceBreakIndex(
         buffer,
         fenceSpans,
+        codeRegions,
         minChars,
         offset,
         openFence,
@@ -557,6 +590,7 @@ export class EmbeddedBlockChunker {
   #pickBreakIndex(
     buffer: string,
     fenceSpans: FenceSpan[],
+    codeRegions: ReturnType<typeof findCodeRegions>,
     chunking: BlockReplyChunking,
     minCharsOverride?: number,
     offset = 0,
@@ -573,6 +607,7 @@ export class EmbeddedBlockChunker {
     const preferred = this.#pickPreferredBreakIndex(
       window,
       fenceSpans,
+      codeRegions,
       chunking,
       true,
       minChars,
@@ -588,7 +623,17 @@ export class EmbeddedBlockChunker {
     }
 
     for (let i = window.length - 1; i >= minChars; i--) {
-      if (/\s/.test(window.charAt(i)) && isSafeFenceBreak(fenceSpans, offset + i)) {
+      // A newline inside an indented code block is safe to break on (the next
+      // line carries its own indentation). Other whitespace inside code is
+      // not safe — it would split a line mid-content and lose context.
+      if (window.charAt(i) === "\n" && isSafeFenceBreak(fenceSpans, offset + i)) {
+        return { index: i };
+      }
+      if (
+        /\s/.test(window.charAt(i)) &&
+        isSafeFenceBreak(fenceSpans, offset + i) &&
+        !isInsideCode(offset + i, codeRegions)
+      ) {
         return { index: i };
       }
     }
@@ -648,6 +693,7 @@ function skipLeadingNewlines(value: string, start = 0): number {
 function findNextParagraphBreak(
   buffer: string,
   fenceSpans: FenceSpan[],
+  codeRegions: ReturnType<typeof findCodeRegions>,
   startIndex = 0,
   minCharsFromStart = 1,
 ): ParagraphBreak | null {
@@ -668,6 +714,9 @@ function findNextParagraphBreak(
     const fence = findFenceSpanAt(fenceSpans, index);
     if (fence) {
       re.lastIndex = fence.end;
+      continue;
+    }
+    if (isInsideCode(index, codeRegions)) {
       continue;
     }
     return { index, length: match[0].length };

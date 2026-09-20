@@ -712,4 +712,41 @@ describe("EmbeddedBlockChunker", () => {
       expect(chunks.every((chunk) => chunk.trimEnd() !== `${marker}\n${marker}`)).toBe(true);
     },
   );
+
+  it("does not split an indented code block at its internal blank line", () => {
+    // Regression: the break guards only checked parseFenceSpans (fenced code),
+    // so an indented code block (4-space) with an internal blank line was
+    // split at that blank line, losing the blank line and indentation.
+    // Use maxChars below the input length and a non-forced drain so the
+    // code-region scan path is exercised (not the early-return fast path).
+    const indented = [
+      "Intro text here.",
+      "",
+      "    line one",
+      "    line two",
+      "",
+      "    line four",
+      "    line five",
+    ].join("\n");
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 60,
+      breakPreference: "paragraph",
+    });
+    chunker.append(indented);
+
+    // Non-forced drain emits the intro paragraph; the code block stays buffered.
+    const introChunks = drainChunks(chunker, false);
+    // Forced flush emits the remaining code block intact.
+    const codeChunks = drainChunks(chunker, true);
+    const chunks = [...introChunks, ...codeChunks];
+
+    // The indented code block must stay intact across the internal blank line.
+    const codeBlock = "    line one\n    line two\n\n    line four\n    line five";
+    expect(chunks.some((chunk) => chunk.includes(codeBlock))).toBe(true);
+    // No chunk should start mid-code-block (no leading lost-indentation).
+    for (const chunk of chunks) {
+      expect(chunk.startsWith("line ")).toBe(false);
+    }
+  });
 });
