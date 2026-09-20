@@ -266,7 +266,7 @@ export function extractCanvasFromText(
   return coerceCanvasPreview(parsed);
 }
 
-/** Extracts [embed ...] shortcodes outside code fences and returns stripped text. */
+/** Extracts [embed ...] shortcodes outside Markdown code and returns stripped text. */
 export function extractCanvasShortcodes(text: string | undefined): {
   text: string;
   previews: CanvasPreview[];
@@ -291,7 +291,7 @@ export function extractCanvasShortcodes(text: string | undefined): {
     while ((match = re.exec(text))) {
       const start = match.index ?? 0;
       if (isInsideCode(start, codeRegions)) {
-        // Literal embed examples in code blocks must remain visible text.
+        // Literal embed examples in code must remain visible text.
         continue;
       }
       matches.push({

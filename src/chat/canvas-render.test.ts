@@ -119,23 +119,12 @@ describe("extractCanvasShortcodes", () => {
     expect(text).toBe("see  end");
   });
 
-  it("does not extract embeds from indented code blocks", () => {
-    // Regression: parseFenceSpans only detected fenced code, so an [embed]
-    // example inside a 4-space indented code block was mis-extracted as a
-    // real shortcode and stripped from the delivered text.
-    const input = [
-      "How to embed:",
-      "",
-      '    [embed url="https://example.com/image.png"]',
-      "    some content",
-      "    [/embed]",
-      "",
-      "That was an example.",
-    ].join("\n");
-    const { text, previews } = extractCanvasShortcodes(input);
-
-    expect(previews).toHaveLength(0);
-    expect(text).toBe(input);
+  it.each([
+    ["indented code", '    [embed url="https://example.com/image.png"]\n    example\n    [/embed]'],
+    ["inline code", '`[embed url="https://example.com/image.png" /]`'],
+  ])("preserves literal embed examples in %s", (_kind, example) => {
+    const input = `Before the example.\n\n${example}\n\nAfter the example.`;
+    expect(extractCanvasShortcodes(input)).toEqual({ text: input, previews: [] });
   });
 });
 
