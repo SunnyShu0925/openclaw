@@ -4,17 +4,14 @@ import {
   skipWhitespaceGraphemes,
   trimEndWhitespaceGraphemes,
 } from "@openclaw/normalization-core/grapheme";
-import {
-  findFenceSpanAt,
-  isSafeFenceBreak,
-  parseFenceSpans,
-} from "../../packages/markdown-core/src/fences.js";
+import { findFenceSpanAt, parseFenceSpans } from "../../packages/markdown-core/src/fences.js";
 import type { ChannelId } from "../channels/plugins/types.core.js";
 import { resolveChannelStreamingChunkMode } from "../channels/streaming.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveChannelAccountEntry } from "../routing/account-lookup.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { chunkTextByBreakResolver, normalizeChunkLimit } from "../shared/text-chunking.js";
+import { findCodeRegions, isInsideCode } from "../shared/text/code-regions.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
 
 export type TextChunkProvider = ChannelId;
@@ -219,10 +216,10 @@ export function chunkByParagraph(
     if (!splitLongParagraphs) {
       return [normalized];
     }
-    return chunkText(normalized, limit);
+    return chunkMarkdownText(normalized, limit);
   }
 
-  const spans = parseFenceSpans(normalized);
+  const regions = findCodeRegions(normalized);
 
   const parts: string[] = [];
   const separators: string[] = [];
@@ -231,8 +228,8 @@ export function chunkByParagraph(
   for (const match of normalized.matchAll(re)) {
     const idx = match.index ?? 0;
 
-    // Do not split on blank lines that occur inside fenced code blocks.
-    if (!isSafeFenceBreak(spans, idx)) {
+    // Do not split on blank lines that occur inside fenced or indented code blocks.
+    if (isInsideCode(idx, regions)) {
       continue;
     }
 
@@ -255,7 +252,7 @@ export function chunkByParagraph(
         chunks.push(paragraph);
         return;
       }
-      chunks.push(...chunkText(paragraph, limit));
+      chunks.push(...chunkMarkdownText(paragraph, limit));
       return;
     }
 
@@ -380,17 +377,47 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
 
   const chunks: string[] = [];
   const spans = parseFenceSpans(text);
+  const regions = findCodeRegions(text);
   let start = 0;
   let reopenFence: ReturnType<typeof findFenceSpanAt> | undefined;
+  // Whitespace-only fragments inside code regions (e.g. leading indentation of
+  // an indented code block) must not be emitted as standalone chunks — channel
+  // adapters reject whitespace-only sends.  Instead, defer them as a prefix
+  // attached to the next non-empty chunk so the content is preserved.
+  let pendingCodeWs = "";
 
   while (start < text.length) {
     const reopenLine = reopenFence ? resolveFenceReopenLine(reopenFence, normalizedLimit) : "";
     const reopenPrefix = reopenLine ? `${reopenLine}\n` : "";
-    const contentLimit = Math.max(1, normalizedLimit - reopenPrefix.length);
+    // Reserve capacity for the deferred code whitespace that will be prepended
+    // to the next non-empty chunk, so the assembled chunk never exceeds the
+    // hard limit.  Without this, rawChunk consumes the full contentLimit and
+    // the later `${pendingCodeWs}${rawChunk}` prepend pushes it over.
+    const contentLimit = Math.max(1, normalizedLimit - reopenPrefix.length - pendingCodeWs.length);
     if (text.length - start <= contentLimit) {
-      const finalChunk = `${reopenPrefix}${text.slice(start)}`;
-      if (finalChunk.length > 0) {
-        chunks.push(finalChunk);
+      const finalChunk = `${reopenPrefix}${pendingCodeWs}${text.slice(start)}`;
+      if (finalChunk.length > 0 && (reopenPrefix || finalChunk.trim())) {
+        // Bound the deferred whitespace so the final chunk never exceeds the
+        // hard limit: cap pendingCodeWs to leave room for the remaining text,
+        // preserving content (e.g. the "x" in "        x") over indentation
+        // when the limit is too small for both.  This push branch is reached
+        // only for indented-code whitespace (fenced tails route through the
+        // append branch below), so capping here does not affect fenced
+        // losslessness.
+        const wsCap = Math.max(0, normalizedLimit - reopenPrefix.length - (text.length - start));
+        const cappedFinal = `${reopenPrefix}${pendingCodeWs.slice(0, wsCap)}${text.slice(start)}`;
+        chunks.push(cappedFinal);
+      } else if (chunks.length > 0 && (reopenPrefix || isInsideCode(start, regions))) {
+        // Whitespace-only tail inside a code region or fence reopen: attach to
+        // the last chunk so code content (indentation, blank lines) is not
+        // lost without emitting a standalone whitespace-only message.  Bound
+        // the append to the hard limit: when the last chunk is already full,
+        // the overflow tail is dropped rather than producing an over-limit
+        // send unit (bounded output takes priority over losslessness for
+        // pathological limit-vs-indentation ratios).
+        const lastIdx = chunks.length - 1;
+        const tailBudget = Math.max(0, normalizedLimit - chunks[lastIdx]!.length);
+        chunks[lastIdx] += finalChunk.slice(0, tailBudget);
       }
       break;
     }
@@ -468,10 +495,49 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
       reopenFence = fenceToSplit;
     } else if (!initialFence) {
       // Only prose separators are disposable; fenced whitespace can be code indentation.
-      nextStart = skipWhitespaceGraphemes(text, breakIdx, 1);
-      nextStart = skipLeadingNewlines(text, nextStart);
+      // Indented code blocks (4-space) are not in fence spans, so check code regions too.
+      if (isInsideCode(breakIdx, regions)) {
+        nextStart = breakIdx;
+      } else {
+        nextStart = skipWhitespaceGraphemes(text, breakIdx, 1);
+        nextStart = skipLeadingNewlines(text, nextStart);
+      }
     }
 
+    // Whitespace-only fragments must not be emitted as standalone chunks:
+    // channel adapters (e.g. Signal) reject whitespace-only sends.  In prose,
+    // disposable separators are simply skipped.  Inside a code region the
+    // whitespace is content (indentation), so defer it as a prefix for the
+    // next non-empty chunk rather than discarding it.
+    if (!rawChunk.trim()) {
+      if (!reopenPrefix && !fenceToSplit && isInsideCode(breakIdx, regions)) {
+        pendingCodeWs += rawChunk;
+        start = nextStart;
+        continue;
+      }
+      if (!reopenPrefix && !fenceToSplit) {
+        start = nextStart;
+        continue;
+      }
+    }
+    if (pendingCodeWs) {
+      // Bound the assembled chunk to the hard limit only for indented-code
+      // whitespace when the deferred prefix alone reaches or exceeds the
+      // limit (e.g. an 8-space indent under limit 8, or 20 spaces inside a
+      // fence that cannot be reopened under a tiny limit): there is no room
+      // for both it and content, so bounded output takes priority over
+      // losslessness and the overflow is truncated.
+      //
+      // The bound also applies in the normal case (pendingCodeWs < limit):
+      // rawChunk may end on a complete astral character (two UTF-16 units)
+      // that findGraphemeChunkEnd kept whole, so prepending the full prefix
+      // can push the assembled chunk past the limit (e.g. "    \uD83D\uDE00x"
+      // under limit 5 => 4 spaces + 2-unit emoji = 6).  Cap the prefix to the
+      // remaining budget so no assembled chunk exceeds the hard limit.
+      const wsBudget = Math.max(0, normalizedLimit - rawChunk.length);
+      rawChunk = `${pendingCodeWs.slice(0, wsBudget)}${rawChunk}`;
+      pendingCodeWs = "";
+    }
     chunks.push(rawChunk);
     start = nextStart;
   }

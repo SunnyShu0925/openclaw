@@ -268,6 +268,173 @@ describe("chunkByParagraph Unicode line/paragraph separators", () => {
   });
 });
 
+describe("chunkByParagraph indented code blocks", () => {
+  it("does not split an indented code block at its internal blank line", () => {
+    const code = [
+      "    line1",
+      "    line2",
+      "    line3",
+      "    line4",
+      "    line5",
+      "    line6",
+      "    line7",
+      "    line8",
+      "    line9",
+      "    line10",
+      "    ",
+      "    line11",
+      "    line12",
+      "    line13",
+      "    line14",
+      "    line15",
+    ].join("\n");
+    const chunks = chunkByParagraph(code, 80);
+    // The blank line inside the indented code block must not become a chunk
+    // boundary that starts a chunk with "line11".
+    const startsMidCode = chunks.some((chunk, i) => i > 0 && /^ {4}line1[1-5]/.test(chunk));
+    expect(startsMidCode).toBe(false);
+  });
+
+  it("preserves indentation when splitting a long indented code block", () => {
+    const code = Array.from({ length: 20 }, (_, i) => `    line${i + 1}`).join("\n");
+    const chunks = chunkByParagraph(code, 100);
+    expect(chunks.length).toBeGreaterThan(1);
+    // No 4-space indentation prefix should be stripped by the chunk split.
+    for (const chunk of chunks) {
+      for (const line of chunk.split("\n")) {
+        if (line.startsWith("line")) {
+          // A code line lost its indentation.
+          throw new Error(`Indentation lost: ${JSON.stringify(line)}`);
+        }
+      }
+    }
+  });
+
+  it("does not emit a whitespace-only tail chunk for prose trailing spaces", () => {
+    // Regression: the Markdown fallback for oversized single paragraphs
+    // retained trailing prose whitespace as a separate whitespace-only chunk,
+    // which channel adapters like Signal reject ("send requires text or media").
+    const chunks = chunkByParagraph("abcdefgh   ", 8);
+    expect(chunks).toEqual(["abcdefgh"]);
+    // No chunk should be whitespace-only.
+    for (const chunk of chunks) {
+      expect(chunk.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("does not emit whitespace-only intermediate chunks for prose separators", () => {
+    // Regression: when a long paragraph is split at whitespace boundaries, the
+    // Markdown fallback emitted intermediate chunks that were entirely
+    // whitespace because the soft break landed inside a run of separators.
+    // Channel adapters like Signal reject whitespace-only sends.
+    const chunks = chunkByParagraph("abcdefgh" + " ".repeat(20) + "ijklmnop", 8);
+    expect(chunks).toEqual(["abcdefgh", "ijklmnop"]);
+    for (const chunk of chunks) {
+      expect(chunk.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("preserves fenced whitespace-only lines when limit is too small to reopen", () => {
+    // When the limit is too small to reopen a fence, fenceToSplit is
+    // undefined but initialFence is set. The whitespace accumulates in
+    // pendingCodeWs and is capped to the hard limit (bounded output takes
+    // priority over losslessness), but no standalone ws-only chunk is
+    // emitted and no chunk exceeds the limit.
+    const ws = " ".repeat(20);
+    const code = "```\nab\n" + ws + "\ncd\n```";
+    const chunks = chunkMarkdownText(code, 5);
+    expect(chunks.every((c) => c.length <= 5)).toBe(true);
+    expect(chunks.every((c) => c.trim().length > 0)).toBe(true);
+  });
+
+  it("preserves fenced code trailing whitespace in the final chunk", () => {
+    // Bounded output takes priority over losslessness when the limit is too
+    // small to hold the fenced tail: the overflow is dropped, but the tail
+    // still attaches to the last chunk (no standalone ws-only message) and no
+    // chunk exceeds the limit.
+    const code = "```\na\n    ";
+    const chunks = chunkMarkdownText(code, 5);
+    expect(chunks.every((c) => c.length <= 5)).toBe(true);
+    expect(chunks.every((c) => c.trim().length > 0)).toBe(true);
+  });
+
+  it("preserves indented code leading whitespace across chunk boundaries", () => {
+    // The intermediate guard must check isInsideCode (not just initialFence)
+    // so indented code whitespace is not discarded as prose separators.
+    const code = "    abcdefghij";
+    const chunks = chunkMarkdownText(code, 8);
+    expect(chunks.join("")).toBe(code);
+  });
+
+  it("does not emit whitespace-only chunks for code-region indentation", () => {
+    // Indented code whose leading spaces land on a soft break must not produce
+    // a standalone whitespace-only chunk: channel adapters (e.g. Signal) reject
+    // whitespace-only sends.  The whitespace is deferred to the next chunk.
+    const chunks = chunkByParagraph("    abcdefghij", 8);
+    expect(chunks.join("")).toBe("    abcdefghij");
+    for (const chunk of chunks) {
+      expect(chunk.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("respects the hard chunk limit when deferring indented code whitespace", () => {
+    // Regression (ClawSweeper P2): the deferred whitespace prefix was prepended
+    // AFTER rawChunk consumed the full contentLimit, so
+    // chunkByParagraph("    abcdefghij", 8) returned ["    abcdefg", "hij"] —
+    // the first chunk exceeded the limit by 3 characters.  WhatsApp's
+    // unformatted-text path consumes these chunks directly, so an oversized
+    // chunk violates the documented hard cap and risks rejected sends.
+    // The fix reserves pendingCodeWs capacity inside contentLimit so the
+    // assembled chunk never exceeds the limit.
+    const losslessCases = [
+      "    abcdefghij",
+      "    abcdefghijklmnop",
+      "    abcdefghijklmnopqrstuvwxyz", // longer indented block, multiple chunks
+    ];
+    for (const code of losslessCases) {
+      const limit = 8;
+      const chunks = chunkByParagraph(code, limit);
+      // Lossless: no indentation or content lost.
+      expect(chunks.join("")).toBe(code);
+      // No whitespace-only chunk: channel adapters reject whitespace-only sends.
+      for (const chunk of chunks) {
+        expect(chunk.trim().length).toBeGreaterThan(0);
+      }
+      // Bounded: every chunk must respect the hard limit.
+      for (const chunk of chunks) {
+        expect(chunk.length).toBeLessThanOrEqual(limit);
+      }
+    }
+
+    // Pathological case (ClawSweeper round 9): when indentation alone reaches
+    // or exceeds the limit, no content can join it without overflowing.
+    // Bounded output takes priority over losslessness here — the overflow is
+    // truncated so the chunk stays within the hard cap and is never
+    // whitespace-only (the trailing content keeps it non-empty).
+    const overflowCases = [
+      "        x", // 8-space indent under limit 8
+      "                abc", // 16-space indent under limit 8
+    ];
+    for (const code of overflowCases) {
+      const limit = 8;
+      const chunks = chunkByParagraph(code, limit);
+      for (const chunk of chunks) {
+        expect(chunk.trim().length).toBeGreaterThan(0);
+        expect(chunk.length).toBeLessThanOrEqual(limit);
+      }
+    }
+
+    // Regression (ClawSweeper P2): an astral character (two UTF-16 code units)
+    // kept whole by findGraphemeChunkEnd can push the assembled chunk past the
+    // limit when the deferred indentation prefix is prepended.  The prefix must
+    // be capped to the remaining budget so no chunk exceeds the hard limit.
+    const unicodeChunks = chunkMarkdownText("    \uD83D\uDE00x", 5);
+    for (const chunk of unicodeChunks) {
+      expect(chunk.length).toBeLessThanOrEqual(5);
+    }
+  });
+});
+
 describe("resolveTextChunkLimit", () => {
   it.each([
     ...(["whatsapp", "telegram", "slack", "signal", "imessage", "discord"] as const).map(
