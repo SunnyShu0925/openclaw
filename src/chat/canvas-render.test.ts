@@ -118,6 +118,25 @@ describe("extractCanvasShortcodes", () => {
     expect(previews[0]?.url).toBe("https://b.com");
     expect(text).toBe("see  end");
   });
+
+  it("does not extract embeds from indented code blocks", () => {
+    // Regression: parseFenceSpans only detected fenced code, so an [embed]
+    // example inside a 4-space indented code block was mis-extracted as a
+    // real shortcode and stripped from the delivered text.
+    const input = [
+      "How to embed:",
+      "",
+      '    [embed url="https://example.com/image.png"]',
+      "    some content",
+      "    [/embed]",
+      "",
+      "That was an example.",
+    ].join("\n");
+    const { text, previews } = extractCanvasShortcodes(input);
+
+    expect(previews).toHaveLength(0);
+    expect(text).toBe(input);
+  });
 });
 
 it("removes a shortcode without rewriting surrounding literal whitespace", () => {
