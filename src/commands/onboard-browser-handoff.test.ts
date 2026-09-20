@@ -43,6 +43,7 @@ vi.mock("./onboard-helpers.js", async (importOriginal) => ({
 const target = {
   config: {},
   links: { httpUrl: "http://127.0.0.1:18789/", wsUrl: "ws://127.0.0.1:18789" },
+  browserHandoffLinks: { httpUrl: "http://127.0.0.1:18789/", wsUrl: "ws://127.0.0.1:18789" },
   documentUrl: "http://127.0.0.1:18789/",
   sshHint: "ssh -N -L 18789:127.0.0.1:18789 user@host",
   port: 18789,
@@ -195,7 +196,7 @@ describe("runBrowserHatchHandoff", () => {
     expect(openBrowser).toHaveBeenCalledWith(
       "http://127.0.0.1:18789/#bootstrapToken=one-time-bootstrap&gatewayUrl=ws%3A%2F%2F127.0.0.1%3A18789",
     );
-    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(target.links);
+    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(target.browserHandoffLinks);
     expect(probePresence).toHaveBeenCalledTimes(2);
     expect(prompter.note).toHaveBeenCalledWith(
       "Dashboard connected — continuing in your browser.",
@@ -241,6 +242,7 @@ describe("runBrowserHatchHandoff", () => {
       config,
       port: 19001,
       links: { httpUrl: "http://127.0.0.1:19001/", wsUrl: "ws://127.0.0.1:19001" },
+      browserHandoffLinks: { httpUrl: "http://127.0.0.1:19001/", wsUrl: "ws://127.0.0.1:19001" },
       documentUrl: "http://127.0.0.1:19001/",
     };
     sharedMocks.callGateway
@@ -293,7 +295,7 @@ describe("runBrowserHatchHandoff", () => {
 
     expect(result).toEqual({ handedOff: true });
     expect(openBrowser).not.toHaveBeenCalled();
-    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(target.links);
+    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(target.browserHandoffLinks);
     expect(pollForClient).toHaveBeenCalledWith(
       expect.objectContaining({ target, timeoutMs: 300_000 }),
     );
@@ -459,6 +461,10 @@ describe("runBrowserHatchHandoff", () => {
         httpUrl: "http://127.0.0.1:18789/dashboard/",
         wsUrl: "ws://127.0.0.1:18789/dashboard",
       },
+      browserHandoffLinks: {
+        httpUrl: "http://127.0.0.1:18789/dashboard/",
+        wsUrl: "ws://127.0.0.1:18789/dashboard",
+      },
       documentUrl: "http://127.0.0.1:18789/dashboard/",
       sshHint: undefined,
     };
@@ -487,7 +493,7 @@ describe("runBrowserHatchHandoff", () => {
     expect(displayed).not.toContain("#token=");
     expect(displayed).toContain("#bootstrapToken=one-time-bootstrap");
     expect(sharedMocks.resolveAdvertisedControlUiLinks).not.toHaveBeenCalled();
-    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(remoteTarget.links);
+    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(remoteTarget.browserHandoffLinks);
   });
 
   it.each([
@@ -507,6 +513,10 @@ describe("runBrowserHatchHandoff", () => {
         },
       },
       links: {
+        httpUrl: `https://${bind === "lan" ? "127.0.0.1" : host}:18789/dashboard/`,
+        wsUrl: `wss://${bind === "lan" ? "127.0.0.1" : host}:18789/dashboard`,
+      },
+      browserHandoffLinks: {
         httpUrl: `https://${bind === "lan" ? "127.0.0.1" : host}:18789/dashboard/`,
         wsUrl: `wss://${bind === "lan" ? "127.0.0.1" : host}:18789/dashboard`,
       },
@@ -551,7 +561,52 @@ describe("runBrowserHatchHandoff", () => {
       basePath: "/dashboard",
       tlsEnabled: true,
     });
-    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(remoteTarget.links);
+    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(remoteTarget.browserHandoffLinks);
+  });
+
+  it("copies a public-origin handoff URL when the Gateway exposes a public origin", async () => {
+    const prompter = createWizardPrompter();
+    const publicLinks = {
+      httpUrl: "https://public.example.com/dashboard/",
+      wsUrl: "wss://public.example.com/dashboard",
+    };
+    const publicTarget = {
+      ...target,
+      config: {
+        gateway: {
+          bind: "loopback" as const,
+          controlUi: { basePath: "/dashboard" },
+          publicOrigin: "https://public.example.com",
+        },
+      },
+      // The bind-derived links stay loopback; only the browser destination is public.
+      links: {
+        httpUrl: "http://127.0.0.1:18789/dashboard/",
+        wsUrl: "ws://127.0.0.1:18789/dashboard",
+      },
+      browserHandoffLinks: publicLinks,
+      documentUrl: "http://127.0.0.1:18789/dashboard/",
+      sshHint: undefined,
+    };
+
+    await runBrowserHatchHandoff(
+      { config: publicTarget.config, prompter },
+      {
+        env: {},
+        platform: "linux",
+        resolveTarget: async () => publicTarget,
+        probePresence: async () => ({ reachable: true, clientKeys: [] }),
+        pollForClient: async () => ({ connected: false, reason: "timeout" }),
+      },
+    );
+
+    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(publicLinks);
+    const displayed = vi
+      .mocked(prompter.note)
+      .mock.calls.map(([message]) => message)
+      .join("\n");
+    expect(displayed).toContain("https://public.example.com/dashboard/");
+    expect(displayed).toContain("gatewayUrl=wss%3A%2F%2Fpublic.example.com%2Fdashboard");
   });
 
   it("keeps headless TLS handoff available when all LAN discovery fails", async () => {
@@ -566,6 +621,10 @@ describe("runBrowserHatchHandoff", () => {
         },
       },
       links: {
+        httpUrl: "https://127.0.0.1:18789/dashboard/",
+        wsUrl: "wss://127.0.0.1:18789/dashboard",
+      },
+      browserHandoffLinks: {
         httpUrl: "https://127.0.0.1:18789/dashboard/",
         wsUrl: "wss://127.0.0.1:18789/dashboard",
       },
@@ -649,7 +708,7 @@ describe("runBrowserHatchHandoff", () => {
       .join("\n");
     expect(displayed).not.toContain(gatewayPassword);
     expect(displayed).toContain("#bootstrapToken=one-time-bootstrap");
-    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(target.links);
+    expect(sharedMocks.issueControlUiBrowserHandoff).toHaveBeenCalledWith(target.browserHandoffLinks);
   });
 
   it("returns the poll timeout without claiming a handoff", async () => {

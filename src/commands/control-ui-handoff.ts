@@ -3,6 +3,7 @@ import type { PeerCertificate } from "node:tls";
 import { normalizeTlsFingerprint } from "../../packages/gateway-client/src/client-address-utils.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { resolveGatewayPort } from "../config/config.js";
+import { resolveControlUiLinkLocation } from "../config/control-ui-link-base.js";
 import type { GatewayTlsConfig } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveGatewayInteractiveSurfaceAuth } from "../gateway/auth-surface-resolution.js";
@@ -11,6 +12,7 @@ import {
   CONTROL_UI_OWNER_BOOTSTRAP_PROFILE_HINT,
 } from "../gateway/control-ui-contract.js";
 import { createGatewayCredentialPlan } from "../gateway/credential-planner.js";
+import { isLoopbackGatewayUrl } from "../gateway/net.js";
 import { CONTROL_UI_ASSETS_BUILD_TIMEOUT_MS } from "../infra/control-ui-assets.js";
 import { issueDeviceBootstrapToken } from "../infra/device-bootstrap.js";
 import { readResponseTextSnippet } from "../infra/http-body.js";
@@ -78,6 +80,21 @@ export async function resolveControlUiHandoffTarget(params: {
           tlsEnabled,
         });
   const configuredHost = new URL(configuredLinks.wsUrl).hostname;
+  // Browser delivery must name an origin the recipient can actually reach: when
+  // the operator exposes the Control UI through a public origin, the shared
+  // destination binding carries that origin instead of the bind-derived
+  // loopback value, which would otherwise mismatch the served page's own origin.
+  // Local probing keeps using `probeUrl`/`documentUrl` below, and an unconfigured
+  // public origin keeps the previous bind-derived destination.
+  const publicLocation = resolveControlUiLinkLocation(config);
+  const browserHandoffLinks = publicLocation
+    ? {
+        httpUrl: `${publicLocation.origin}${publicLocation.basePath}/`,
+        wsUrl: `${publicLocation.origin
+          .replace(/^https:/u, "wss:")
+          .replace(/^http:/u, "ws:")}${publicLocation.basePath}`,
+      }
+    : links;
   const loopbackAliasHost =
     browserBind === "loopback" &&
     (bind === "tailnet" || bind === "custom") &&
@@ -105,6 +122,7 @@ export async function resolveControlUiHandoffTarget(params: {
     basePath,
     bind,
     links,
+    browserHandoffLinks,
     authMode,
     gatewayAuthHandoff,
     includeTokenInUrl,
@@ -148,10 +166,12 @@ export async function issueControlUiBrowserHandoff({
   const issued = await issueDeviceBootstrapToken({
     profile: CONTROL_UI_OWNER_BOOTSTRAP_PROFILE,
   });
+  // A loopback destination is unreachable from a browser served through a
+  // reverse proxy; omit it so the UI falls back to same-origin recovery.
   const fragment = new URLSearchParams({
     bootstrapToken: issued.token,
     [CONTROL_UI_BOOTSTRAP_PROFILE_FRAGMENT_PARAM]: CONTROL_UI_OWNER_BOOTSTRAP_PROFILE_HINT,
-    gatewayUrl: wsUrl,
+    ...(isLoopbackGatewayUrl(wsUrl) ? {} : { gatewayUrl: wsUrl }),
   });
   return {
     browserUrl: `${httpUrl}#${fragment.toString()}`,

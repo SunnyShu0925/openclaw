@@ -91,7 +91,7 @@ async function dashboardJsonCommand(runtime: RuntimeEnv): Promise<void> {
       dashboardJsonFailure(runtime, document.reason);
       return;
     }
-    const browserHandoff = await issueControlUiBrowserHandoff(target.links);
+    const browserHandoff = await issueControlUiBrowserHandoff(target.browserHandoffLinks);
 
     writeRuntimeJson(
       runtime,
@@ -178,7 +178,7 @@ export async function dashboardCommand(
   }
   let browserUrl: string;
   try {
-    browserUrl = (await issueControlUiBrowserHandoff(target.links)).browserUrl;
+    browserUrl = (await issueControlUiBrowserHandoff(target.browserHandoffLinks)).browserUrl;
   } catch (error) {
     runtime.error(
       `Could not create a one-time browser pairing link: ${error instanceof Error ? error.message : String(error)}`,

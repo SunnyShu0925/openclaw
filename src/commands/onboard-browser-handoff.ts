@@ -34,6 +34,8 @@ const HANDOFF_PROBE_TIMEOUT_MS = 5_000;
 type BrowserHatchTarget = {
   config: OpenClawConfig;
   links: ControlUiHandoffTarget["links"];
+  /** Browser-reachable pairing destination; equals `links` without a public origin. */
+  browserHandoffLinks: ControlUiHandoffTarget["browserHandoffLinks"];
   documentUrl: string;
   sshHint?: string;
   port: number;
@@ -99,6 +101,7 @@ async function resolveBrowserHatchTarget(
   const target: BrowserHatchTarget = {
     config,
     links: shared.links,
+    browserHandoffLinks: shared.browserHandoffLinks,
     documentUrl: shared.documentUrl,
     port: shared.port,
     ...(shared.loopbackAliasHost ? { loopbackAliasHost: shared.loopbackAliasHost } : {}),
@@ -275,7 +278,7 @@ export async function runBrowserHatchHandoff(
   let browserUrl: string;
   try {
     const browserHandoff = await (deps.issueBrowserHandoff ?? issueControlUiBrowserHandoff)(
-      target.links,
+      target.browserHandoffLinks,
     );
     const url = new URL(browserHandoff.browserUrl);
     const [{ resolveConfiguredSetupModelForAgent }, { resolveSystemAgentOnboardingTarget }] =
@@ -347,7 +350,7 @@ export async function runBrowserHatchHandoff(
           basePath: target.config.gateway?.controlUi?.basePath,
           tlsEnabled: target.tlsConfig?.enabled === true,
         })
-      : target.links;
+      : target.browserHandoffLinks;
     const visibleUrl = retargetBrowserHandoffUrl(browserUrl, visibleLinks);
     await params.prompter.note(
       `${t("wizard.guided.browserHandoffCopy", { url: visibleUrl })}${sshHint}`,

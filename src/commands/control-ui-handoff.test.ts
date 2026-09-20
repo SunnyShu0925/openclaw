@@ -6,7 +6,7 @@ import type { Socket } from "node:net";
 import path from "node:path";
 import type { PeerCertificate } from "node:tls";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
 import { fetchConfiguredLocalOriginWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { resolveSystemBin } from "../infra/resolve-system-bin.js";
@@ -14,7 +14,7 @@ import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
-import { resolveControlUiHandoffTarget, waitForControlUiDocument } from "./control-ui-handoff.js";
+import { resolveControlUiHandoffTarget, issueControlUiBrowserHandoff, waitForControlUiDocument } from "./control-ui-handoff.js";
 
 const documentUrl = "http://127.0.0.1:18789/dashboard/";
 const tempDirs = createTrackedTempDirs();
@@ -23,6 +23,14 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await tempDirs.cleanup();
 });
+
+const bootstrapMocks = vi.hoisted(() => ({
+  issueDeviceBootstrapToken: vi.fn(),
+}));
+
+vi.mock("../infra/device-bootstrap.js", () => ({
+  issueDeviceBootstrapToken: bootstrapMocks.issueDeviceBootstrapToken,
+}));
 type GuardedDocumentRequest = Parameters<typeof fetchConfiguredLocalOriginWithSsrFGuard>[0];
 
 function guardedResponse(response: Response) {
@@ -504,4 +512,52 @@ describe("waitForControlUiDocument", () => {
       reason: "Control UI dashboard is unavailable: Gateway TLS certificate fingerprint mismatch.",
     });
   });
+});
+
+describe("issueControlUiBrowserHandoff", () => {
+  beforeEach(() => {
+    bootstrapMocks.issueDeviceBootstrapToken.mockReset();
+    bootstrapMocks.issueDeviceBootstrapToken.mockResolvedValue({
+      token: "one-time-bootstrap",
+      expiresAtMs: 123_456,
+    });
+  });
+
+  it.each([
+    ["IPv4 loopback", "ws://127.0.0.1:18789"],
+    ["localhost hostname", "ws://localhost:18789"],
+    ["IPv6 loopback", "ws://[::1]:18789"],
+    ["wss loopback", "wss://127.0.0.1:18789"],
+  ] as const)(
+    "omits gatewayUrl from the fragment when the destination is a %s",
+    async (_label, wsUrl) => {
+      const result = await issueControlUiBrowserHandoff({
+        httpUrl: "http://127.0.0.1:18789/",
+        wsUrl,
+      });
+
+      const fragment = new URL(result.browserUrl).hash.slice(1);
+      const params = new URLSearchParams(fragment);
+      expect(params.get("bootstrapToken")).toBe("one-time-bootstrap");
+      expect(params.has("gatewayUrl")).toBe(false);
+    },
+  );
+
+  it.each([
+    ["LAN IPv4", "ws://192.168.1.10:18789"],
+    ["public hostname", "wss://proxy.example.com:443"],
+  ] as const)(
+    "keeps gatewayUrl in the fragment when the destination is a %s",
+    async (_label, wsUrl) => {
+      const result = await issueControlUiBrowserHandoff({
+        httpUrl: "http://127.0.0.1:18789/",
+        wsUrl,
+      });
+
+      const fragment = new URL(result.browserUrl).hash.slice(1);
+      const params = new URLSearchParams(fragment);
+      expect(params.get("bootstrapToken")).toBe("one-time-bootstrap");
+      expect(params.get("gatewayUrl")).toBe(wsUrl);
+    },
+  );
 });
