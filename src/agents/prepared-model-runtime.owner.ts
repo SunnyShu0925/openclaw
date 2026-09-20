@@ -238,7 +238,10 @@ export function normalizePreparedModelRuntimeInput(
   const env = input.env ? Object.freeze({ ...input.env }) : undefined;
   const selections = new Map<string, AgentHarnessPluginSelection>();
   for (const selection of input.runtimePluginSelections ?? []) {
-    const runtime = resolveSelectedAgentHarnessRuntime(selection, input.config);
+    const runtime = resolveSelectedAgentHarnessRuntime(
+      { ...selection, agentId: selection.agentId ?? input.agentId },
+      input.config,
+    );
     const { agentId: _agentId, ...normalized } = selection;
     const entry = Object.freeze({ ...normalized, runtime });
     selections.set(JSON.stringify(entry), entry);
