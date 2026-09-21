@@ -13,7 +13,7 @@ import {
 } from "../test-utils/openclaw-test-state.js";
 import { createSqliteWorkerWriteAdmission } from "./sqlite-worker-store.js";
 import { inspectUpdateRunDriver, readUpdateRunDriver } from "./update-run-driver.js";
-import type { InterruptedUpdateSettlement } from "./update-run-interruption-store.js";
+import type { InterruptedUpdateSettlement } from "./update-run-interruption-contract.js";
 import { createUpdateRun, recordUpdateRunPhase, recordUpdateRunStep } from "./update-run-ledger.js";
 
 let state: OpenClawTestState;

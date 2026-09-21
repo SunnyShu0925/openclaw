@@ -34,8 +34,8 @@ import type {
   SessionBindingRecord,
 } from "../infra/outbound/session-binding.types.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
-import type { readInterruptedUpdateCandidate } from "../infra/update-run-interruption-store.js";
 import type {
+  readInterruptedUpdateCandidate,
   readUpdateRunRecord,
   readUpdateRuns,
   UpdateRunListInput,

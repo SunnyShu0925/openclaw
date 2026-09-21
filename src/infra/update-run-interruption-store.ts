@@ -1,4 +1,3 @@
-import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { runExistingOpenClawStateWriteTransaction } from "../state/openclaw-state-db-existing-write.js";
@@ -7,13 +6,17 @@ import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { recordedUpdateRunDrivers } from "./update-run-activity.js";
 import { encodeRun, type UpdateRunLedgerOptions } from "./update-run-codec.js";
 import { inspectUpdateRunDriver } from "./update-run-driver.js";
+import type {
+  InterruptedUpdateSettlement,
+  InterruptedUpdateSettlementResult,
+} from "./update-run-interruption-contract.js";
 import {
+  hasStoredUpdateRecovery,
   readActiveUpdateRun,
   readLatestUpdateRun,
   readUpdateRunRecord,
 } from "./update-run-read.kernel.js";
 import { finishUpdateRunRecord, type UpdateRunRecord } from "./update-run-record.js";
-import { hasStoredUpdateRecovery } from "./update-run-recovery-store.js";
 import { recordUpdateRunVerificationRecord } from "./update-run-verification.js";
 import { persistRun, updateRunLedgerSchema, upsertStep } from "./update-run-write.js";
 
@@ -69,20 +72,6 @@ export function canSettleInterruptedUpdate(run: UpdateRunRecord): boolean {
     readInstalledUpdateCandidate(run) !== undefined
   );
 }
-
-export function readInterruptedUpdateCandidate(db: DatabaseSync): UpdateRunRecord | undefined {
-  const run = readLatestUpdateRun(db);
-  return run && !hasStoredUpdateRecovery(db, run.runId) ? run : undefined;
-}
-
-export type InterruptedUpdateSettlement = {
-  expected: UpdateRunRecord;
-  detail: string;
-  verification?: UpdateRunRecord["verification"];
-  cleanup?: "pending" | "unknown" | "confirmed";
-};
-
-export type InterruptedUpdateSettlementResult = { accepted: boolean; run?: UpdateRunRecord };
 
 /** Revalidate the captured run and recovery exclusion inside the worker's transaction. */
 export function persistInterruptedUpdateObservation(

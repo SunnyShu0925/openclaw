@@ -19,14 +19,12 @@ import {
   readInterruptedUpdateCandidateAsync,
   persistInterruptedUpdateObservationAsync,
 } from "./update-run-interruption-worker.js";
-import { readUpdateRunRecord } from "./update-run-read.kernel.js";
+import { hasStoredUpdateRecovery, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
-import { hasStoredUpdateRecovery } from "./update-run-recovery-store.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
 import { persistRun, updateRunLedgerSchema, upsertStep } from "./update-run-write.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 export { readInstalledUpdateCandidate } from "./update-run-interruption-store.js";
-export type { InstalledUpdateCandidate } from "./update-run-interruption-store.js";
 
 const CANDIDATE_STEP = "finalize:installed-candidate";
 

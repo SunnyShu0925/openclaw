@@ -29,8 +29,11 @@ import { inspectCurrentConversationBindingRecordInDatabase } from "../infra/outb
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
-import { readInterruptedUpdateCandidate } from "../infra/update-run-interruption-store.js";
-import { readUpdateRunRecord, readUpdateRuns } from "../infra/update-run-read.kernel.js";
+import {
+  readInterruptedUpdateCandidate,
+  readUpdateRunRecord,
+  readUpdateRuns,
+} from "../infra/update-run-read.kernel.js";
 import { serveOwnedWorkerTasks } from "../infra/worker-task-server.js";
 import {
   pluginBlobLookupInDatabase,

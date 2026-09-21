@@ -3,11 +3,8 @@ import { note } from "../../packages/terminal-core/src/note.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS } from "../cli/daemon-cli/restart-health.constants.js";
 import { noteStaleUpdateRuns } from "../commands/doctor-update-run.js";
-import {
-  persistInterruptedUpdateObservation,
-  readInterruptedUpdateCandidate,
-  type InterruptedUpdateSettlement,
-} from "../infra/update-run-interruption-store.js";
+import type { InterruptedUpdateSettlement } from "../infra/update-run-interruption-contract.js";
+import { persistInterruptedUpdateObservation } from "../infra/update-run-interruption-store.js";
 import { reconcileInterruptedUpdateRuns } from "../infra/update-run-interruption.js";
 import {
   createUpdateRun,
@@ -18,6 +15,7 @@ import {
   recordUpdateRunRepairAttempt,
   recordUpdateRunStep,
 } from "../infra/update-run-ledger.js";
+import { readInterruptedUpdateCandidate } from "../infra/update-run-read.kernel.js";
 import { renderUpdateRunReport } from "../infra/update-run-report.js";
 import { CommandProcessCleanupError } from "../process/exec-result.js";
 import { retainCommandProcessCleanup } from "../process/exec-spawn.js";

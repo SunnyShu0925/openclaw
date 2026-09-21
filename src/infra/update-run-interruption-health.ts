@@ -20,7 +20,7 @@ import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
 import { readPackageVersion } from "./package-json.js";
 import { readBuiltGatewayBuildId } from "./update-git-runtime.js";
-import type { InstalledUpdateCandidate } from "./update-run-interruption.js";
+import type { InstalledUpdateCandidate } from "./update-run-interruption-store.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 
 export type InterruptedUpdateGatewayObservation = {

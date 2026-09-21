@@ -42,7 +42,7 @@ import type { TelemetryWorkerOperations } from "../infra/telemetry-worker-contra
 import type {
   InterruptedUpdateSettlement,
   InterruptedUpdateSettlementResult,
-} from "../infra/update-run-interruption-store.js";
+} from "../infra/update-run-interruption-contract.js";
 import type { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import type { NodeWorkerJournalWorkerOperations } from "../node-host/node-worker-journal.worker-contract.js";
 import type { PluginBlobWorkerOperations } from "../plugin-state/plugin-blob-worker-contract.js";

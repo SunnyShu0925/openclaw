@@ -6,7 +6,7 @@ import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
 import { createSqliteWorkerWriteAdmission } from "./sqlite-worker-store.js";
 import type { UpdateRunLedgerOptions } from "./update-run-codec.js";
-import type { InterruptedUpdateSettlement } from "./update-run-interruption-store.js";
+import type { InterruptedUpdateSettlement } from "./update-run-interruption-contract.js";
 
 export async function readInterruptedUpdateCandidateAsync(options: UpdateRunLedgerOptions) {
   const reply = await withArtifactPreservingStateReads(() =>
