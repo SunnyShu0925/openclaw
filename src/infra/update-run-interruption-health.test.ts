@@ -69,22 +69,26 @@ function after<T>(ms: number, value: T): Promise<T> {
   });
 }
 
-it("settles a managed candidate with setup and reconciliation inside the same allowance", async () => {
-  probes.root.mockImplementation(() => after(1_000, "/synthetic/root"));
-  probes.context.mockImplementation(() => after(2_000, { config: {} }));
-  probes.wait.mockImplementation(() => after(12_000, healthy));
-  probes.http.mockImplementation(() => after(2_000, { healthz: 200, readyz: 200 }));
-  probes.inspect.mockImplementation(() => after(1_000, healthy));
-  const result = observe();
-  await vi.advanceTimersByTimeAsync(INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS);
-  expect(await result).toMatchObject({
-    outcome: "settled",
-    elapsedMs: 19_000,
-    waitOutcome: "healthy",
-    verification: { settled: true, readyz: true, runningBuildId: "b1" },
-  });
-  expect(vi.getTimerCount()).toBe(0);
-});
+// The reporter's measured total was 25,431 ms; the phase distribution here is synthetic.
+it.each([19_000, 25_431])(
+  "settles a managed candidate taking %i ms across setup and reconciliation",
+  async (elapsedMs) => {
+    probes.root.mockImplementation(() => after(1_000, "/synthetic/root"));
+    probes.context.mockImplementation(() => after(2_000, { config: {} }));
+    probes.wait.mockImplementation(() => after(elapsedMs - 7_000, healthy));
+    probes.http.mockImplementation(() => after(2_000, { healthz: 200, readyz: 200 }));
+    probes.inspect.mockImplementation(() => after(1_000, healthy));
+    const result = observe();
+    await vi.advanceTimersByTimeAsync(INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS);
+    expect(await result).toMatchObject({
+      outcome: "settled",
+      elapsedMs,
+      waitOutcome: "healthy",
+      verification: { settled: true, readyz: true, runningBuildId: "b1" },
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
 
 it.each([
   ["root", 1, "setup:package-root"],
@@ -121,7 +125,9 @@ it.each([
 });
 
 it("does not grant new HTTP or inspection budgets after a slow healthy settle", async () => {
-  probes.wait.mockImplementation(() => after(14_000, healthy));
+  probes.wait.mockImplementation(() =>
+    after(INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS - 6_500, healthy),
+  );
   probes.http.mockImplementation(() => after(4_000, { healthz: 200, readyz: 200 }));
   probes.inspect.mockImplementation(() => after(4_000, healthy));
   let completed = false;

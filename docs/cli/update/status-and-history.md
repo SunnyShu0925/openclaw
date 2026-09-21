@@ -283,7 +283,7 @@ allows a matching `abandoned` outcome to be corrected, with the reconciliation
 recorded in history. Live or unobservable drivers, retained recovery work, and
 recorded repair, failure, or rollback evidence remain protected.
 
-Interrupted completion checks share one 20.5-second deadline across setup,
+Interrupted completion checks share one 50.5-second deadline across setup,
 service and port inspection, health settlement, and final identity checks. The
 report and warning log record settlement, timeout with elapsed time and phase,
 or an unverified observation. A timeout is a warning and leaves the run eligible
