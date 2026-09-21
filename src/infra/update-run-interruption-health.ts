@@ -1,5 +1,6 @@
 import {
   GatewayRestartDeadlineError,
+  type GatewayRestartCleanup,
   type GatewayRestartDeadline,
 } from "../cli/daemon-cli/restart-health-deadline.js";
 import {
@@ -15,6 +16,7 @@ import {
 import type { GatewayRestartWaitOutcome } from "../cli/daemon-cli/restart-health.types.js";
 import { resolveGatewayPort } from "../config/paths.js";
 import { resolveGatewayService } from "../daemon/service.js";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
 import { readPackageVersion } from "./package-json.js";
 import { readBuiltGatewayBuildId } from "./update-git-runtime.js";
@@ -22,11 +24,13 @@ import type { InstalledUpdateCandidate } from "./update-run-interruption.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 
 export type InterruptedUpdateGatewayObservation = {
-  outcome: "settled" | "timed-out" | "unverified" | "skipped-unmanaged";
+  outcome: "settled" | "timed-out" | "unverified" | "skipped-unmanaged" | "cleanup-unknown";
   elapsedMs: number;
   phase: string;
   waitOutcome?: GatewayRestartWaitOutcome;
   verification?: UpdateRunRecord["verification"];
+  cleanup?: GatewayRestartCleanup;
+  timeout?: { elapsedMs: number; phase: string };
 };
 
 /** Read-only settlement shares one deadline, including setup and final identity checks. */
@@ -138,6 +142,9 @@ export async function observeInterruptedUpdateGateway(
       },
     };
   } catch (error) {
+    if (hasCommandProcessCleanupError(error)) {
+      throw error;
+    }
     input.signal?.throwIfAborted();
     return result(error instanceof GatewayRestartDeadlineError ? "timed-out" : "unverified");
   }

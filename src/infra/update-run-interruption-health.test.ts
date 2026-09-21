@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createGatewayRestartDeadline } from "../cli/daemon-cli/restart-health-deadline.js";
 import { INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS } from "../cli/daemon-cli/restart-health.constants.js";
 import type { GatewayRestartSnapshot } from "../cli/daemon-cli/restart-health.types.js";
+import { CommandProcessCleanupError } from "../process/exec-result.js";
 import { createDeferredCore } from "../shared/deferred.js";
 
 const probes = vi.hoisted(() => ({
@@ -175,3 +176,9 @@ it.each(["http", "generation", "installed"])(
     expect(result.verification).toBeUndefined();
   },
 );
+
+it("preserves command cleanup uncertainty for the reconciliation owner", async () => {
+  const failure = new CommandProcessCleanupError();
+  probes.wait.mockRejectedValue(failure);
+  await expect(observe()).rejects.toBe(failure);
+});

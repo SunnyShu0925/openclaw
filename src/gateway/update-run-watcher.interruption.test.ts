@@ -3,6 +3,11 @@ import { note } from "../../packages/terminal-core/src/note.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS } from "../cli/daemon-cli/restart-health.constants.js";
 import { noteStaleUpdateRuns } from "../commands/doctor-update-run.js";
+import {
+  persistInterruptedUpdateObservation,
+  readInterruptedUpdateCandidate,
+  type InterruptedUpdateSettlement,
+} from "../infra/update-run-interruption-store.js";
 import { reconcileInterruptedUpdateRuns } from "../infra/update-run-interruption.js";
 import {
   createUpdateRun,
@@ -14,11 +19,14 @@ import {
   recordUpdateRunStep,
 } from "../infra/update-run-ledger.js";
 import { renderUpdateRunReport } from "../infra/update-run-report.js";
+import { CommandProcessCleanupError } from "../process/exec-result.js";
+import { retainCommandProcessCleanup } from "../process/exec-spawn.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { startUpdateRunWatcher } from "./update-run-watcher.js";
 
 const observation = vi.hoisted(() => ({
@@ -31,6 +39,40 @@ const observation = vi.hoisted(() => ({
   inspect: vi.fn(),
   settle: vi.fn(),
 }));
+// Keep the real ledger kernels; worker transport has separate boundary coverage.
+vi.mock("../infra/update-run-interruption-worker.js", async () => {
+  const { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } =
+    await import("../state/openclaw-state-db-readonly.js");
+  return {
+    readInterruptedUpdateCandidateAsync: async (
+      options: import("../infra/update-run-codec.js").UpdateRunLedgerOptions,
+    ) =>
+      withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+        ({ db }) => readInterruptedUpdateCandidate(db),
+        options,
+      ),
+    persistInterruptedUpdateObservationAsync: async (
+      context: OpenClawStateWorkerContext,
+      input: InterruptedUpdateSettlement,
+      signal?: AbortSignal,
+    ) => {
+      signal?.throwIfAborted();
+      return persistInterruptedUpdateObservation(
+        input,
+        { path: context.admission.databasePath },
+        () => signal?.throwIfAborted(),
+      );
+    },
+  };
+});
+vi.mock("../infra/update-run-reader.js", async (original) => {
+  const actual = await original<typeof import("../infra/update-run-reader.js")>();
+  return {
+    ...actual,
+    listUpdateRunsAsync: async (...args: Parameters<typeof actual.listUpdateRuns>) =>
+      actual.listUpdateRuns(...args),
+  };
+});
 vi.mock("../infra/update-run-driver.js", async (original) => ({
   ...(await original<typeof import("../infra/update-run-driver.js")>()),
   inspectUpdateRunDriver: (driver: { pid: number }) =>
@@ -58,6 +100,9 @@ vi.mock("../cli/daemon-cli/restart-health.js", () => ({
 }));
 vi.mock("./update-run-notice.runtime.js", () => ({ notifyUpdateRunPhase: vi.fn() }));
 vi.mock("../../packages/terminal-core/src/note.js", () => ({ note: vi.fn() }));
+
+// Share cold health-module preparation across cases instead of charging the first watcher wait.
+await import("../infra/update-run-interruption-health.js");
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 let watcher: ReturnType<typeof startUpdateRunWatcher> | undefined;
@@ -307,6 +352,12 @@ it.each(["unverified", "timed-out"])(
   "retries a recorded %s probe when the gateway recovers",
   async (outcome) => {
     const runId = interruptedRun();
+    const cleanupConfirmed = createDeferredCore();
+    vi.mocked(console.warn).mockImplementation((message) => {
+      if (String(message).includes("timed-out") && String(message).includes("will retry")) {
+        cleanupConfirmed.resolve();
+      }
+    });
     observation.settle.mockImplementationOnce(async () => {
       if (outcome === "timed-out") {
         vi.advanceTimersByTime(INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS);
@@ -314,6 +365,9 @@ it.each(["unverified", "timed-out"])(
       return { ...health(), healthy: false, waitOutcome: "timeout" };
     });
     expect(await reconcileInterruptedUpdateRuns()).toEqual([]);
+    if (outcome === "timed-out") {
+      await cleanupConfirmed.promise;
+    }
     const pending = getUpdateRun(runId)!;
     const diagnostic = pending.steps.find((step) => step.step === "reconcile:settle");
     expect(diagnostic).toMatchObject({
@@ -379,5 +433,86 @@ it.each(["absent", "skipped"])(
     expect(observation.settle).not.toHaveBeenCalled();
     expect(observation.http).not.toHaveBeenCalled();
     expect(observation.inspect).not.toHaveBeenCalled();
+  },
+);
+
+it("records cleanup uncertainty instead of settling an interrupted update", async () => {
+  const runId = interruptedRun();
+  observation.settle.mockRejectedValue(new CommandProcessCleanupError());
+  expect(await reconcileInterruptedUpdateRuns()).toEqual([]);
+  const run = getUpdateRun(runId)!;
+  expect(run.status).toBe("running");
+  expect(run.steps.find((step) => step.step === "reconcile:settle")).toMatchObject({
+    status: "failed",
+    detail: expect.stringContaining("cleanup-unknown"),
+  });
+  expect(renderUpdateRunReport(run).markdown).toContain("Command cleanup failed");
+  expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("cleanup outcome unknown"));
+  observation.settle.mockResolvedValue(health());
+  expect(await reconcileInterruptedUpdateRuns()).toEqual([]);
+  expect(observation.settle).toHaveBeenCalledTimes(1);
+  expect(getUpdateRun(runId)?.status).toBe("running");
+});
+
+it.each(["uncertain", "forced"] as const)(
+  "retains a deadline timeout and the later %s cleanup outcome",
+  async (outcome) => {
+    const runId = interruptedRun();
+    const started = createDeferredCore();
+    const cleanup = createDeferredCore<"uncertain" | "forced">();
+    observation.settle.mockImplementationOnce(async () => {
+      retainCommandProcessCleanup(cleanup.promise);
+      started.resolve();
+      return health();
+    });
+    let completed = false;
+    const pending = reconcileInterruptedUpdateRuns().then((value) => {
+      completed = true;
+      return value;
+    });
+    await started.promise;
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed).toBe(false);
+      await vi.advanceTimersByTimeAsync(INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS);
+      expect(completed).toBe(true);
+      expect(await pending).toEqual([]);
+      const timedOut = getUpdateRun(runId)!;
+      const diagnostic = timedOut.steps.find((step) => step.step === "reconcile:settle")!;
+      expect(diagnostic).toMatchObject({ status: "failed" });
+      expect(diagnostic.detail).toContain("Command cleanup is still pending");
+      expect(diagnostic.detail).toContain(
+        `timed-out after ${INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS} ms`,
+      );
+      expect(await reconcileInterruptedUpdateRuns()).toEqual([]);
+      expect(observation.settle).toHaveBeenCalledTimes(1);
+      cleanup.resolve(outcome);
+      await vi.advanceTimersByTimeAsync(0);
+      const recorded = getUpdateRun(runId)!;
+      const terminal = recorded.steps.find((step) => step.step === "reconcile:settle")!;
+      expect(recorded.updatedAtMs).toBe(timedOut.updatedAtMs);
+      expect(terminal.endedAtMs).toBe(diagnostic.endedAtMs);
+      expect(terminal.detail).toContain(
+        `timed-out after ${INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS} ms`,
+      );
+      if (outcome === "uncertain") {
+        expect(terminal.status).toBe("failed");
+        expect(terminal.detail).toContain("cleanup-unknown");
+        expect(renderUpdateRunReport(recorded).markdown).toContain("Command cleanup failed");
+        expect(console.warn).toHaveBeenCalledWith(
+          expect.stringContaining("Command cleanup failed"),
+        );
+        expect(await reconcileInterruptedUpdateRuns()).toEqual([]);
+        expect(getUpdateRun(runId)?.status).toBe("running");
+      } else {
+        expect(terminal.status).toBe("completed");
+        expect(terminal.detail).not.toContain("cleanup outcome unknown");
+        expect(await reconcileInterruptedUpdateRuns()).toHaveLength(1);
+        expect(getUpdateRun(runId)?.status).toBe("succeeded");
+      }
+    } finally {
+      cleanup.resolve("forced");
+      await pending;
+    }
   },
 );

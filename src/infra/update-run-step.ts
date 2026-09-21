@@ -115,8 +115,8 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
 
 export function updateRunWarningMessages(steps: readonly UpdateRunStep[]): string[] {
   return steps.flatMap((step) =>
-    step.status === "completed" &&
-    (step.step.startsWith("warning:") || step.step === "reconcile:settle") &&
+    (step.step === "reconcile:settle" ||
+      (step.status === "completed" && step.step.startsWith("warning:"))) &&
     step.detail
       ? [step.detail]
       : [],
