@@ -10,6 +10,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { sendTextMediaPayload } from "openclaw/plugin-sdk/reply-payload";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { createRequireRecord, importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,7 @@ import { markdownToTelegramHtml, telegramHtmlToPlainTextFallback } from "./forma
 import { hasProviderObservedTelegramThreadBinding } from "./message-cache-codec.js";
 import { resolveTelegramMessageCacheScope } from "./message-cache-persistence.js";
 import { createTelegramMessageCache } from "./message-cache.js";
+import { telegramOutbound } from "./outbound-adapter.js";
 import {
   beginTelegramPollRegistration,
   getPreparedTelegramPollAnswer,
@@ -2014,6 +2016,41 @@ describe("sendMessageTelegram", () => {
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.every((chunk) => chunk.length <= 4000)).toBe(true);
     expect(chunks.join("")).toContain("A");
+  });
+
+  it("preserves indented code through the shared payload path in newline mode", async () => {
+    botApi.sendMessage.mockResolvedValue({ message_id: 53, chat: { id: "123" } });
+    const first = "A".repeat(128);
+    const second = "B".repeat(128);
+    await sendTextMediaPayload({
+      channel: "telegram",
+      ctx: {
+        cfg: {
+          channels: {
+            telegram: {
+              botToken: "123456:paragraph-regression",
+              richMessages: false,
+              textChunkLimit: 512,
+              streaming: { chunkMode: "length" },
+            },
+          },
+        },
+        to: "123",
+        text: "",
+        payload: { text: `    ${first}\n\n    ${second}` },
+        formatting: { textLimit: 256, chunkMode: "newline" },
+        deps: { sendTelegram: sendMessageTelegram },
+      },
+      adapter: telegramOutbound,
+    });
+
+    const chunks = sendMessageTexts(botApi.sendMessage);
+    const code = chunks.map((html) => {
+      expect(html.length).toBeLessThanOrEqual(256);
+      expect(html).toMatch(/^<pre><code>[\s\S]+<\/code><\/pre>$/u);
+      return html.slice("<pre><code>".length, -"</code></pre>".length);
+    });
+    expect(code.join("")).toBe(`${first}\n\n${second}\n`);
   });
 
   it("chunks long markdown paragraphs on the text path", async () => {
