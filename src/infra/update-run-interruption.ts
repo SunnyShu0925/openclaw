@@ -1,5 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import {
+  createGatewayRestartDeadline,
+  GatewayRestartDeadlineError,
+} from "../cli/daemon-cli/restart-health-deadline.js";
+import { INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS } from "../cli/daemon-cli/restart-health.constants.js";
 import { runExistingOpenClawStateWriteTransaction } from "../state/openclaw-state-db-existing-write.js";
 import { withExistingOpenClawStateDatabaseArtifactPreservingReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -9,6 +14,7 @@ import {
 } from "./update-run-activity.js";
 import type { UpdateRunLedgerOptions } from "./update-run-codec.js";
 import { inspectUpdateRunDriver } from "./update-run-driver.js";
+import type { InterruptedUpdateGatewayObservation } from "./update-run-interruption-health.js";
 import {
   readActiveUpdateRun,
   readLatestUpdateRun,
@@ -107,7 +113,6 @@ function canSettleInterruptedUpdate(run: UpdateRunRecord): boolean {
     run.steps.some(
       (step) => step.step === "post-update verification" && step.status === "completed",
     ) &&
-    run.steps.some((step) => step.step === "restarting" && step.status === "completed") &&
     !run.steps.some(
       (step) =>
         step.step === "driver:identity-unavailable" ||
@@ -141,60 +146,48 @@ export async function reconcileInterruptedUpdateRuns(
   if (!expected || !candidate || !canSettleInterruptedUpdate(expected)) {
     return [];
   }
-  const { observeInterruptedUpdateGateway } = await import("./update-run-interruption-health.js");
-  const observation = await observeInterruptedUpdateGateway(candidate, {
-    ...input,
-    env,
-  });
+  const managed = expected.steps.some(
+    (step) => step.step === "restarting" && step.status === "completed",
+  );
+  let observation: InterruptedUpdateGatewayObservation = {
+    outcome: "skipped-unmanaged",
+    elapsedMs: 0,
+    phase: "ownership",
+  };
+  if (managed) {
+    const deadline = createGatewayRestartDeadline({
+      timeoutMs: INTERRUPTED_UPDATE_SETTLE_TIMEOUT_MS,
+      signal: input.signal,
+    });
+    try {
+      const { observeInterruptedUpdateGateway } = await deadline.read(
+        "setup:health-module",
+        () => import("./update-run-interruption-health.js"),
+      );
+      observation = await observeInterruptedUpdateGateway(candidate, { ...input, env, deadline });
+    } catch (error) {
+      input.signal?.throwIfAborted();
+      observation = {
+        outcome: error instanceof GatewayRestartDeadlineError ? "timed-out" : "unverified",
+        elapsedMs: Math.round(deadline.elapsedMs()),
+        phase: deadline.expiredPhase ?? deadline.phase,
+      };
+    } finally {
+      deadline.dispose();
+    }
+  }
   input.signal?.throwIfAborted();
-  if (!observation) {
-    return [];
-  }
-  const { verification, settleBudgetExceeded } = observation;
-  // When the settle budget expires without a healthy serving match, record the
-  // outcome so it is visible in the run history and warn operators. The run
-  // remains eligible for a future reconciliation attempt — a subsequent update
-  // or service restart may produce a healthy Gateway. Silent expiry is the
-  // failure class this repo treats as the worst.
-  if (!verification && settleBudgetExceeded) {
-    runExistingOpenClawStateWriteTransaction(
-      ({ db }) => {
-        input.signal?.throwIfAborted();
-        const current = readLatestUpdateRun(db);
-        if (
-          !current ||
-          !isDeepStrictEqual(current, expected) ||
-          !canSettleInterruptedUpdate(current)
-        ) {
-          return;
-        }
-        // Record the outcome only on the first expiry; subsequent retries
-        // must not advance updatedAtMs or endedAtMs, because those timestamps
-        // feed the abandonment inactivity window. Renewing them on every
-        // failed probe would keep a dead updater alive indefinitely.
-        if (current.steps.some((step) => step.step === "reconcile:settle-budget-exceeded")) {
-          return;
-        }
-        upsertStep(current, {
-          step: "reconcile:settle-budget-exceeded",
-          status: "completed",
-          endedAtMs: Date.now(),
-          detail: "Settle budget expired without a healthy serving match; will retry.",
-        });
-        persistRun(db, current, options);
-      },
-      options,
-      { schemaSql: updateRunLedgerSchema, operationLabel: "update.run" },
-    );
-    console.warn(
-      "[openclaw] Interrupted update settle probe expired without a healthy gateway; the update remains pending and will be retried.",
-    );
-    return [];
-  }
-  if (!verification) {
-    return [];
-  }
-  return runExistingOpenClawStateWriteTransaction(
+  const { verification } = observation;
+  const detail =
+    `Interrupted update settle probe: ${observation.outcome} after ${observation.elapsedMs} ms during ${observation.phase}.` +
+    (observation.waitOutcome ? ` Health wait: ${observation.waitOutcome}.` : "") +
+    (verification
+      ? " Installed and serving candidate verified."
+      : managed
+        ? " Continuing without verified completion; will retry. Check openclaw update status."
+        : " No completed managed-service restart was recorded; probing skipped.");
+  let accepted = false;
+  const reconciled = runExistingOpenClawStateWriteTransaction(
     ({ db }) => {
       input.signal?.throwIfAborted();
       const current = readLatestUpdateRun(db);
@@ -206,6 +199,21 @@ export async function reconcileInterruptedUpdateRuns(
         (active && active.runId !== current.runId) ||
         hasStoredUpdateRecovery(db, current.runId)
       ) {
+        return [];
+      }
+      accepted = true;
+      // Repeated diagnostics must not renew the abandonment inactivity window.
+      if (!verification && current.steps.some((step) => step.step === "reconcile:settle")) {
+        return [];
+      }
+      upsertStep(current, {
+        step: "reconcile:settle",
+        status: "completed",
+        endedAtMs: Date.now(),
+        detail,
+      });
+      if (!verification) {
+        persistRun(db, current, options);
         return [];
       }
       if (current.status === "failed") {
@@ -231,4 +239,8 @@ export async function reconcileInterruptedUpdateRuns(
     options,
     { schemaSql: updateRunLedgerSchema, operationLabel: "update.run" },
   );
+  if (accepted) {
+    console.warn(`[openclaw] ${detail}`);
+  }
+  return reconciled;
 }

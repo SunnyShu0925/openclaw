@@ -283,6 +283,14 @@ allows a matching `abandoned` outcome to be corrected, with the reconciliation
 recorded in history. Live or unobservable drivers, retained recovery work, and
 recorded repair, failure, or rollback evidence remain protected.
 
+Interrupted completion checks share one 20.5-second deadline across setup,
+service and port inspection, health settlement, and final identity checks. The
+report and warning log record settlement, timeout with elapsed time and phase,
+or an unverified observation. A timeout is a warning and leaves the run eligible
+for later reconciliation; repeated diagnostics do not renew its abandonment timer.
+Runs without a recorded completed managed-service restart skip the probe and
+record that skip. No fresh service-status read can permanently exclude a managed run.
+
 Older interrupted runs may lack the target build identity needed for that check.
 Doctor names the abandoned run and explains why it cannot settle it; a matching
 version number alone is insufficient. Inspect the run's recorded steps and use

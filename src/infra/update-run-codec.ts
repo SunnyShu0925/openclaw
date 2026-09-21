@@ -26,7 +26,7 @@ const RETAINED_STEP_NAMES = [
   "reconcile:abandoned",
   "reconcile:superseded",
   "reconcile:acknowledged",
-  "reconcile:settle-budget-exceeded",
+  "reconcile:settle",
 ];
 export type UpdateRunLedgerOptions = OpenClawStateDatabaseOptions & {
   busyTimeoutMs?: number;
