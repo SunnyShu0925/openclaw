@@ -1,3 +1,4 @@
+import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
 import type { MarkdownIndentedSource } from "../../packages/markdown-core/src/reasoning-tag-parser.js";
 import { formatFencedCodeBlock } from "../shared/markdown-code.js";
 import { findCodeOwnership } from "../shared/text/code-regions.js";
@@ -132,15 +133,22 @@ export function prepareIndentedCode(
       }
       // Keep code whitespace inside a content-bearing fragment, not at the
       // message edge where renderers can treat it as block framing.
+      const start = Math.max(minimum - 1, replacement.bodyStart);
       let at = index;
-      while (
-        at > Math.max(minimum, replacement.bodyStart + 1) &&
-        (/\s/u.test(text.charAt(at)) || /\s/u.test(text.charAt(at - 1)))
-      ) {
+      while (at > start + 1 && (/\s/u.test(text.charAt(at)) || /\s/u.test(text.charAt(at - 1)))) {
         at -= 1;
       }
+      at = avoidTrailingHighSurrogateBreak(text, start, at);
+      if (/\s/u.test(text.charAt(at)) || /\s/u.test(text.charAt(at - 1))) {
+        // No content-bearing cut fits before this whitespace run; keep the capped boundary.
+        at = index;
+      }
       const mapped = sourceIndex(replacement, replacement.valueStart + at - replacement.bodyStart);
-      return replacement.bodyStart + replacement.code.offsets[mapped]! - replacement.valueStart;
+      return avoidTrailingHighSurrogateBreak(
+        text,
+        start,
+        replacement.bodyStart + replacement.code.offsets[mapped]! - replacement.valueStart,
+      );
     },
     contextAt(index: number) {
       const replacement = replacements.find(

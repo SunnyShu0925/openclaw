@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import * as fences from "../../packages/markdown-core/src/fences.js";
 import { markdownToIR } from "../../packages/markdown-core/src/ir.js";
+import { runNodeScript } from "../../test/helpers/run-node-script.js";
 import { EmbeddedBlockChunker } from "./embedded-agent-block-chunker.js";
 
 function createFlushOnParagraphChunker(params: { minChars: number; maxChars: number }) {
@@ -210,6 +211,57 @@ describe("EmbeddedBlockChunker", () => {
       expect(sources.join("")).toBe(source);
       expect(chunker.consumedLength).toBe(source.length);
       expectChunksWithinLength(chunks, 60);
+    },
+  );
+
+  it.each([false, true])(
+    "completes Unicode code followed by a long whitespace run (force: %s)",
+    async (force) => {
+      // A synchronous stalled drain needs an external deadline, not Vitest's in-process timer.
+      const result = await runNodeScript(
+        [
+          "--import",
+          new URL("../../scripts/tsx.mjs", import.meta.url).href,
+          "--input-type=module",
+          "--eval",
+          `
+            import assert from "node:assert/strict";
+            import { EmbeddedBlockChunker } from ${JSON.stringify(new URL("./embedded-agent-block-chunker.ts", import.meta.url).href)};
+            import { markdownToIR } from ${JSON.stringify(new URL("../../packages/markdown-core/src/ir.ts", import.meta.url).href)};
+            const body = "A".repeat(52) + "\\u{1f600}" + " ".repeat(60) + "B";
+            const source = "    " + body;
+            const chunker = new EmbeddedBlockChunker({ minChars: 10, maxChars: 60 });
+            const chunks = [];
+            const sources = [];
+            const emit = (text, metadata) => {
+              chunks.push(text);
+              sources.push(metadata.sourceText);
+            };
+            chunker.append(source);
+            console.log("drain-started");
+            chunker.drain({ force: ${force}, emit });
+            chunker.drain({ force: true, emit });
+            assert.equal(chunks.map((chunk) => {
+              assert.ok(chunk.length <= 60 && chunk.isWellFormed());
+              const ir = markdownToIR(chunk);
+              const span = ir.styles.find((entry) => entry.style === "code_block");
+              assert.ok(span, "continuation lost code formatting");
+              assert.equal(span.start, 0);
+              assert.equal(span.end, ir.text.length);
+              return ir.text.slice(span.start, span.end).replace(/\\n$/, "");
+            }).join(""), body);
+            assert.equal(sources.join(""), source);
+            assert.equal(chunker.consumedLength, source.length);
+            assert.equal(chunker.hasBuffered(), false);
+            console.log("drain-completed");
+          `,
+        ],
+        process.env,
+        5_000,
+        { requireProcessTreeExit: true },
+      );
+      expect(result.error, result.stdout + result.stderr).toBeUndefined();
+      expect(result.status, result.stdout + result.stderr).toBe(0);
     },
   );
 
