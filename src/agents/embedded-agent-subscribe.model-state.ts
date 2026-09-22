@@ -171,12 +171,31 @@ export function createEmbeddedModelState(
       }
       publishMessageModel(message, evt.type === "message_start");
       switch (evt.type) {
-        case "turn_end":
-          // Async tool fragments emit message_end before the provider response finishes.
+        case "turn_end": {
+          // Async tool fragments emit message_end before the provider response
+          // finishes, so renewal cannot be decided at message_end — only a
+          // genuinely completed turn establishes success (#150447).
+          const wasSuccessful = successfulModelResponse;
           successfulModelResponse ||=
             (message.stopReason === "stop" || message.stopReason === "toolUse") &&
             !isProviderRefusalAssistantError(message);
+          // Renew the recovery budget only at the terminal success boundary,
+          // mirroring hasSuccessfulModelResponse: an intermediate toolUse
+          // fragment must not reset the overflow budget before the provider
+          // response resolves. A later terminal error leaves a fragment's
+          // early renewal in place, which would let repeated partial-response
+          // failures bypass the three-attempt cap.
+          if (successfulModelResponse && !wasSuccessful) {
+            params.onContextAccountingEvent?.({
+              kind: "model",
+              contextTokens: deriveSessionTotalTokens({
+                lastCallUsage: normalizeUsage(message.usage),
+              }),
+              successful: true,
+            });
+          }
           return;
+        }
         case "message_start":
           pending = undefined;
           return;
@@ -203,11 +222,16 @@ export function createEmbeddedModelState(
           completed = applyAssistantDeliveryDirectives(structuredClone(message));
           lastUsage ??= message.stopReason === "error" ? retryUsage : undefined;
           retryUsage = undefined;
+          // message_end also fires for intermediate async-tool fragments
+          // (stopReason "toolUse", zero usage) emitted before the provider's
+          // terminal response. Renewal is deferred to turn_end so a fragment
+          // cannot reset the budget ahead of a later terminal error (#150447).
           params.onContextAccountingEvent?.({
             kind: "model",
             contextTokens: deriveSessionTotalTokens({
               lastCallUsage: normalizeUsage(message.usage),
             }),
+            successful: false,
           });
       }
     },

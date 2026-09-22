@@ -270,6 +270,73 @@ describe("subscribeEmbeddedAgentSession model state", () => {
   );
 
   it.each([
+    {
+      label: "async fragment then terminal overflow error",
+      call: {
+        asyncTool: true,
+        stopReason: "error" as const,
+        usage: makeUsage({ input: 7, output: 5 }),
+      },
+    },
+  ])(
+    "does not renew the recovery budget from an async tool fragment before the terminal response ($label)",
+    async ({ call }) => {
+      const onContextAccountingEvent = vi.fn();
+      const harness = createSubscribedSessionHarness({
+        runId: "async-fragment-no-renew",
+        lifecycleGeneration: agentEvents.getAgentEventLifecycleGeneration(),
+        onContextAccountingEvent,
+      });
+      const { subscription } = harness;
+      const messageEndStopReasons: string[] = [];
+      try {
+        await runUsageCalls(harness, [call], (event) => {
+          // Every model accounting event emitted while the provider response is
+          // still resolving must be non-renewing: the async tool fragment fires
+          // message_end (toolUse) before the terminal result, and renewal must
+          // wait for the turn_end success boundary (#150447).
+          if (event.type === "message_end" && event.message.role === "assistant") {
+            messageEndStopReasons.push(event.message.stopReason);
+            expect(subscription.hasSuccessfulModelResponse()).toBe(false);
+          }
+        });
+        // The fragment (toolUse) precedes the terminal stop reason.
+        expect(messageEndStopReasons).toEqual(["toolUse", call.stopReason]);
+        const modelEvents = onContextAccountingEvent.mock.calls
+          .map(([event]) => event)
+          .filter((event) => event.kind === "model");
+        // Budget renewal never fires ahead of a completed model response.
+        expect(modelEvents.every((event) => !event.successful)).toBe(true);
+      } finally {
+        subscription.unsubscribe();
+      }
+    },
+  );
+
+  it("renews the recovery budget at turn_end after a completed model call without async fragments", async () => {
+    const onContextAccountingEvent = vi.fn();
+    const harness = createSubscribedSessionHarness({
+      runId: "completed-renew",
+      lifecycleGeneration: agentEvents.getAgentEventLifecycleGeneration(),
+      onContextAccountingEvent,
+    });
+    const { subscription } = harness;
+    try {
+      await runUsageCalls(harness, [
+        { usage: makeUsage({ input: 30, output: 10 }), stopReason: "stop" },
+      ]);
+      expect(subscription.hasSuccessfulModelResponse()).toBe(true);
+      const renewals = onContextAccountingEvent.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.kind === "model" && event.successful);
+      // Exactly one renewal at the terminal success boundary, not at message_end.
+      expect(renewals).toHaveLength(1);
+    } finally {
+      subscription.unsubscribe();
+    }
+  });
+
+  it.each([
     { blockReplyBreak: "text_end", retry: false },
     { blockReplyBreak: "text_end", retry: true },
     { blockReplyBreak: "message_end", retry: false },
@@ -466,7 +533,8 @@ describe("subscribeEmbeddedAgentSession model state", () => {
         expect(subscription.getLastAssistantUsage()).toMatchObject(expected);
         expect(subscription.getCurrentAttemptAssistant()).toEqual(completed);
         expect(subscription.hasSuccessfulModelResponse()).toBe(completed?.stopReason === "stop");
-        expect(onContextAccountingEvent.mock.calls).toEqual([[{ kind: "model", contextTokens }]]);
+        const acct = onContextAccountingEvent.mock.calls[0]?.[0];
+        expect(acct).toMatchObject({ kind: "model", contextTokens });
         expect(
           onAgentEvent.mock.calls
             .map(([event]) => event)
@@ -665,9 +733,13 @@ describe("subscribeEmbeddedAgentSession model state", () => {
             }
           },
         );
-        expect(onContextAccountingEvent.mock.calls).toEqual([
-          [{ kind: "model", contextTokens: undefined }],
-        ]);
+        const modelEvents2 = onContextAccountingEvent.mock.calls
+          .map(([event]) => event)
+          .filter((event) => event.kind === "model");
+        // message_end emits a non-renewing snapshot first; renewal follows at
+        // turn_end once the response is genuinely complete (#150447).
+        const acct2 = modelEvents2.at(-1);
+        expect(acct2).toMatchObject({ kind: "model", contextTokens: undefined, successful: true });
         const usageEvents = onAgentEvent.mock.calls
           .map(([event]) => event)
           .filter((event) => event.stream === "usage");

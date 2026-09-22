@@ -354,7 +354,9 @@ describe("embedded run retry dispatch", () => {
     try {
       await expect(prepareAndDispatchEmbeddedRunAttempt(input)).rejects.toBe(afterTurnError);
       expect(onContextAccountingEvent.mock.calls).toEqual([
-        [{ kind: "model", contextTokens: undefined }],
+        // message_end emits a non-renewing snapshot; this sequence does not
+        // emit turn_end, so no terminal-success renewal fires (#150447).
+        [{ kind: "model", contextTokens: undefined, successful: false }],
         [{ kind: "compaction", tokensAfter: 40 }],
       ]);
     } finally {

@@ -26,6 +26,14 @@ export function createEmbeddedRunContextRecoveryState() {
       if (event.kind === "compaction") {
         state.autoCompactionCount += 1;
         state.lastCompactionTokensAfter = tokens;
+      } else if (event.successful) {
+        // A genuinely completed model call means the context was accepted again,
+        // so the prior overflow episode is over: renew the recovery budget so a
+        // later overflow in the same long turn gets its own attempts. Failed
+        // model calls (stopReason "error") did not accept the context and must
+        // not renew it, or failed recovery would borrow unlimited retries.
+        state.overflowCompactionAttempts = 0;
+        state.toolResultTruncationAttempted = false;
       }
     },
     retainTimeoutRecoveryMarker(marker: EmbeddedRunTimeoutRecoveryMarker) {

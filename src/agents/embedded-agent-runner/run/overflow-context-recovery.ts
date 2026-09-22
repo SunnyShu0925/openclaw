@@ -336,6 +336,21 @@ export async function recoverEmbeddedRunOverflow(
     }
 
     if (compactResult.compacted) {
+      // A compaction that did not reduce the token count removed nothing useful;
+      // log it honestly instead of claiming "auto-compaction succeeded" (#150447).
+      // `tokensAfter >= tokensBefore` (both finite) covers both the equal-count case
+      // and the case where an engine's summary is larger than what it replaced. The
+      // compaction itself stays committed (the engine may have rotated the transcript),
+      // so the success callback still fires and the retry still proceeds — only the
+      // diagnostic differs, keeping this path consistent with the fallback candidate.
+      const tokensBefore = compactResult.result?.tokensBefore;
+      const tokensAfter = compactResult.result?.tokensAfter;
+      const noopCompaction =
+        typeof tokensBefore === "number" &&
+        Number.isFinite(tokensBefore) &&
+        typeof tokensAfter === "number" &&
+        Number.isFinite(tokensAfter) &&
+        tokensAfter >= tokensBefore;
       if (preflightRecovery?.route === "compact_then_truncate") {
         const truncResult = await truncateToolResults();
         if (truncResult.truncated) {
@@ -349,6 +364,11 @@ export async function recoverEmbeddedRunOverflow(
         }
       }
       input.assertRecoveryActive();
+      // The success callback fires unconditionally: a no-op compaction is still a
+      // committed compaction event (the engine may have rotated the transcript), and
+      // withholding it here would diverge from the fallback candidate, which sets
+      // postCompactionModelAttempted from the meta compaction count regardless. Only
+      // the diagnostic log distinguishes a no-op from a real reduction (#150447).
       input.runParams.onAutoCompactionSucceeded?.(input.state.autoCompactionCount);
       input.assertRecoveryActive();
       input.armPostCompactionGuard();
@@ -358,7 +378,9 @@ export async function recoverEmbeddedRunOverflow(
         );
       } else {
         log.info(
-          `auto-compaction succeeded for ${input.modelSelection.provider}/${input.modelSelection.model}; retrying prompt`,
+          noopCompaction
+            ? `auto-compaction removed nothing for ${input.modelSelection.provider}/${input.modelSelection.model} (tokensAfter >= tokensBefore); retrying prompt`
+            : `auto-compaction succeeded for ${input.modelSelection.provider}/${input.modelSelection.model}; retrying prompt`,
         );
         input.markOwnedTranscriptRetry();
         if (requiresTranscriptContinuation) {

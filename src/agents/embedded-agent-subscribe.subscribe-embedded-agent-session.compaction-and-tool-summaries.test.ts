@@ -56,8 +56,11 @@ describe("synchronous context accounting", () => {
         completedCompactionEnd(false, 18_000, 8_000),
       ],
       expected: [
-        { kind: "model", contextTokens: 90_000 },
-        { kind: "model", contextTokens: 18_000 },
+        // message_end emits a non-renewing context snapshot; renewal fires at
+        // turn_end (covered in model-state.test.ts). This suite emits only
+        // message_end, so every model event is successful: false (#150447).
+        { kind: "model", contextTokens: 90_000, successful: false },
+        { kind: "model", contextTokens: 18_000, successful: false },
       ],
     },
     {
@@ -74,7 +77,7 @@ describe("synchronous context accounting", () => {
           },
         }),
       ],
-      expected: [{ kind: "model", contextTokens: undefined }],
+      expected: [{ kind: "model", contextTokens: undefined, successful: false }],
     },
     {
       name: "failed zero-usage retry without old assistant backfill",
@@ -84,9 +87,26 @@ describe("synchronous context accounting", () => {
         accountingAssistant(0, "error"),
       ],
       expected: [
-        { kind: "model", contextTokens: 90_000 },
-        { kind: "model", contextTokens: undefined },
+        { kind: "model", contextTokens: 90_000, successful: false },
+        { kind: "model", contextTokens: undefined, successful: false },
       ],
+    },
+    {
+      name: "length-stop model call does not renew the recovery budget",
+      events: [accountingAssistant(90_000, "length")],
+      expected: [{ kind: "model", contextTokens: 90_000, successful: false }],
+    },
+    {
+      // A tool_use stop is the issue's core renewal scenario: a long single-turn tool
+      // loop where every retried provider call succeeded. Renewal now fires at
+      // turn_end (the terminal success boundary), not message_end — an async tool
+      // fragment emits message_end before the provider's terminal response, so
+      // renewing there could reset the budget ahead of a later terminal error
+      // (#150447). The turn_end renewal contract is pinned in model-state.test.ts;
+      // here we only assert the message_end snapshot is non-renewing.
+      name: "tool_use stop emits a non-renewing snapshot at message_end",
+      events: [accountingAssistant(90_000, "toolUse")],
+      expected: [{ kind: "model", contextTokens: 90_000, successful: false }],
     },
   ])("records $name in producer order", ({ events, expected }) => {
     const observed: EmbeddedContextAccountingEvent[] = [];
@@ -143,8 +163,11 @@ describe("synchronous context accounting", () => {
       },
     });
     const expected: EmbeddedContextAccountingEvent[] = [
-      { kind: "model", contextTokens: 90_000 },
-      { kind: "model", contextTokens: 20_000 },
+      // message_end emits non-renewing snapshots; renewal fires at turn_end
+      // (covered in model-state.test.ts). This suite emits only message_end
+      // (#150447).
+      { kind: "model", contextTokens: 90_000, successful: false },
+      { kind: "model", contextTokens: 20_000, successful: false },
     ];
     try {
       const before = accountingAssistant(90_000);
