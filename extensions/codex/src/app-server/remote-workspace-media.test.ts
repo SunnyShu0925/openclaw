@@ -225,6 +225,71 @@ describe("readBoundedCodexRemoteWorkspaceFile", () => {
     ).rejects.toThrow();
     expect(client.request).not.toHaveBeenCalled();
   });
+
+  it("keeps the remaining transfer budget monotonic across a wall-clock rewind", async () => {
+    // A wall-clock step backward (NTP correction, manual clock change, or
+    // resume from sleep) must not extend the remaining per-chunk budget. The
+    // deadline is measured on the monotonic clock so a rewind never widens the
+    // transfer timeout beyond the caller's original allowance.
+    vi.useFakeTimers();
+    try {
+      const fileBytes = Buffer.alloc(512 * 1024 + 17, 0x62);
+      const filePath = path.join(localWorkspaceRoot, "rewind.bin");
+      const timeouts: Array<number | null | undefined> = [];
+      let releaseFirstChunk: (() => void) | undefined;
+      const firstChunkGate = new Promise<void>((resolve) => {
+        releaseFirstChunk = resolve;
+      });
+      const client = {
+        request: vi.fn(async (_method: "command/exec", params: CodexCommandExecParams) => {
+          timeouts.push(params.timeoutMs);
+          const offset = timeouts.length - 1;
+          const from = offset * 512 * 1024;
+          const chunkBytes = Math.min(512 * 1024, fileBytes.byteLength - from);
+          const chunk = fileBytes.subarray(from, from + chunkBytes);
+          if (offset === 0) {
+            await firstChunkGate;
+          }
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              dataBase64: chunk.toString("base64"),
+              size: fileBytes.byteLength,
+              revision: "rewind-revision",
+            }),
+            stderr: "",
+          };
+        }),
+      };
+
+      const startedAtWallClock = Date.now();
+      const transfer = readBoundedCodexRemoteWorkspaceFile({
+        client,
+        path: filePath,
+        maxBytes: fileBytes.byteLength,
+        timeoutMs: 9_000,
+      });
+      // The first chunk request has recorded its budget and is now parked on
+      // the gate. Advance the monotonic clock and rewind the wall clock before
+      // releasing it, so the second chunk observes both effects.
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersByTime(100);
+      vi.setSystemTime(startedAtWallClock - 5_000);
+      releaseFirstChunk?.();
+      await vi.advanceTimersByTimeAsync(0);
+      await transfer;
+
+      expect(client.request).toHaveBeenCalledTimes(2);
+      const firstTimeout = timeouts[0];
+      const secondTimeout = timeouts[1];
+      expect(firstTimeout).toBeGreaterThan(0);
+      expect(secondTimeout).toBeGreaterThan(0);
+      // After the rewind the monotonic budget must still shrink, never grow.
+      expect(secondTimeout).toBeLessThan(firstTimeout ?? 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("prepareCodexRemoteWorkspaceMessageMedia", () => {
