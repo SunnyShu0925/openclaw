@@ -164,11 +164,7 @@ describe("restart health", () => {
     );
   });
 
-  it("does not exceed the start deadline when a listener never responds", async () => {
-    // Deterministic regression: a controlled monotonic clock and a simulated
-    // transport that never resolves readiness must let the deadline stop further
-    // attempts. The shared monotonic mock advances only when the probe consumes
-    // time, so the deadline is the sole bound — not the attempt cap.
+  it("stops readiness attempts when the deadline expires", async () => {
     requestReadinessProbe.mockImplementation(async () => {
       monotonicClock.nowMs += 20;
       return null;
@@ -184,20 +180,11 @@ describe("restart health", () => {
         port: 18789,
       }),
     ).resolves.toEqual({ healthz: null, readyz: null });
-    // The deadline must have expired on the monotonic clock.
     expect(monotonicClock.nowMs).toBeGreaterThanOrEqual(deadlineBudgetMs);
-    // And it must have stopped attempts well before the attempt cap (each
-    // attempt issues two readiness requests). This fails if the deadline check
-    // is removed: the loop runs to the attempt cap instead of stopping.
     expect(requestReadinessProbe.mock.calls.length).toBeLessThan(20);
   });
 
   it("keeps the readiness deadline monotonic when the wall clock rewinds", async () => {
-    // Deterministic regression: a wall-clock rewind (NTP correction or
-    // suspend/resume) must not extend the monotonic readiness budget. The
-    // shared monotonic mock advances only when the probe consumes time, so the
-    // deadline is the sole bound. A Date.now()-based remaining calculation would
-    // see ~300s of budget after the rewind and run to the attempt cap.
     requestReadinessProbe.mockImplementation(async () => {
       monotonicClock.nowMs += 20;
       return null;
@@ -216,12 +203,8 @@ describe("restart health", () => {
       }),
     ).resolves.toEqual({ healthz: null, readyz: null });
     wallClockSpy.mockRestore();
-    // The monotonic budget must hold near its configured deadline, not the
-    // rewound wall-clock budget. This fails on the pre-fix Date.now() remaining
-    // calculation: the rewind grants ~300s and the probe runs to the attempt cap.
     expect(monotonicClock.nowMs).toBeLessThan(wallClockRewindMs);
     expect(monotonicClock.nowMs).toBeGreaterThanOrEqual(deadlineBudgetMs);
-    // The deadline must have stopped attempts well before the attempt cap.
     expect(requestReadinessProbe.mock.calls.length).toBeLessThan(200);
   });
 
