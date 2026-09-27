@@ -208,6 +208,40 @@ describe("restart health", () => {
     expect(requestReadinessProbe.mock.calls.length).toBeLessThan(200);
   });
 
+  it("keeps the installed-service readiness deadline monotonic when the wall clock rewinds", async () => {
+    // Mirrors the Windows installed-service caller in
+    // src/daemon/schtasks.installed.integration.test-support.ts: it captures
+    // `started = performance.now()` before recording progress, then seeds
+    // `deadlineAt = started + deadlineMs`. A wall-clock rewind must not stretch
+    // that budget, or a stalled Gateway keeps the readiness check probing past
+    // its startup allowance.
+    requestReadinessProbe.mockImplementation(async () => {
+      monotonicClock.nowMs += 20;
+      return null;
+    });
+    const wallClockRewindMs = 300_000;
+    const wallClockSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() - wallClockRewindMs);
+    const deadlineMs = 50;
+    const started = performance.now();
+    // Simulate the recordProgress call advancing the monotonic clock slightly
+    // before waitForGatewayHttpReadiness runs, as the installed caller does.
+    monotonicClock.nowMs += 5;
+    const deadlineAt = started + deadlineMs;
+    const { waitForGatewayHttpReadiness } = await import("./restart-health-probe.js");
+    await expect(
+      waitForGatewayHttpReadiness({
+        attempts: 100,
+        deadlineAt,
+        delayMs: 0,
+        port: 18789,
+      }),
+    ).resolves.toEqual({ healthz: null, readyz: null });
+    wallClockSpy.mockRestore();
+    expect(monotonicClock.nowMs).toBeLessThan(wallClockRewindMs);
+    expect(monotonicClock.nowMs).toBeGreaterThanOrEqual(deadlineMs + 5);
+    expect(requestReadinessProbe.mock.calls.length).toBeLessThan(200);
+  });
+
   it.each(["timeout", "read ECONNRESET", "auth required"])(
     "preserves the real matching-version detail probe failure: %s",
     async (failure) => {
