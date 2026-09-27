@@ -657,6 +657,7 @@ describe("catalog delivery uses current canonical privacy", () => {
         const broadcast = vi.fn<(_event: string, payload: SessionsCatalogHostEvent) => void>(() =>
           delivered.resolve(),
         );
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const pending = call(
           "sessions.catalog.list",
           { progressId: "replacement" },
@@ -692,7 +693,11 @@ describe("catalog delivery uses current canonical privacy", () => {
             .toEqual(["owned"]);
         } finally {
           release.resolve();
-          await Promise.allSettled([pending, publication]);
+          try {
+            await Promise.allSettled([pending, publication]);
+          } finally {
+            vi.useRealTimers();
+          }
         }
       }),
   );
