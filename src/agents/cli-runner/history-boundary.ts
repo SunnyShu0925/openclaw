@@ -16,6 +16,7 @@ import {
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { assertOwnedTranscriptWriteCommit } from "../../config/sessions/transcript-write-context.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
+import { hasLiveAgentRunContext } from "../../infra/agent-run-registry.js";
 import { bindAgentRunTerminalWriteContext } from "../../infra/agent-run-terminal-writes.js";
 import { sha256Hex } from "../../infra/crypto-digest.js";
 import {
@@ -144,7 +145,9 @@ export async function prepareCliHistoryBoundary(
         current.sessionId !== target.sessionId ||
         current.lifecycleRevision !== snapshot.lifecycleRevision ||
         current.activeWriterRunId !== snapshot.activeWriterRunId ||
-        (current.activeWriterRunId !== undefined && current.activeWriterRunId !== writerRunId) ||
+        (current.activeWriterRunId !== undefined &&
+          current.activeWriterRunId !== writerRunId &&
+          hasLiveAgentRunContext(current.activeWriterRunId)) ||
         (params.expectedLifecycleRevision !== undefined &&
           current.lifecycleRevision !== params.expectedLifecycleRevision)
       ) {

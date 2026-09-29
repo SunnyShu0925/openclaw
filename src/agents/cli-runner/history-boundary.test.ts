@@ -304,4 +304,84 @@ describe("CLI transcript account boundary", () => {
       expect(prompt).not.toContain("A private canary");
     });
   });
+
+  it("tolerates a writer claim held by a run that is no longer live", async () => {
+    const f = await fixture();
+    await f.seed();
+    // A finished orchestrator-path run left a stale writer claim that nothing cleared.
+    const staleRunId = "orchestrator-finished-run";
+    await patchSessionEntryCore(f.target, (entry) => ({
+      ...entry,
+      activeWriterRunId: staleRunId,
+    }));
+    // The direct CLI path must not refuse a dead foreign writer.
+    const runId = "direct-cli-recovery";
+    const admission = prepareSystemAgentRunAdmission({}, runId, "main", "history-test");
+    try {
+      const writer = await prepareCliHistoryBoundary(
+        {
+          admittedRunContext: await admission.admit("embedded"),
+          runId,
+          sessionId: f.target.sessionId,
+          sessionKey: f.target.sessionKey,
+          sessionFile: f.target.sessionKey,
+          sessionTarget: f.target,
+          provider: "test-cli",
+          model: "test-model",
+          prompt: "current ask",
+          workspaceDir: path.dirname(f.target.storePath),
+          timeoutMs: 1000,
+        },
+        { credential: { type: "token", provider: "test-cli", token: "epoch-a" } },
+      );
+      expect(writer).toBeDefined();
+    } finally {
+      admission.close();
+    }
+    // The stale id is left unchanged so the later snapshot-writer fences still hold.
+    const entry = loadSessionEntryReadOnly(f.target);
+    expect(entry?.activeWriterRunId).toBe(staleRunId);
+  });
+
+  it("still refuses a writer claim held by a live foreign run", async () => {
+    const f = await fixture();
+    await f.seed();
+    // A concurrent orchestrator-path run is still live and holds the writer.
+    const liveRunId = "orchestrator-live-run";
+    const liveAdmission = prepareSystemAgentRunAdmission({}, liveRunId, "main", "history-test");
+    try {
+      await liveAdmission.admit("embedded");
+      await patchSessionEntryCore(f.target, (entry) => ({
+        ...entry,
+        activeWriterRunId: liveRunId,
+      }));
+      // The direct CLI path must keep refusing a live foreign writer.
+      const runId = "direct-cli-blocked";
+      const admission = prepareSystemAgentRunAdmission({}, runId, "main", "history-test");
+      try {
+        await expect(
+          prepareCliHistoryBoundary(
+            {
+              admittedRunContext: await admission.admit("embedded"),
+              runId,
+              sessionId: f.target.sessionId,
+              sessionKey: f.target.sessionKey,
+              sessionFile: f.target.sessionKey,
+              sessionTarget: f.target,
+              provider: "test-cli",
+              model: "test-model",
+              prompt: "current ask",
+              workspaceDir: path.dirname(f.target.storePath),
+              timeoutMs: 1000,
+            },
+            { credential: { type: "token", provider: "test-cli", token: "epoch-a" } },
+          ),
+        ).rejects.toThrow("CLI history owner changed before preparation");
+      } finally {
+        admission.close();
+      }
+    } finally {
+      liveAdmission.close();
+    }
+  });
 });
