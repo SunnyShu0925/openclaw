@@ -297,11 +297,7 @@ async function inspectCodexComputerUse(
     managedCommandOrder: "desktop-first",
   });
   const operationTimeoutMs = params.timeoutMs ?? resolvedRuntime.requestTimeoutMs;
-  // Monotonic clock: the downstream Codex app-server client (client.ts) measures
-  // its own timeouts with performance.now(). Mixing a wall-clock budget here
-  // would let a wall-clock rewind (NTP correction / sleep resume / manual time
-  // change) inflate the remaining budget, or a forward jump abort a healthy
-  // computer-use probe early. Keep both sides on the same monotonic domain.
+  // Match the client's monotonic clock so wall-clock changes cannot distort the budget.
   const deadline = operationTimeoutMs > 0 ? performance.now() + operationTimeoutMs : undefined;
   const remainingTimeoutMs = () =>
     deadline === undefined ? operationTimeoutMs : Math.max(1, deadline - performance.now());
