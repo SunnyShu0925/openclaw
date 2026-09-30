@@ -76,10 +76,7 @@ export class DiscordAudioWorker {
   }
 
   async connect(): Promise<void> {
-    // Monotonic clock: Date.now() is wall-clock and can jump on NTP sync / DST / manual
-    // time changes, while AbortSignal.timeout consumes a monotonic libuv timer. Mixing the
-    // two lets clock skew enlarge or shrink the remaining budget and misjudge readiness.
-    // Math.floor keeps the budget an integer (performance.now is sub-millisecond).
+    // Readiness and retries share an elapsed budget; native timeout delays require whole milliseconds.
     const deadline = performance.now() + this.options.connectTimeoutMs;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (this.stopped) {
