@@ -1,6 +1,6 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
@@ -13,13 +13,19 @@ import {
   patchSessionEntryCore,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import { projectPublicSessionEntry } from "../../config/sessions/session-entry-projection.js";
-import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
+import {
+  getOwnedSessionTranscriptWriterFence,
+  runWithoutOwnedSessionTranscriptWrites,
+} from "../../config/sessions/transcript-write-context.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { closeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-db.js";
 import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
+import { claimAgentSessionWriter } from "../embedded-agent-runner/run/session-bootstrap.js";
 import { CURRENT_SESSION_VERSION, SessionManager } from "../sessions/session-manager.js";
+import { persistCliAssistantTranscript } from "./cli-run-transcript.js";
 import { prepareCliHistoryBoundary } from "./history-boundary.js";
 import { buildCliSessionHistoryPrompt, loadCliSessionPromptContext } from "./session-history.js";
 import type { PreparedCliRunContext } from "./types.js";
@@ -27,6 +33,7 @@ import type { PreparedCliRunContext } from "./types.js";
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 const databases = new Set<string>();
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const database of databases) {
     closeOpenClawAgentDatabaseByPath(database);
   }
@@ -54,6 +61,33 @@ async function fixture(withHeader = true) {
   }
   const manager = () => SessionManager.open(target, dir);
   let runNumber = 0;
+  const withRun = async <T>(
+    runId: string,
+    action: (params: PreparedCliRunContext["params"]) => Promise<T>,
+    overrides: Partial<PreparedCliRunContext["params"]> = {},
+  ) => {
+    const admission = prepareSystemAgentRunAdmission({}, runId, "main", "history-test");
+    try {
+      return await action({
+        admittedRunContext: await admission.admit("embedded"),
+        runId,
+        agentId: target.agentId,
+        sessionId: target.sessionId,
+        sessionKey: target.sessionKey,
+        sessionFile: target.sessionKey,
+        sessionTarget: target,
+        storePath: target.storePath,
+        provider: "test-cli",
+        model: "test-model",
+        prompt: "current ask",
+        workspaceDir: dir,
+        timeoutMs: 1000,
+        ...overrides,
+      });
+    } finally {
+      admission.close();
+    }
+  };
   const run = async <T>(
     epoch: string | undefined,
     action: (allowed: boolean, params: PreparedCliRunContext["params"]) => Promise<T>,
@@ -62,37 +96,25 @@ async function fixture(withHeader = true) {
   ) => {
     const runId = "boundary-run-" + ++runNumber;
     await patchSessionEntryCore(target, (entry) => ({ ...entry, activeWriterRunId: runId }));
-    const admission = prepareSystemAgentRunAdmission({}, runId, "main", "history-test");
-    try {
-      const params: PreparedCliRunContext["params"] = {
-        admittedRunContext: await admission.admit("embedded"),
-        runId,
-        sessionId: target.sessionId,
-        sessionKey: target.sessionKey,
-        sessionFile: target.sessionKey,
-        sessionTarget: target,
-        provider: "test-cli",
-        model: "test-model",
-        prompt: "current ask",
-        workspaceDir: dir,
-        timeoutMs: 1000,
-        ...overrides,
-      };
-      const writer = await prepareCliHistoryBoundary(params, {
-        credential:
-          credential ?? (epoch ? { type: "token", provider: "test-cli", token: epoch } : undefined),
-      });
-      return await runWithCliHistoryWriter(writer, () => action(Boolean(writer), params));
-    } finally {
-      admission.close();
-    }
+    return await withRun(
+      runId,
+      async (params) => {
+        const writer = await prepareCliHistoryBoundary(params, {
+          credential:
+            credential ??
+            (epoch ? { type: "token", provider: "test-cli", token: epoch } : undefined),
+        });
+        return await runWithCliHistoryWriter(writer, () => action(Boolean(writer), params));
+      },
+      overrides,
+    );
   };
   const seed = async () =>
     await run("epoch-a", async (allowed) => {
       expect(allowed).toBe(true);
       manager().appendMessage({ role: "user", content: "A private canary", timestamp: 1 });
     });
-  return { target, manager, run, seed };
+  return { target, manager, run, seed, withRun };
 }
 
 async function history(allowed: boolean, params: PreparedCliRunContext["params"]) {
@@ -305,83 +327,128 @@ describe("CLI transcript account boundary", () => {
     });
   });
 
-  it("tolerates a writer claim held by a run that is no longer live", async () => {
+  it("admits a finished writer's successor while refusing the live writer", async () => {
     const f = await fixture();
     await f.seed();
-    // A finished orchestrator-path run left a stale writer claim that nothing cleared.
-    const staleRunId = "orchestrator-finished-run";
-    await patchSessionEntryCore(f.target, (entry) => ({
-      ...entry,
-      activeWriterRunId: staleRunId,
-    }));
-    // The direct CLI path must not refuse a dead foreign writer.
-    const runId = "direct-cli-recovery";
-    const admission = prepareSystemAgentRunAdmission({}, runId, "main", "history-test");
-    try {
-      const writer = await prepareCliHistoryBoundary(
-        {
-          admittedRunContext: await admission.admit("embedded"),
-          runId,
-          sessionId: f.target.sessionId,
-          sessionKey: f.target.sessionKey,
-          sessionFile: f.target.sessionKey,
-          sessionTarget: f.target,
-          provider: "test-cli",
-          model: "test-model",
-          prompt: "current ask",
-          workspaceDir: path.dirname(f.target.storePath),
-          timeoutMs: 1000,
-        },
-        { credential: { type: "token", provider: "test-cli", token: "epoch-a" } },
-      );
+    const identity = {
+      credential: { type: "token" as const, provider: "test-cli", token: "epoch-a" },
+    };
+    await f.withRun("orchestrator-prior", async (params) => {
+      await claimAgentSessionWriter(params);
+      await f.withRun("direct-cli-blocked", async (direct) => {
+        await expect(prepareCliHistoryBoundary(direct, identity)).rejects.toThrow(
+          "CLI history owner changed before preparation",
+        );
+      });
+    });
+    await f.withRun("direct-cli-recovery", async (params) => {
+      const writer = await prepareCliHistoryBoundary(params, identity);
       expect(writer).toBeDefined();
-    } finally {
-      admission.close();
-    }
-    // The stale id is left unchanged so the later snapshot-writer fences still hold.
-    const entry = loadSessionEntryReadOnly(f.target);
-    expect(entry?.activeWriterRunId).toBe(staleRunId);
+      expect(loadSessionEntryReadOnly(f.target)?.activeWriterRunId).toBe(params.runId);
+      await runWithCliHistoryWriter(writer, async () => {
+        expect(getOwnedSessionTranscriptWriterFence({ sessionTarget: f.target })).toEqual({
+          expectedLifecycleRevision: undefined,
+          expectedWriterRunId: params.runId,
+        });
+        expect(
+          getOwnedSessionTranscriptWriterFence({
+            sessionTarget: { sessionKey: f.target.sessionKey },
+          }),
+        ).toBeUndefined();
+        expect(
+          getOwnedSessionTranscriptWriterFence({
+            sessionTarget: { ...f.target, storePath: path.join(f.target.storePath, "other") },
+          }),
+        ).toBeUndefined();
+        expect(await history(true, params)).toContain("A private canary");
+        const result = await persistCliAssistantTranscript({
+          runParams: { ...params, persistAssistantTranscript: true },
+          text: "recovered CLI answer",
+          modelId: "test-model",
+          stopReason: "stop",
+        });
+        expect(result.terminalAnchor).toBeDefined();
+      });
+    });
+    expect(JSON.stringify(f.manager().getEntries())).toContain("recovered CLI answer");
   });
 
-  it("still refuses a writer claim held by a live foreign run", async () => {
+  it("rechecks a revived foreign writer after metadata planning yields", async () => {
     const f = await fixture();
     await f.seed();
-    // A concurrent orchestrator-path run is still live and holds the writer.
-    const liveRunId = "orchestrator-live-run";
-    const liveAdmission = prepareSystemAgentRunAdmission({}, liveRunId, "main", "history-test");
+    await f.withRun("orchestrator-prior", async (params) => {
+      await claimAgentSessionWriter(params);
+    });
+    const before = loadSessionEntryReadOnly(f.target);
+    const replacement = prepareSystemAgentRunAdmission(
+      {},
+      "orchestrator-prior",
+      "main",
+      "history-test",
+    );
+    const patch = patchSessionEntryCore;
+    vi.spyOn(sessionAccessor, "patchSessionEntryCore").mockImplementation(
+      (target, update, options) =>
+        patch(
+          target,
+          async (...args) => {
+            const prepared = await update(...args);
+            await replacement.admit("embedded");
+            return prepared;
+          },
+          options,
+        ),
+    );
     try {
-      await liveAdmission.admit("embedded");
-      await patchSessionEntryCore(f.target, (entry) => ({
-        ...entry,
-        activeWriterRunId: liveRunId,
-      }));
-      // The direct CLI path must keep refusing a live foreign writer.
-      const runId = "direct-cli-blocked";
-      const admission = prepareSystemAgentRunAdmission({}, runId, "main", "history-test");
-      try {
+      await f.withRun("direct-cli-recovery", async (params) => {
         await expect(
-          prepareCliHistoryBoundary(
-            {
-              admittedRunContext: await admission.admit("embedded"),
-              runId,
-              sessionId: f.target.sessionId,
-              sessionKey: f.target.sessionKey,
-              sessionFile: f.target.sessionKey,
-              sessionTarget: f.target,
-              provider: "test-cli",
-              model: "test-model",
-              prompt: "current ask",
-              workspaceDir: path.dirname(f.target.storePath),
-              timeoutMs: 1000,
-            },
-            { credential: { type: "token", provider: "test-cli", token: "epoch-a" } },
-          ),
+          prepareCliHistoryBoundary(params, {
+            credential: { type: "token", provider: "test-cli", token: "epoch-a" },
+          }),
         ).rejects.toThrow("CLI history owner changed before preparation");
-      } finally {
-        admission.close();
-      }
+      });
+      expect(loadSessionEntryReadOnly(f.target)).toEqual(before);
     } finally {
-      liveAdmission.close();
+      replacement.close();
     }
   });
+
+  it.each(["orchestrator-prior", "orchestrator-replacement", "direct-cli-recovery"])(
+    "fences recovered history and CLI persistence after %s takes over",
+    async (replacementRunId) => {
+      const f = await fixture();
+      await f.seed();
+      await f.withRun("orchestrator-prior", async (params) => {
+        await claimAgentSessionWriter(params);
+      });
+      await f.withRun("direct-cli-recovery", async (params) => {
+        const writer = await prepareCliHistoryBoundary(params, {
+          credential: { type: "token", provider: "test-cli", token: "epoch-a" },
+        });
+        expect(writer).toBeDefined();
+        writer?.assertReadable();
+        await f.withRun(replacementRunId, async (replacement) => {
+          await claimAgentSessionWriter(replacement);
+          expect
+            .soft(() => writer?.assertReadable())
+            .toThrow(
+              replacementRunId === params.runId
+                ? "admitted run authority is no longer active"
+                : "CLI history authority changed",
+            );
+          const before = f.manager().getEntries();
+          await runWithCliHistoryWriter(writer, async () => {
+            const result = await persistCliAssistantTranscript({
+              runParams: { ...params, persistAssistantTranscript: true },
+              text: "late recovered CLI answer",
+              modelId: "test-model",
+              stopReason: "stop",
+            });
+            expect.soft(result.terminalAnchor).toBeUndefined();
+          });
+          expect(f.manager().getEntries()).toEqual(before);
+        });
+      });
+    },
+  );
 });

@@ -145,21 +145,27 @@ export async function prepareCliHistoryBoundary(
         current.sessionId !== target.sessionId ||
         current.lifecycleRevision !== snapshot.lifecycleRevision ||
         current.activeWriterRunId !== snapshot.activeWriterRunId ||
-        (current.activeWriterRunId !== undefined &&
-          current.activeWriterRunId !== writerRunId &&
-          hasLiveAgentRunContext(current.activeWriterRunId)) ||
         (params.expectedLifecycleRevision !== undefined &&
           current.lifecycleRevision !== params.expectedLifecycleRevision)
       ) {
         throw new Error("CLI history owner changed before preparation");
       }
-      return { cliHistoryBoundary: boundary };
+      return { activeWriterRunId: writerRunId, cliHistoryBoundary: boundary };
     },
     {
       preserveActivity: true,
       skipMaintenance: true,
       assertCommitAllowed: () => {
         assertCurrent();
+        // Planning may yield. Recheck foreign liveness at commit, then adopt the
+        // CLI claim so a later reuse of the dead run ID remains a visible takeover.
+        if (
+          snapshot.activeWriterRunId !== undefined &&
+          snapshot.activeWriterRunId !== writerRunId &&
+          hasLiveAgentRunContext(snapshot.activeWriterRunId)
+        ) {
+          throw new Error("CLI history owner changed before preparation");
+        }
         assertOwnedTranscriptWriteCommit(target);
         validateSessionTranscriptContextAdmission(target, admission);
         const fresh = readSessionTranscriptWatermark(target);
@@ -185,7 +191,6 @@ export async function prepareCliHistoryBoundary(
     runId: writerRunId,
     authFingerprint: boundary.authFingerprint,
     lifecycleRevision: snapshot.lifecycleRevision,
-    expectedWriterRunId: snapshot.activeWriterRunId,
     assertCurrent: assertWriterCurrent,
     assertReadable: () => {
       assertWriterCurrent();
@@ -196,7 +201,7 @@ export async function prepareCliHistoryBoundary(
         !current ||
         current.sessionId !== target.sessionId ||
         current.lifecycleRevision !== snapshot.lifecycleRevision ||
-        current.activeWriterRunId !== snapshot.activeWriterRunId ||
+        current.activeWriterRunId !== writerRunId ||
         !isKnownCliHistoryBoundary(proof) ||
         proof.sessionId !== target.sessionId ||
         proof.writerRunId !== writerRunId ||
