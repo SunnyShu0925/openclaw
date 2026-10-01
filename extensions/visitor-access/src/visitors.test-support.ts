@@ -34,6 +34,7 @@ export const guestRole: GatewayRoles["definitions"][string] = {
   agents: ["main"],
   scopes: ["operator.sessions.write"],
   sandbox: "required",
+  modelPolicy: {},
 };
 export const staffRole: GatewayRoles["definitions"][string] = {
   sessions: { others: "write" },
@@ -208,6 +209,9 @@ export function visitorFixture(
   const runtime: Pick<PluginRuntime, "gateway" | "config"> = {
     gateway: {
       isAvailable: async () => true,
+      async readSessionFacts() {
+        throw new Error("Unexpected session facts request");
+      },
       async request() {
         throw new Error("Expected a mocked Gateway request");
       },
