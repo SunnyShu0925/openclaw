@@ -52,6 +52,7 @@ export type WorkerLiveEventApplicationResult =
   | { ok: false; details: WorkerLiveEventErrorDetails };
 
 type WorkerLiveEventFailure = Extract<WorkerLiveEventApplicationResult, { ok: false }>;
+type WorkerLiveEventPublication = Omit<PendingLiveEvent, "sizeBytes">;
 
 type WorkerLiveEventReceiverOptions = {
   maxActiveRuns?: number;
@@ -124,7 +125,7 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
       source: WorkerTurnTranscriptSource;
       readAckedSeq: () => number;
     },
-  ): WorkerLiveEventApplicationResult | LiveEventWindow => {
+  ): WorkerLiveEventFailure | LiveEventWindow => {
     let window = windows.get(sessionId);
     if (
       window &&
@@ -323,12 +324,10 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
 
   const publish = (
     window: LiveEventWindow,
-    request: WorkerLiveEventParams,
+    publication: WorkerLiveEventPublication,
     allowBufferedTerminalCapacity: boolean,
-    recordApplied: PendingLiveEvent["recordApplied"],
-    runOwner: PendingLiveEvent["runOwner"],
-    source: WorkerTurnTranscriptSource,
   ): WorkerLiveEventFailure | undefined => {
+    const { request, recordApplied, runOwner, source } = publication;
     if (runOwner?.isCancelled()) {
       if (!isCancelledFinishing(request, runOwner)) {
         return invalidEvent();
@@ -424,49 +423,30 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
 
   const drain = (
     window: LiveEventWindow,
-    first: WorkerLiveEventParams,
-    firstApplied: PendingLiveEvent["recordApplied"],
-    firstOwner: PendingLiveEvent["runOwner"],
-    firstSource: WorkerTurnTranscriptSource,
+    first: WorkerLiveEventPublication,
     firstPending?: PendingLiveEvent,
   ): WorkerLiveEventApplicationResult => {
-    let request: WorkerLiveEventParams | undefined = first;
     let buffered = firstPending;
-    let recordApplied = firstPending ? firstPending.recordApplied : firstApplied;
-    let runOwner = firstPending ? firstPending.runOwner : firstOwner;
-    let source = firstPending?.source ?? firstSource;
     let publishedPrefix = false;
-    while (request) {
-      const failed = publish(
-        window,
-        request,
-        buffered !== undefined,
-        recordApplied,
-        runOwner,
-        source,
-      );
+    while (true) {
+      const publication = buffered ?? first;
+      const { request } = publication;
+      const failed = publish(window, publication, buffered !== undefined);
+      if (failed?.details.reason === "capacity-exceeded" && buffered) {
+        // Keep the ordered tail retryable while the active prefix claim drains.
+        // Later gaps still hit windowSize/maxPendingBytes and force normal resync.
+        return { ok: true, result: { ackedSeq: window.ackedSeq } };
+      }
+      if (buffered && window.pending.delete(request.seq)) {
+        window.pendingBytes -= buffered.sizeBytes;
+      }
       if (failed) {
-        if (failed.details.reason === "capacity-exceeded" && buffered) {
-          // Keep the ordered tail retryable while the active prefix claim drains.
-          // Later gaps still hit windowSize/maxPendingBytes and force normal resync.
-          return { ok: true, result: { ackedSeq: window.ackedSeq } };
-        }
-        if (buffered) {
-          if (window.pending.delete(request.seq)) {
-            window.pendingBytes -= buffered.sizeBytes;
-          }
-        }
         if (failed.details.reason === "capacity-exceeded" && !publishedPrefix) {
           // A fresh head cannot advance. Reset its cursor and release every claim.
           clearWindow(window);
           return failed;
         }
         return publishedPrefix ? { ok: true, result: { ackedSeq: window.ackedSeq } } : failed;
-      }
-      if (buffered) {
-        if (window.pending.delete(request.seq)) {
-          window.pendingBytes -= buffered.sizeBytes;
-        }
       }
       window.ackedSeq = request.seq;
       publishedPrefix = true;
@@ -478,15 +458,10 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
           window.terminalRuns.delete(runId);
         }
       }
-      const next = window.pending.get(window.ackedSeq + 1);
-      if (!next) {
+      buffered = window.pending.get(window.ackedSeq + 1);
+      if (!buffered) {
         break;
       }
-      request = next.request;
-      buffered = next;
-      recordApplied = next.recordApplied;
-      runOwner = next.runOwner;
-      source = next.source;
     }
     return { ok: true, result: { ackedSeq: window.ackedSeq } };
   };
@@ -511,21 +486,14 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
       runOwner?.record(event);
       recordFinishing?.();
     };
+    const publication = { request: params.request, recordApplied, runOwner, source: params.source };
     const { seq } = params.request;
     const expectedSeq = window.ackedSeq + 1;
     if (seq > window.ackedSeq + windowSize) {
       return resyncWindow(window);
     }
     if (seq === expectedSeq) {
-      const pending = window.pending.get(seq);
-      return drain(
-        window,
-        pending?.request ?? params.request,
-        recordApplied,
-        runOwner,
-        params.source,
-        pending,
-      );
+      return drain(window, publication, window.pending.get(seq));
     }
     if (window.pending.has(seq)) {
       return { ok: true, result: { ackedSeq: window.ackedSeq } };
@@ -535,11 +503,8 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
       return resyncWindow(window);
     }
     window.pending.set(seq, {
-      request: params.request,
+      ...publication,
       sizeBytes,
-      recordApplied,
-      runOwner,
-      source: params.source,
     });
     window.pendingBytes += sizeBytes;
     return { ok: true, result: { ackedSeq: window.ackedSeq } };

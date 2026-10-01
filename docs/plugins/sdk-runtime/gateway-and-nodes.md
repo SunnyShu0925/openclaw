@@ -142,6 +142,19 @@ applicable policy also requires fresh publication admission.
     `details`, retry metadata, and the Gateway error code for recovery flows. Use `isAvailable()`
     before choosing this path from tools that can also run in standalone agent processes.
 
+    `await api.runtime.gateway.readSessionFacts({ sessionKeys })` reads at most
+    40 sessions and returns typed `{ sessions, warnings? }` data. Each session
+    includes its key, identity, agent, bounded redacted title and message preview,
+    run state (`active`, `idle`, or `failed`), optional observer digest
+    (health, headline, assessment, revision), pull-request numbers and states,
+    archive state, and last activity time. The message preview is capped at
+    400 characters. `pullRequestsUnavailable` distinguishes unknown PR state
+    from a confirmed empty list. This lifecycle-bound read reuses the Gateway's
+    session projection and context-bound PR snapshot owner, preserves current
+    caller authority and session visibility, and omits incognito sessions.
+    Retained handles reject after their owner closes; no new SDK barrel export
+    is needed.
+
   </Accordion>
   <Accordion title="api.runtime.nodes">
     List connected nodes and invoke a node-host command from Gateway-loaded plugin code or from plugin CLI commands. Use this when a plugin owns local work on a paired device, for example a browser or audio bridge on another Mac.
@@ -299,6 +312,8 @@ applicable policy also requires fresh publication admission.
     unavailable state on expected preparation failure and let `isAvailable`
     withhold their commands; throwing aborts node startup. Use `watchAvailability`
     for later availability changes and `onDisconnect` for execution cleanup.
+    The cleanup callback returned by `watchAvailability` may return a promise.
+    Node shutdown awaits that callback and reports cleanup failures.
 
     <Warning>
     The optional `scopes` field requests Gateway operator scopes for the invocation. OpenClaw honors it only for bundled plugins and trusted official plugin installations; requests from other plugins do not elevate the call. When `openDuplex` runs inside an authenticated Gateway request, its effective scopes never exceed that authenticated caller's actual scopes, even if a trusted plugin requests stronger scopes. Without an authenticated incoming client, existing trusted-plugin scope behavior applies. Use requested scopes only when a trusted plugin must invoke a node command with a stricter Gateway scope, such as `operator.admin`.

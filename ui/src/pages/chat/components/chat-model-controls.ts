@@ -27,7 +27,11 @@ import {
   canonicalModelAuthProviderId,
   listEffectiveModelAuthProviders,
 } from "../../../lib/model-auth.ts";
-import { describeModelProviderAuth } from "../../../lib/model-provider-auth-label.ts";
+import type { ChatModelCatalogState } from "../../../lib/model-catalog-store.ts";
+import {
+  describeModelProviderAuth,
+  type ModelProviderAuthLabel,
+} from "../../../lib/model-provider-auth-label.ts";
 import {
   isSessionRuntimePinned,
   resolveModelRuntimeEntry,
@@ -41,15 +45,9 @@ import {
   type ChatModelPickerOption,
   type ChatModelPickerTargetGroup,
 } from "./chat-model-picker-options.ts";
-import {
-  renderChatModelPicker,
-  type ChatModelCatalogState,
-  type ChatModelProviderAuth,
-} from "./chat-model-picker.ts";
+import { renderChatModelPicker } from "./chat-model-picker.ts";
 
 registerModelControlsEnglish();
-
-export type { ChatModelCatalogState } from "./chat-model-picker.ts";
 
 type ChatContextWindowTarget = Pick<
   SessionsListResult["defaults"],
@@ -92,6 +90,7 @@ type ChatModelControlsProps = {
   onFastModeSelect?: (value: ChatFastModeSelectValue, sessionKey: string) => unknown;
   onContextWindowSelect?: (value: string, sessionKey: string) => unknown;
   onModelSetup?: () => void;
+  onProviderSettings?: (provider: string) => void;
   onModelPickerOpen?: () => unknown;
   onModelPickerOpenChange?: (open: boolean) => void;
   onModelSelect?: (value: string, sessionKey: string, agentRuntime?: string | null) => unknown;
@@ -235,7 +234,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   const retired = props.modelCatalogState?.retired === true;
   const uninitialized = props.modelCatalogState?.initialized === false;
   const catalogOwnsChoices = retired || uninitialized || policy?.restricted === true;
-  const providerAuth = new Map<string, ChatModelProviderAuth>();
+  const providerAuth = new Map<string, ModelProviderAuthLabel>();
   const headingKey = (id: string) =>
     normalizeChatModelProviderGroupId(
       canonicalModelAuthProviderId(normalizeChatModelProviderId(id)),
@@ -557,14 +556,14 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     managedCatalog.status === "ready" &&
     activeModelOption?.disabled !== true &&
     modelOptions.some((option) => !option.disabled);
-  const busy =
-    props.loading || props.sending || Boolean(props.activeRunId) || props.stream !== null;
-  const commonDisabled =
+  const busy = props.sending || Boolean(props.activeRunId) || props.stream !== null;
+  const modelControlsDisabled =
     !props.connected || busy || props.modelSwitching || !props.gatewayAvailable;
+  const commonDisabled = modelControlsDisabled || props.loading;
   const effortMutationDisabled = Boolean(props.effortMutationDisabledReason);
   // Loading owns the menu contents, not the trigger. Keeping the trigger
   // interactive lets the first gesture open the picker and observe that state.
-  const modelDisabled = commonDisabled || Boolean(props.modelMutationDisabledReason);
+  const modelDisabled = modelControlsDisabled || Boolean(props.modelMutationDisabledReason);
   const thinkingDisabled =
     commonDisabled ||
     effortMutationDisabled ||
@@ -637,6 +636,8 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
           !selectionKnown,
         onModelSetup:
           policy?.restricted || retired || uninitialized ? undefined : props.onModelSetup,
+        onProviderSettings:
+          policy?.restricted || retired || uninitialized ? undefined : props.onProviderSettings,
         onOpen: props.onModelPickerOpen,
         onOpenChange: props.onModelPickerOpenChange,
         onModelSelect: async (next, targetSessionKey, agentRuntime) =>

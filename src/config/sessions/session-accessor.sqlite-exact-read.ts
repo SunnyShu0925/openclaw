@@ -13,7 +13,10 @@ import {
   isOpenClawAgentDatabasePathCurrent,
   readOpenClawAgentDatabaseIdentity,
 } from "../../state/openclaw-agent-db-identity.js";
-import { classifyOpenClawAgentDatabaseReadError } from "../../state/openclaw-agent-db-read-error.js";
+import {
+  classifyOpenClawAgentDatabaseReadError,
+  isOpenClawAgentDatabaseReadOpenFailure,
+} from "../../state/openclaw-agent-db-read-error.js";
 import {
   retainOpenClawAgentDatabaseReadOnly,
   withOpenClawAgentDatabaseReadOnly,
@@ -30,6 +33,7 @@ import type { ExactSessionEntry, SessionAccessScope } from "./session-accessor.s
 import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sqlite-entry-cache.js";
 import {
   readExactSessionEntryRowValidated,
+  readExactSessionEntryRow,
   readSessionEntryRow,
   readQualifiedSessionEntryRow,
 } from "./session-accessor.sqlite-entry-read.js";
@@ -39,11 +43,7 @@ import {
   toDatabaseOptions,
   type SessionSqliteTargetResolutionCache,
 } from "./session-accessor.sqlite-scope.js";
-import type {
-  CapturedSessionEntryReadSource,
-  SessionEntryReadScope,
-  SessionEntryReadSource,
-} from "./session-accessor.types.js";
+import type { SessionEntryReadScope } from "./session-accessor.types.js";
 import {
   assertCanonicalSqliteSessionKeysCurrent,
   readWithCanonicalSessionAdmission,
@@ -51,6 +51,10 @@ import {
   type CanonicalSessionReaderContinuation,
 } from "./session-canonical-key.js";
 import { SessionCanonicalKeyMigrationRequiredError } from "./session-canonical-row.js";
+import type {
+  CapturedSessionEntryReadSource,
+  SessionEntryReadSource,
+} from "./session-entry-read-source.types.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type ResolvedSqliteSessionEntry = {
@@ -186,7 +190,7 @@ class SessionEntryDataReadError extends Error {
   }
 }
 
-/** Only the row operation becomes data; admission, source checks and rollback still throw. */
+/** Unreadable stores and rows become data; authority, source checks and cleanup still throw. */
 export function loadSessionEntryReadOnlyResultInScope(
   scope: SessionEntryReadScope & { databaseAgentId?: string },
   continuation?: CanonicalSessionReaderContinuation,
@@ -210,6 +214,9 @@ export function loadSessionEntryReadOnlyResultInScope(
       // Failed rollback can preserve the original exception while poisoning/closing its handle.
       error.assertSettled();
       return err(error.readError);
+    }
+    if (isOpenClawAgentDatabaseReadOpenFailure(error)) {
+      return err(error);
     }
     throw error;
   }
@@ -351,14 +358,13 @@ export function loadExactSessionEntryCandidates(
           ...(scope.env ? { env: scope.env } : {}),
         }
       : toDatabaseOptions(resolveSqliteScope({ ...scope, sessionKey }));
-  // Alias candidates share a store; fresh handles must not rescan canonical state per key.
   const read = (database: Pick<OpenClawAgentDatabase, "agentId" | "path" | "db">) => {
     const physical = readOpenClawAgentDatabaseIdentity(database);
     if (scope.expectedSource) {
       assertCapturedSessionEntryReadSource(scope.expectedSource, database);
     }
     const entries = sessionKeys.flatMap((key) => {
-      const entry = readExactSessionEntryRowValidated(database, key, scope.projection)?.entry;
+      const entry = readExactSessionEntryRow(database, key, scope.projection, "canonical")?.entry;
       return entry ? [{ sessionKey: key, entry }] : [];
     });
     scope.onReadSource?.(
@@ -370,10 +376,7 @@ export function loadExactSessionEntryCandidates(
   if (!scope.readOnly) {
     return read(openOpenClawAgentDatabase(options));
   }
-  const result = withOpenClawAgentDatabaseReadOnly(
-    (database) => readWithCanonicalSessionAdmission(database, () => read(database)),
-    options,
-  );
+  const result = withOpenClawAgentDatabaseReadOnly(read, options);
   return result.found ? result.value : [];
 }
 
@@ -381,51 +384,55 @@ export function loadExactSessionEntryCandidates(
 const SESSION_ID_TRIM_CHARACTERS =
   "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
 
+/** Uses the native current-ID and trimmed legacy-ID winner order inside the reader owner. */
+export function readSessionEntryByIdInDatabase(
+  database: Pick<OpenClawAgentDatabase, "agentId" | "path" | "db">,
+  selection: { sessionId: string; projection?: SessionEntryReadScope["projection"] },
+): ExactSessionEntry | undefined {
+  return readWithCanonicalSessionAdmission(database, () => {
+    assertCanonicalSqliteSessionKeysCurrent(database);
+    const db = getSessionKysely(database.db);
+    const query = db.selectFrom("session_nodes").select("session_key").orderBy("session_key");
+    // The common path uses the current-ID index. Only a miss scans for one
+    // legacy ID, preserving listing order without materializing other entries.
+    for (const trimLegacyId of [false, true]) {
+      const matches = iterateSqliteQuerySync(
+        database.db,
+        trimLegacyId
+          ? query.where((eb) =>
+              eb(
+                eb.fn<string>("trim", ["current_session_id", eb.val(SESSION_ID_TRIM_CHARACTERS)]),
+                "=",
+                selection.sessionId,
+              ),
+            )
+          : query.where("current_session_id", "=", selection.sessionId),
+      );
+      for (const { session_key: sessionKey } of matches) {
+        if (isInternalSessionEffectsKey(sessionKey)) {
+          continue;
+        }
+        const selected = readExactSessionEntryRowValidated(
+          database,
+          sessionKey,
+          selection.projection,
+        );
+        if (selected) {
+          return { sessionKey, entry: selected.entry };
+        }
+      }
+    }
+    return undefined;
+  });
+}
+
 /** Loads a visible current ID, falling back to legacy trimmed IDs only on an exact miss. */
 export function loadSessionEntryByIdReadOnly(
   scope: Omit<SessionEntryReadScope, "sessionKey"> & { sessionId: string },
 ): ExactSessionEntry | undefined {
   const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
   const result = withOpenClawAgentDatabaseReadOnly(
-    (database) =>
-      readWithCanonicalSessionAdmission(database, () => {
-        assertCanonicalSqliteSessionKeysCurrent(database);
-        const db = getSessionKysely(database.db);
-        const query = db.selectFrom("session_nodes").select("session_key").orderBy("session_key");
-        // The common path uses the current-ID index. Only a miss scans for one
-        // legacy ID, preserving listing order without materializing other entries.
-        for (const trimLegacyId of [false, true]) {
-          const matches = iterateSqliteQuerySync(
-            database.db,
-            trimLegacyId
-              ? query.where((eb) =>
-                  eb(
-                    eb.fn<string>("trim", [
-                      "current_session_id",
-                      eb.val(SESSION_ID_TRIM_CHARACTERS),
-                    ]),
-                    "=",
-                    scope.sessionId,
-                  ),
-                )
-              : query.where("current_session_id", "=", scope.sessionId),
-          );
-          for (const { session_key: sessionKey } of matches) {
-            if (isInternalSessionEffectsKey(sessionKey)) {
-              continue;
-            }
-            const selected = readExactSessionEntryRowValidated(
-              database,
-              sessionKey,
-              scope.projection,
-            );
-            if (selected) {
-              return { sessionKey, entry: selected.entry };
-            }
-          }
-        }
-        return undefined;
-      }),
+    (database) => readSessionEntryByIdInDatabase(database, scope),
     toDatabaseOptions(resolved),
   );
   return result.found ? result.value : undefined;
@@ -456,7 +463,11 @@ export function loadExactSessionEntryFromStoreReadOnly(
 }
 
 /** Read requested keys through synchronous store/projection groups. */
-export type ExactSessionEntryBatchScope = Omit<SessionEntryReadScope, "sessionKey"> & {
+export type ExactSessionEntryBatchScope = Omit<
+  SessionEntryReadScope,
+  "sessionKey" | "projection"
+> & {
+  projection?: SessionEntryReadScope["projection"] | "delivery";
   sessionKeys: readonly string[];
   onReadSource?: (source: SessionEntryReadSource) => void;
 };
@@ -468,7 +479,8 @@ function groupExactSessionEntryReadRequests(scopes: readonly ExactSessionEntryBa
     string,
     {
       options: OpenClawAgentDatabaseOptions;
-      projection: SessionEntryReadScope["projection"];
+      projection: ExactSessionEntryBatchScope["projection"];
+      clone: boolean;
       requests: Array<{ index: number; sessionKeys: string[] }>;
     }
   >();
@@ -485,8 +497,14 @@ function groupExactSessionEntryReadRequests(scopes: readonly ExactSessionEntryBa
         options.agentId,
         resolveOpenClawAgentSqlitePath(options),
         scope.projection ?? "full",
+        scope.clone !== false,
       ].join("\u0000");
-      const group = groups.get(groupKey) ?? { options, projection: scope.projection, requests: [] };
+      const group = groups.get(groupKey) ?? {
+        options,
+        projection: scope.projection,
+        clone: scope.clone !== false,
+        requests: [],
+      };
       group.requests.push({ index, sessionKeys });
       groups.set(groupKey, group);
     } catch (error) {
@@ -513,6 +531,7 @@ export function loadExactSessionEntryCandidatesReadOnlyBatch(
               database,
               group.requests.map((request) => request.sessionKeys),
               group.projection,
+              { clone: group.clone },
             );
             for (const [ordinal, request] of group.requests.entries()) {
               const result = grouped[ordinal]!;

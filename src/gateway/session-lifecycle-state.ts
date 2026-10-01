@@ -7,10 +7,7 @@ import {
   classifyAgentRunTerminalOutcome,
   type AgentRunTerminalOutcome,
 } from "../agents/agent-run-terminal-outcome.js";
-import {
-  isMainSessionRecoveryLifecycleEvent,
-  projectMainSessionRecoveryLifecycle,
-} from "../agents/main-session-recovery/main-session-recovery-lifecycle.js";
+import { projectMainSessionRecoveryLifecycle } from "../agents/main-session-recovery/main-session-recovery-lifecycle.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions.js";
 import { buildUpdatedSessionGoalStatus } from "../config/sessions/goals-transitions.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
@@ -50,6 +47,7 @@ type LifecycleEventLike = Pick<AgentEventPayload, "ts" | "sessionId"> & {
     stopReason?: unknown;
     error?: unknown;
     errorKind?: unknown;
+    executionStarted?: unknown;
     livenessState?: unknown;
     timeoutPhase?: unknown;
     providerStarted?: unknown;
@@ -73,15 +71,7 @@ type LifecycleSessionShape = Pick<
 
 type PersistedLifecycleSessionShape = Pick<
   SessionEntry,
-  | "updatedAt"
-  | "status"
-  | "lastRunError"
-  | "lastRunId"
-  | "startedAt"
-  | "endedAt"
-  | "runtimeMs"
-  | "lastActivityAt"
-  | "abortedLastRun"
+  | keyof LifecycleSessionShape
   | "restartRecoveryRuns"
   | "restartRecoveryForceSafeTools"
   | "mainRestartRecovery"
@@ -241,6 +231,11 @@ function derivePersistedSessionLifecyclePatch(params: {
   entry?: Partial<PersistedLifecycleSessionShape> | null;
   event: LifecycleEventLike;
 }): Partial<PersistedLifecycleSessionShape> {
+  const phase = resolveLifecyclePhase(params.event);
+  // Queued request settlement cannot end the turn that owns this session.
+  if ((phase === "end" || phase === "error") && params.event.data?.executionStarted === false) {
+    return {};
+  }
   const snapshot = deriveGatewaySessionLifecycleSnapshot({
     session: params.entry
       ? {
@@ -266,7 +261,6 @@ function derivePersistedSessionLifecyclePatch(params: {
   if (projection.action === "suppress") {
     return {};
   }
-  const phase = resolveLifecyclePhase(params.event);
   const runId = normalizeLifecycleRunId(params.event.runId);
   const clientRunId = normalizeLifecycleRunId(params.event.clientRunId) ?? runId;
   // Run ownership follows the durable running projection. Terminal settlement
@@ -296,13 +290,6 @@ export function deriveGatewaySessionLifecycleProjectionPatch(params: {
   return Object.hasOwn(patch, "status")
     ? { ...fields, status: status === "interrupted" ? "failed" : status }
     : fields;
-}
-
-export function isRestartRecoveryLifecycleEvent(params: {
-  entry?: Pick<SessionEntry, "restartRecoveryRuns"> | null;
-  event: Pick<LifecycleEventLike, "runId" | "lifecycleGeneration" | "data">;
-}): boolean {
-  return isMainSessionRecoveryLifecycleEvent(params);
 }
 
 /**
@@ -541,6 +528,8 @@ export async function persistGatewaySessionLifecycleEvent(params: {
           sessionKey: sessionEntry.canonicalKey,
           agentId: sessionEntry.agentId,
           storePath: sessionEntry.storePath,
+          // The SQLite writer already published sharing facts; this adapter only projects run state.
+          facts: { kind: "unchanged" },
         }),
       ...(params.assertCommitAllowed || providerReview
         ? {

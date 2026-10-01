@@ -1,3 +1,4 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
@@ -19,7 +20,6 @@ import {
 } from "../../utils/message-channel.js";
 import { sanitizeChatSendMessageInput } from "../chat-input-sanitize.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
-import { normalizeOptionalChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const CHANNEL_AGNOSTIC_SESSION_SCOPES = new Set([
@@ -57,10 +57,10 @@ export type ChatSendExplicitOrigin = {
 export function normalizeExplicitChatSendOrigin(
   params: ChatSendExplicitOrigin,
 ): { ok: true; value?: ChatSendExplicitOrigin } | { ok: false; error: string } {
-  const originatingChannel = normalizeOptionalChatText(params.originatingChannel);
-  const originatingTo = normalizeOptionalChatText(params.originatingTo);
-  const accountId = normalizeOptionalChatText(params.accountId);
-  const messageThreadId = normalizeOptionalChatText(params.messageThreadId);
+  const originatingChannel = normalizeOptionalString(params.originatingChannel);
+  const originatingTo = normalizeOptionalString(params.originatingTo);
+  const accountId = normalizeOptionalString(params.accountId);
+  const messageThreadId = normalizeOptionalString(params.messageThreadId);
   const hasAnyExplicitOriginField = Boolean(
     originatingChannel || originatingTo || accountId || messageThreadId,
   );
@@ -199,40 +199,31 @@ function isAcpSessionKey(sessionKey: string | undefined): boolean {
   return Boolean(sessionKey?.split(":").includes("acp"));
 }
 
-export function explicitOriginTargetsAcpSession(
-  origin: ChatSendExplicitOrigin | undefined,
-): boolean {
+function resolveExplicitOriginBinding(origin: ChatSendExplicitOrigin | undefined) {
   if (!origin?.originatingChannel || !origin.originatingTo || !origin.accountId) {
-    return false;
+    return undefined;
   }
   const channel = normalizeMessageChannel(origin.originatingChannel);
   if (!channel || channel === INTERNAL_MESSAGE_CHANNEL) {
-    return false;
+    return undefined;
   }
-  const binding = getSessionBindingService().resolveByConversation({
+  return getSessionBindingService().resolveByConversation({
     channel,
     accountId: origin.accountId,
     conversationId: origin.originatingTo,
   });
-  return isAcpSessionKey(binding?.targetSessionKey);
+}
+
+export function explicitOriginTargetsAcpSession(
+  origin: ChatSendExplicitOrigin | undefined,
+): boolean {
+  return isAcpSessionKey(resolveExplicitOriginBinding(origin)?.targetSessionKey);
 }
 
 export function explicitOriginTargetsPluginBinding(
   origin: ChatSendExplicitOrigin | undefined,
 ): boolean {
-  if (!origin?.originatingChannel || !origin.originatingTo || !origin.accountId) {
-    return false;
-  }
-  const channel = normalizeMessageChannel(origin.originatingChannel);
-  if (!channel || channel === INTERNAL_MESSAGE_CHANNEL) {
-    return false;
-  }
-  const binding = getSessionBindingService().resolveByConversation({
-    channel,
-    accountId: origin.accountId,
-    conversationId: origin.originatingTo,
-  });
-  return isPluginOwnedSessionBindingRecord(binding);
+  return isPluginOwnedSessionBindingRecord(resolveExplicitOriginBinding(origin));
 }
 
 export function normalizeOptionalChatSystemReceipt(
