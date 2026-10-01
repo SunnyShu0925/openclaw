@@ -26,6 +26,7 @@ import {
   resumeAncestorCleanup,
   startSubagentAnnounceCleanupFlow,
 } from "./subagent-registry-lifecycle-announce-cleanup.js";
+import { completeCleanupBookkeeping } from "./subagent-registry-lifecycle-bookkeeping.js";
 import { completeSubagentRunAttempt } from "./subagent-registry-lifecycle-completion.js";
 import type {
   CleanupBookkeepingParams,
@@ -37,12 +38,13 @@ import { refreshFrozenResultFromSession } from "./subagent-registry-lifecycle-de
 import { finalizeResumedAnnounceGiveUp } from "./subagent-registry-lifecycle-give-up.js";
 import {
   cancelRequesterSettleWake,
-  completeCleanupBookkeeping,
   scheduleRequesterSettleWake,
 } from "./subagent-registry-lifecycle-wake.js";
+import { subagentRuns } from "./subagent-registry-memory.js";
 import { assertSubagentRegistryWriteSourceCurrent } from "./subagent-registry-persistence.js";
 import { commitRequesterInitialTransfer } from "./subagent-registry-requester-wake-commit.js";
 import {
+  adoptSubagentRunForRequesterTurnInRuns,
   markRequesterTurnYieldedInRuns,
   settleRequesterTurnAfterSessionSpawns,
   type RequesterInitialTransfer,
@@ -220,7 +222,11 @@ export class SubagentLifecycleController {
     entry.cleanupHandled === true && this.isCleanupGenerationCurrent(runId, entry, generation);
   isEndedHookOwnerCurrent = (runId: string, entry: SubagentRunRecord): boolean => {
     const current = this.options.runs.get(runId);
-    return (current === undefined || current === entry) && !this.newerGenerationOwnsSession(entry);
+    return (
+      (current === undefined || current === entry) &&
+      entry.pauseReason !== "sessions_yield" &&
+      !this.newerGenerationOwnsSession(entry)
+    );
   };
 
   bumpTerminalGeneration(entry: SubagentRunRecord): number {
@@ -293,7 +299,7 @@ export class SubagentLifecycleController {
   };
 
   completeCleanupBookkeeping = (params: CleanupBookkeepingParams) => {
-    completeCleanupBookkeeping(this, params);
+    return completeCleanupBookkeeping(this, params);
   };
 
   resumeAncestorCleanup = (settledEntry: SubagentRunRecord): void =>
@@ -356,6 +362,33 @@ export class SubagentLifecycleController {
 
   cancelRequesterSettleWake = (entry: SubagentRunRecord, assertCurrent: () => void) =>
     cancelRequesterSettleWake(this, entry, assertCurrent);
+
+  adoptSubagentRunForRequesterTurn = (
+    params: Omit<Parameters<typeof adoptSubagentRunForRequesterTurnInRuns>[0], "runs" | "persist">,
+  ) => {
+    if (this.newerGenerationOwnsSession(params.expected)) {
+      return Promise.resolve(undefined);
+    }
+    return adoptSubagentRunForRequesterTurnInRuns({
+      ...params,
+      runs: this.options.runs,
+      persist: this.options.persistAsyncOrThrow,
+      assertPublicationCurrent: () =>
+        subagentRuns.runWithCompletionAuthority(params.expected, () => {
+          params.assertPublicationCurrent?.();
+          if (this.newerGenerationOwnsSession(params.expected)) {
+            throw new Error("Steered completion no longer owns its execution");
+          }
+        }),
+      assertCurrent: () =>
+        subagentRuns.runWithCompletionAuthority(params.expected, () => {
+          params.assertCurrent();
+          if (this.newerGenerationOwnsSession(params.expected)) {
+            throw new Error("Steered completion no longer owns its execution");
+          }
+        }),
+    });
+  };
 
   private prepareRequesterInitialTransfer(
     assertCurrent?: () => void,

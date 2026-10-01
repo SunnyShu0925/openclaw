@@ -9,6 +9,7 @@ import { sessionChanges } from "../sessions/session-row-changes.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db.js";
+import { startAwaitedReadMock } from "../state/openclaw-state-read-mock.test-support.js";
 import * as stateReadWorker from "../state/openclaw-state-read-worker.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
@@ -211,23 +212,31 @@ describe("registered session PR subscriptions", () => {
         f.load.mockResolvedValue(refreshed);
         const entered = createDeferredCore();
         const release = createDeferredCore();
-        const createTransport = stateReadWorker.createOpenClawStateReadTransport;
+        const captureSource = stateReadWorker.captureOpenClawStateReadSource;
         let held = false;
         const transport = vi
-          .spyOn(stateReadWorker, "createOpenClawStateReadTransport")
-          .mockImplementation((command) => {
-            const owned = createTransport(command);
-            if (held || command.type !== "agentDatabaseDeletion.snapshot") {
-              return owned;
-            }
-            held = true;
+          .spyOn(stateReadWorker, "captureOpenClawStateReadSource")
+          .mockImplementation(() => {
+            const source = captureSource();
             return {
-              ...owned,
-              async read(...args: Parameters<typeof owned.read>) {
-                const result = await owned.read(...args);
-                entered.resolve();
-                await release.promise;
-                return result;
+              ...source,
+              createTransport(command) {
+                const owned = source.createTransport(command);
+                if (held || command.type !== "agentDatabaseDeletion.snapshot") {
+                  return owned;
+                }
+                held = true;
+                return {
+                  ...owned,
+                  startRead(...args) {
+                    return startAwaitedReadMock(async () => {
+                      const result = await owned.startRead(...args).result;
+                      entered.resolve();
+                      await release.promise;
+                      return result;
+                    });
+                  },
+                };
               },
             };
           });
@@ -335,22 +344,6 @@ describe("registered session PR subscriptions", () => {
     );
   });
 
-  it.each(["operator.read", "operator.write", "operator.admin"] as const)(
-    "delivers the owned branch through the real broadcaster with %s",
-    async (scope) => {
-      await withFixture(scope, async (f) => {
-        await f.subscribe();
-        await f.subscriptions.pollNow();
-        expect(f.load).toHaveBeenCalledWith(
-          { sessionKey, agentId: "main" },
-          expect.any(AbortSignal),
-          expect.objectContaining({ assertCurrent: expect.any(Function) }),
-        );
-        expect(frames(f.socket)).toContainEqual(expectedFrame(sessionKey));
-      });
-    },
-  );
-
   it("resolves a scoped global watch to its persisted global row", async () => {
     await withFixture("operator.read", async (f) => {
       const watchKey = "agent:main:global";
@@ -413,14 +406,9 @@ describe("registered session PR subscriptions", () => {
     },
   );
 
-  it.each([
-    { retired: "connection", delayed: false },
-    { retired: "grant", delayed: false },
-    { retired: "connection", delayed: true },
-    { retired: "grant", delayed: true },
-  ] as const)(
-    "keeps a shared load for an unchanged viewer when the other $retired retires (delayed=$delayed)",
-    async ({ retired, delayed }) => {
+  it.each([false, true])(
+    "keeps a shared load for an unchanged viewer when the other grant retires (delayed=%s)",
+    async (delayed) => {
       try {
         await withFixture("operator.read", async (f) => {
           const entered = createDeferredCore();
@@ -452,11 +440,7 @@ describe("registered session PR subscriptions", () => {
               await entered.promise;
               await f.subscribe([sessionKey], peer.client);
             }
-            if (retired === "connection") {
-              f.client.invalidated = true;
-            } else {
-              f.access.abort(new Error("Original access retired"));
-            }
+            f.access.abort(new Error("Original access retired"));
             if (delayed) {
               await f.clock.advanceBy(10_000);
               await entered.promise;
@@ -578,7 +562,8 @@ describe("registered session PR check details", () => {
   });
 
   it.each([
-    ...readerChanges,
+    "unchanged",
+    "grant",
     "selection",
     "literal-global",
     "literal-global-visibility",

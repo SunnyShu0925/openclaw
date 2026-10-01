@@ -68,12 +68,9 @@ export type SubagentRunsCache<T extends SubagentRunReadRecord> = {
 
 export function getSessionListLookup<T extends SubagentRunReadRecord>(
   cache: SubagentRunsCache<T>,
-  snapshot = cache.state.snapshot,
-): SubagentSessionReadLookup | undefined {
+  snapshot: Map<string, T>,
+): SubagentSessionReadLookup {
   const state = cache.state;
-  if (!snapshot) {
-    return undefined;
-  }
   if (state.snapshot !== snapshot) {
     return new SubagentSessionReadLookup(snapshot);
   }
@@ -119,7 +116,7 @@ function matchesSubagentCacheAdmission(
   }
 }
 
-export function applySubagentRunChanges<T extends SubagentRunReadRecord>(
+function applySubagentRunChanges<T extends SubagentRunReadRecord>(
   runs: Map<string, T>,
   changes: Map<string, SubagentRunChange<T>> | undefined,
 ): Map<string, T> {
@@ -133,7 +130,7 @@ export function applySubagentRunChanges<T extends SubagentRunReadRecord>(
   return runs;
 }
 
-export function retainUnpublishedSubagentChanges<T>(
+function retainUnpublishedSubagentChanges<T>(
   changes: Map<string, SubagentRunChange<T>> | undefined,
 ) {
   for (const [runId, change] of changes ?? []) {
@@ -359,12 +356,7 @@ export function getSubagentRunsSnapshot<T extends SubagentRunReadRecord>(
         scope?.load && !scope.fresh ? getPersistedSubagentRunsSnapshot(cache, scope.context) : null;
       const cachedRows =
         cached && scope?.selectCached
-          ? indexedSnapshotRows(
-              cached,
-              scope.selectCached(
-                expectDefined(getSessionListLookup(cache, cached), "subagent lookup"),
-              ),
-            )
+          ? indexedSnapshotRows(cached, scope.selectCached(getSessionListLookup(cache, cached)))
           : cached?.values();
       const persisted = scope?.load
         ? (cachedRows ?? scope.load())

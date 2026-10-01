@@ -1,9 +1,10 @@
 // GPT-Live backend bridge over the Frameless Bidi WebSocket protocol used by Codex realtime v3.
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import {
   rawDataToString,
   RealtimeVoiceSessionLifecycle,
+  type RealtimeVoiceAgentConsultTranscriptEntry,
   type RealtimeVoiceAudioOutputPort,
   type RealtimeVoiceBridge,
   type RealtimeVoiceBridgeCreateRequest,
@@ -15,7 +16,6 @@ import type { OpenAIRealtimeHost } from "./realtime-host.js";
 import { OpenAILiveDelegationQueue } from "./realtime-live-delegation-queue.js";
 import { assertOpenAIQuicksilverPcmOutput } from "./realtime-quicksilver-audio-buffer.js";
 import { dispatchOpenAIQuicksilverBridgeDelegation } from "./realtime-quicksilver-bridge-delegation.js";
-import type { OpenAIQuicksilverTranscriptEntry } from "./realtime-quicksilver-instructions.js";
 import {
   captureOpenAIQuicksilverTransportEvent,
   buildOpenAIQuicksilverContextAppend,
@@ -188,31 +188,26 @@ export class OpenAIQuicksilverVoiceBridge implements RealtimeVoiceBridge {
     captureOpenAIQuicksilverTransportEvent(this.runtime, "local", "ws-open");
 
     let reachedReady = false;
-    const ready = createDeferred<void>();
     let readySettled = false;
     let removeAbortListener = () => {};
-    const settleReady = (providerReady = true) => {
+    const ready = createDeferred();
+    const settleReady = (providerReady = true, error?: Error) => {
       if (readySettled) {
         return;
       }
       readySettled = true;
-      reachedReady = providerReady;
+      if (!error) {
+        reachedReady = providerReady;
+      }
       if (readyTimeout) {
         clearTimeout(readyTimeout);
       }
       removeAbortListener();
-      ready.resolve();
-    };
-    const failReady = (error: Error) => {
-      if (readySettled) {
-        return;
+      if (error) {
+        ready.reject(error);
+      } else {
+        ready.resolve();
       }
-      readySettled = true;
-      if (readyTimeout) {
-        clearTimeout(readyTimeout);
-      }
-      removeAbortListener();
-      ready.reject(error);
     };
     const failStartup = (reason: string) => {
       if (this.lifecycle.terminalOutcome(connection) === "completed") {
@@ -223,7 +218,7 @@ export class OpenAIQuicksilverVoiceBridge implements RealtimeVoiceBridge {
         return;
       }
       this.failLifecycle(connection);
-      failReady(new Error(projectOpenAIQuicksilverErrorMessage("transport")));
+      settleReady(false, new Error(projectOpenAIQuicksilverErrorMessage("transport")));
       this.closeSocket(reason, connected.socket);
     };
     const readyTimeout = setTimeout(() => {
@@ -295,7 +290,7 @@ export class OpenAIQuicksilverVoiceBridge implements RealtimeVoiceBridge {
         }
         const error = new Error("GPT-Live WebSocket closed before session.started");
         this.failLifecycle(connection);
-        failReady(error);
+        settleReady(false, error);
         this.lifecycle.close(connection, "error");
         return;
       }
@@ -630,10 +625,12 @@ export class OpenAIQuicksilverVoiceBridge implements RealtimeVoiceBridge {
       return;
     }
     const socket = this.socket;
-    const drain = isOpenAIGptLiveApiModel(this.config.model) ? createDeferred<void>() : undefined;
-    if (drain) {
-      this.closing = { connection, completion: drain.promise };
-      void drain.promise.catch(() =>
+    let drain: ReturnType<typeof createDeferred<void>> | undefined;
+    if (isOpenAIGptLiveApiModel(this.config.model)) {
+      drain = createDeferred();
+      const completion = drain.promise;
+      this.closing = { connection, completion };
+      void completion.catch(() =>
         (this.config.logger?.warn ?? console.warn)("GPT-Live failure cleanup observer failed"),
       );
     }
@@ -660,7 +657,7 @@ export class OpenAIQuicksilverVoiceBridge implements RealtimeVoiceBridge {
   }
 
   private publishTranscriptSnapshots(
-    publication: readonly OpenAIQuicksilverTranscriptEntry[],
+    publication: readonly RealtimeVoiceAgentConsultTranscriptEntry[],
     connection = this.lifecycle.currentConnection(),
   ): void {
     this.transcript.publish(publication, {

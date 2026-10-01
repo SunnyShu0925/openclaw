@@ -1,8 +1,7 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   getCliHistoryWriter,
   runWithCliHistoryWriter,
@@ -20,7 +19,7 @@ import {
   runWithoutOwnedSessionTranscriptWrites,
 } from "../../config/sessions/transcript-write-context.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
-import { closeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-db.js";
+import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { prepareSystemAgentRunAdmission } from "../admitted-run-context.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
 import { claimAgentSessionWriter } from "../embedded-agent-runner/run/session-bootstrap.js";
@@ -30,25 +29,19 @@ import { prepareCliHistoryBoundary } from "./history-boundary.js";
 import { buildCliSessionHistoryPrompt, loadCliSessionPromptContext } from "./session-history.js";
 import type { PreparedCliRunContext } from "./types.js";
 
-const dirs = useAutoCleanupTempDirTracker(afterEach);
-const databases = new Set<string>();
+const sessionDirs = useSessionStoreTempDirs(afterAll, "cli-history-boundary-");
 afterEach(() => {
   vi.restoreAllMocks();
-  for (const database of databases) {
-    closeOpenClawAgentDatabaseByPath(database);
-  }
-  databases.clear();
 });
 
 async function fixture(withHeader = true) {
-  const dir = dirs.make("cli-history-boundary-");
+  const dir = sessionDirs.make();
   const target = {
     agentId: "main",
     sessionId: "history",
     sessionKey: "agent:main:history",
     storePath: path.join(dir, "openclaw-agent.sqlite"),
   };
-  databases.add(target.storePath);
   await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
   if (withHeader) {
     appendTranscriptEventSync(target, {
