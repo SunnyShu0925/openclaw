@@ -1,6 +1,10 @@
 import path from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { prepareEmbeddedAttemptSessionBoundary } from "../agents/embedded-agent-runner/run/attempt-session-prepare.js";
+import type { AgentMessage } from "../agents/runtime/index.js";
+import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
+import type { AgentSession } from "../agents/sessions/index.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../agents/test-helpers/agent-message-fixtures.js";
 import {
@@ -159,3 +163,97 @@ it.each([
     expect(readMessageTexts(scope)).not.toContain(CONSULT_REPLY);
   },
 );
+
+it("regression: session manager sees stale leaf until reload (#162907)", async () => {
+  const dir = tempDirs.make("openclaw-stale-orphan-");
+  setTestEnvValue("OPENCLAW_STATE_DIR", dir);
+  const storePath = path.join(dir, "sessions.sqlite");
+  const sessionKey = "agent:main:stale-orphan";
+  const sessionId = await ensureClientVoiceAgentSessionEntry({ agentId, sessionKey, storePath });
+  const scope = { agentId, sessionId, sessionKey, storePath };
+
+  const seed = SessionManager.open(scope, dir);
+  seed.appendMessage({ role: "user", content: "orphan question", timestamp: 1 });
+
+  const manager = SessionManager.openBounded(scope, { cwd: dir, maxBytes: 8192, maxEvents: 16 });
+  expect((manager.getLeafEntry() as { message?: { role?: string } })?.message?.role).toBe("user");
+
+  await appendTranscriptMessage(scope, {
+    eventId: "voice-finalized",
+    message: makeAgentAssistantMessage({
+      content: [{ type: "text", text: "voice reply" }],
+      timestamp: 2,
+    }),
+    now: 2,
+  });
+
+  expect((manager.getLeafEntry() as { message?: { role?: string } })?.message?.role).toBe("user");
+
+  await manager.reloadPersistedTranscriptAsync();
+  expect((manager.getLeafEntry() as { message?: { role?: string } })?.message?.role).toBe(
+    "assistant",
+  );
+});
+
+it("regression: boundary reloads stale transcript before orphan repair (#162907)", async () => {
+  const dir = tempDirs.make("openclaw-boundary-reload-");
+  setTestEnvValue("OPENCLAW_STATE_DIR", dir);
+  const storePath = path.join(dir, "sessions.sqlite");
+  const sessionKey = "agent:main:boundary-reload";
+  const sessionId = await ensureClientVoiceAgentSessionEntry({ agentId, sessionKey, storePath });
+  const scope = { agentId, sessionId, sessionKey, storePath };
+
+  const seed = SessionManager.open(scope, dir);
+  seed.appendMessage({ role: "user", content: "orphan question", timestamp: 1 });
+
+  const guarded = guardSessionManager(
+    SessionManager.openBounded(scope, { cwd: dir, maxBytes: 8192, maxEvents: 16 }),
+    { runId: "boundary-reload" },
+  );
+
+  // Simulate finalized Talk speech advancing the durable transcript after
+  // the session manager was loaded — the cached leaf is still "user".
+  expect((guarded.getLeafEntry() as { message?: { role?: string } })?.message?.role).toBe("user");
+
+  await appendTranscriptMessage(scope, {
+    eventId: "voice-finalized",
+    message: makeAgentAssistantMessage({
+      content: [{ type: "text", text: "voice reply" }],
+      timestamp: 2,
+    }),
+    now: 2,
+  });
+
+  // Cached view is stale — still sees the user leaf.
+  expect((guarded.getLeafEntry() as { message?: { role?: string } })?.message?.role).toBe("user");
+
+  const activeSession = {
+    agent: {
+      reset: vi.fn(),
+      state: { messages: [] as AgentMessage[] },
+      convertToLlm: vi.fn((input: AgentMessage[]) => input as never),
+    },
+  } as unknown as Pick<AgentSession, "agent">;
+
+  // The boundary reloads the persisted transcript before computing the
+  // orphan repair plan. After reload the leaf is "assistant", so no orphan
+  // user-turn repair is attempted — preventing a stale mutation-version write.
+  const result = await prepareEmbeddedAttemptSessionBoundary({
+    abortSignal: undefined,
+    activeSession,
+    attempt: {
+      sessionId,
+      prompt: "consult request",
+    },
+    getUserTranscriptContexts: () => undefined,
+    isRawModelRun: false,
+    preparedUserTurnMessage: undefined,
+    sessionManager: guarded,
+    setActiveSessionSystemPrompt: vi.fn(),
+  });
+
+  expect(result.orphanRepair).toBeUndefined();
+  expect((guarded.getLeafEntry() as { message?: { role?: string } })?.message?.role).toBe(
+    "assistant",
+  );
+});
