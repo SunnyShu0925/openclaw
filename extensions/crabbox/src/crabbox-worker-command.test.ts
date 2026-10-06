@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   isUnrecognizedLease,
   runCrabboxCommand,
+  runCrabboxCommandWithCoordinatorRetry,
   stopCrabboxLease,
 } from "./crabbox-worker-command.js";
 
@@ -129,7 +130,7 @@ describe("Crabbox coordinator timeouts", () => {
     "keeps the stop deadline and diagnostic, process timeout=%s",
     async (processTimeout) => {
       let elapsedMs = 0;
-      const now = vi.spyOn(Date, "now").mockImplementation(() => elapsedMs);
+      const now = vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
       const timeouts: number[] = [];
       const sleep = vi.fn(async (ms: number) => {
         elapsedMs += ms;
@@ -159,6 +160,38 @@ describe("Crabbox coordinator timeouts", () => {
       }
     },
   );
+
+  it("keeps the coordinator retry deadline bounded when the wall clock rewinds", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let monotonicMs = 0;
+    const rewindMs = 90_000;
+    const budgetMs = 5_000;
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
+    vi.setSystemTime(0);
+    const timeouts: number[] = [];
+    try {
+      const promise = runCrabboxCommandWithCoordinatorRetry({
+        action: "stop",
+        args: ["stop", "--id", LEASE_ID],
+        binary: "crabbox",
+        timeoutMs: budgetMs,
+        runCommand: async (_argv, options) => {
+          timeouts.push(options.timeoutMs);
+          monotonicMs += 1_000;
+          vi.setSystemTime(monotonicMs - rewindMs);
+          return transportFailure;
+        },
+        sleep: async () => {},
+      }).catch(() => {});
+      await promise;
+      for (const t of timeouts) {
+        expect(t).toBeLessThanOrEqual(budgetMs);
+      }
+    } finally {
+      performanceNow.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 it.each(["output capture failed", "cleanup could not confirm process exit", "spawn ENOENT"])(
   "reports the runner failure without retaining private error data: %s",

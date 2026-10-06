@@ -60,7 +60,7 @@ describe("Crabbox stop lifetime", () => {
     "keeps Azure recovery within the original stop deadline after %i ms",
     async (elapsedMs) => {
       let now = 0;
-      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
       const runCommand = vi
         .fn<CrabboxCommandRunner>()
         .mockImplementationOnce(async () => {
@@ -92,6 +92,45 @@ describe("Crabbox stop lifetime", () => {
       }
     },
   );
+
+  it("keeps Azure recovery bounded when the wall clock rewinds", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let monotonicMs = 0;
+    const rewindMs = 90_000;
+    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
+    vi.setSystemTime(0);
+    const runCommand = vi
+      .fn<CrabboxCommandRunner>()
+      .mockImplementationOnce(async () => {
+        monotonicMs = 60_000;
+        vi.setSystemTime(monotonicMs - rewindMs);
+        return commandResult({
+          code: 4,
+          stderr: "Azure fixed lease cannot be adopted without its create intent",
+        });
+      })
+      .mockImplementation(async () => {
+        const timeoutMs = runCommand.mock.calls[1]?.[1].timeoutMs ?? 0;
+        monotonicMs += timeoutMs;
+        vi.setSystemTime(monotonicMs - rewindMs);
+        return commandResult();
+      });
+    try {
+      await stopCrabboxLease({
+        binary: "crabbox",
+        id: LEASE_ID,
+        provider: "azure",
+        runCommand,
+        warn: vi.fn(),
+      });
+      expect(runCommand).toHaveBeenCalledTimes(2);
+      const recoveryTimeoutMs = runCommand.mock.calls[1]?.[1].timeoutMs;
+      expect(recoveryTimeoutMs).toBeLessThanOrEqual(CRABBOX_STOP_TIMEOUT_MS - 60_000);
+    } finally {
+      performanceNow.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 
   it.each(["destroy", "dispose", "inspection loss"] as const)(
     "retains heartbeat custody through %s and later disposal",
