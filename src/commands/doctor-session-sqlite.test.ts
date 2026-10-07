@@ -72,7 +72,7 @@ describe("runDoctorSessionSqlite", () => {
         importedTranscriptEvents: 2,
         issues: 0,
       });
-      const imported = loadExactSessionEntry({ ...sessionScope(store), sessionId })?.entry;
+      const imported = loadExactSessionEntry(sessionScope(store))?.entry;
       expect(imported).toMatchObject({
         sessionId,
         pendingFinalDelivery: {
