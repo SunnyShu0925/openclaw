@@ -268,24 +268,20 @@ function prepareLegacySessionImport(
   const normalizedEntry = normalizePersistedSessionEntryShape(record.entry, {
     sessionKey: record.sessionKey,
   });
-  const acpEntry = !record.historical ? normalizedEntry : undefined;
-  const migratedEntry = normalizedEntry
-    ? { ...normalizedEntry, sessionId: record.entry.sessionId }
-    : record.entry;
   const params = {
     historicalOnly: Boolean(record.historical),
     allowMalformedRowRepair: true,
     repairLegacyTranscript: true,
     agentId: target.agentId,
-    entry: migratedEntry,
-    ...(acpEntry?.acp
+    entry: { ...(normalizedEntry ?? record.entry), sessionId: record.entry.sessionId },
+    ...(!record.historical && normalizedEntry?.acp
       ? {
           legacyAcpMigrationSource: prepareLegacyAcpMigrationSource({
             sourcePath: target.storePath,
             sourceSessionKey: record.sessionKey,
-            sessionId: acpEntry.sessionId,
-            lifecycleRevision: acpEntry.lifecycleRevision,
-            meta: acpEntry.acp,
+            sessionId: normalizedEntry.sessionId,
+            lifecycleRevision: normalizedEntry.lifecycleRevision,
+            meta: normalizedEntry.acp,
           }),
         }
       : {}),
