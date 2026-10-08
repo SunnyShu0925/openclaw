@@ -68,6 +68,7 @@ import { rotateOversizedCodexAppServerStartupBinding } from "./startup-binding.j
 
 export async function prepareCodexAttemptConnection({ params, options }: CodexRunAttemptInput) {
   const attemptStartedAt = Date.now();
+  const attemptStartedAtMonotonicMs = performance.now();
   const profilerEnabled = isCodexAppServerProfilerEnabled(params.config);
   const codexModelCallTrace = freezeDiagnosticTraceContext(
     createDiagnosticTraceContextFromActiveScope(),
@@ -585,6 +586,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
       releaseModelExecution,
       options,
       attemptStartedAt,
+      attemptStartedAtMonotonicMs,
       profilerEnabled,
       codexModelCallTrace,
       codexModelContentCapture,
