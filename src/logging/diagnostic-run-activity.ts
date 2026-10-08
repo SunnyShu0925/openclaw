@@ -14,12 +14,14 @@ import {
   resolveToolExecutionLivenessDiagnosticMetadata,
   type DiagnosticToolExecutionLiveness,
 } from "../infra/diagnostic-tool-execution-liveness.js";
+import { isToolExecutionSettledDiagnosticMetadata } from "../infra/diagnostic-tool-execution-settled-provenance.js";
 import {
   applyArgumentChurnObservation,
   clearArgumentChurnActivity,
   clearArgumentChurnPolicyWaits,
   type DiagnosticArgumentChurnObservationParams,
 } from "./diagnostic-argument-churn-activity.js";
+import { resolveCurrentDiagnosticRunId } from "./diagnostic-embedded-run-index.js";
 import { resolveCurrentDiagnosticOwner } from "./diagnostic-owned-activity.js";
 import {
   clearRepeatedRequestActivity,
@@ -135,12 +137,31 @@ function recordToolStarted(
   touchSessionActivity(activity, `tool:${event.toolName}:started`, now);
 }
 
-function recordToolEnded(event: DiagnosticToolStartedActivityEvent): void {
+function recordToolEnded(
+  event: DiagnosticToolStartedActivityEvent,
+  terminal: "completed" | "error" | "blocked",
+  coreSettled = false,
+): void {
   const activity = resolveSessionActivity(event);
   if (!activity) {
     return;
   }
   activity.activeTools.delete(toolKey(event));
+  // A successfully completed tool under the current run owner is meaningful
+  // progress, independent of the enclosing response stop reason. This clears
+  // repeated-request stagnation evidence so the watchdog does not abort a run
+  // that recently did useful work. Only a core-private settlement fact may
+  // clear semantic evidence; public and trusted plugin emitters cannot forge
+  // it, so their completion events remain mechanical activity.
+  if (terminal === "completed" && coreSettled) {
+    const currentOwnerRunId = resolveCurrentDiagnosticRunId(activity.activeEmbeddedRuns.values());
+    if (currentOwnerRunId !== undefined && event.runId === currentOwnerRunId) {
+      touchSemanticSessionActivity(activity, `tool:${event.toolName}:completed`, {
+        runId: event.runId,
+      });
+      return;
+    }
+  }
   touchSessionActivity(activity, `tool:${event.toolName}:ended`);
 }
 
@@ -148,11 +169,15 @@ export function markDiagnosticOwnedToolActivity(
   owner: DiagnosticEmbeddedRunOwner,
   event: Pick<DiagnosticToolStartedActivityEvent, "toolName" | "toolCallId" | "deadlineAtMs"> & {
     phase: "start" | "end";
+    terminal?: "completed" | "error";
   },
 ): void {
   if (activeDiagnosticOwners.get(owner.generation)?.owner === owner) {
-    const record = event.phase === "start" ? recordToolStarted : recordToolEnded;
-    record({ ...event, ...owner });
+    if (event.phase === "start") {
+      recordToolStarted({ ...event, ...owner });
+    } else {
+      recordToolEnded({ ...event, ...owner }, event.terminal ?? "completed", true);
+    }
   }
 }
 
@@ -631,9 +656,15 @@ export function startDiagnosticRunActivityTracking(): void {
         case "tool.execution.started":
           return recordToolStarted(event, resolveToolExecutionLivenessDiagnosticMetadata(metadata));
         case "tool.execution.completed":
+          return recordToolEnded(
+            event,
+            "completed",
+            isToolExecutionSettledDiagnosticMetadata(metadata),
+          );
         case "tool.execution.error":
+          return recordToolEnded(event, "error");
         case "tool.execution.blocked":
-          return recordToolEnded(event);
+          return recordToolEnded(event, "blocked");
         case "model.call.started":
           recordModelStarted(event, resolveCoreModelRequestLifecycleDiagnosticMetadata(metadata));
           return;

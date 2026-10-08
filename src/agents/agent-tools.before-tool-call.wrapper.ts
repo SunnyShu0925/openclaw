@@ -8,6 +8,7 @@ import {
   emitTrustedDiagnosticEventWithPrivateData,
 } from "../infra/diagnostic-events.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../infra/diagnostic-llm-content.js";
+import { markToolExecutionSettledDiagnosticEvent } from "../infra/diagnostic-tool-execution-settled-provenance.js";
 import {
   createChildDiagnosticTraceContext,
   freezeDiagnosticTraceContext,
@@ -567,7 +568,9 @@ export function wrapToolWithBeforeToolCallHook(
           emitTrustedDiagnosticEventWithPrivateData(
             {
               ...eventBase,
-              ...terminalDiagnostic,
+              ...(terminalDiagnostic.type === "tool.execution.completed"
+                ? markToolExecutionSettledDiagnosticEvent(terminalDiagnostic)
+                : terminalDiagnostic),
             },
             buildToolContentPrivateData(toolContentPolicy, {
               input: executeParams,

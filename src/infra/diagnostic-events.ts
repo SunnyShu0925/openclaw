@@ -44,6 +44,10 @@ import {
   type DiagnosticToolExecutionLiveness,
 } from "./diagnostic-tool-execution-liveness.js";
 import {
+  consumeToolExecutionSettledDiagnosticEvent,
+  TOOL_EXECUTION_SETTLED_METADATA_KEY,
+} from "./diagnostic-tool-execution-settled-provenance.js";
+import {
   getActiveDiagnosticTraceContext,
   runWithDiagnosticTraceContext,
   type DiagnosticTraceContext,
@@ -851,6 +855,9 @@ type InternalDiagnosticEventMetadata = DiagnosticEventMetadata &
     // String metadata survives duplicate module instances sharing dispatcher state;
     // only the non-SDK core emitter can set this semantic authority.
     [CORE_SEMANTIC_RUN_PROGRESS_METADATA_KEY]?: boolean;
+    // Only the core execution boundary that validated a successful tool settlement
+    // may set this fact; public and trusted plugin emitters cannot forge it.
+    [TOOL_EXECUTION_SETTLED_METADATA_KEY]?: boolean;
   }>;
 
 export type DiagnosticModelCallContent = Readonly<{
@@ -1245,6 +1252,7 @@ type EmitDiagnosticEventOptions = {
   allowSecurityEvent?: boolean;
   coreModelRequestLifecycle?: CoreModelRequestLifecycleProvenance;
   coreSemanticRunProgress?: boolean;
+  toolExecutionSettled?: boolean;
   hostPluginId?: string;
   internal?: boolean;
   privateData?: DiagnosticEventPrivateData;
@@ -1281,6 +1289,9 @@ function emitDiagnosticEventWithTrust(
       : {}),
     ...(options.coreSemanticRunProgress === true
       ? { [CORE_SEMANTIC_RUN_PROGRESS_METADATA_KEY]: true }
+      : {}),
+    ...(options.toolExecutionSettled === true
+      ? { [TOOL_EXECUTION_SETTLED_METADATA_KEY]: true }
       : {}),
     ...(trustedTraceContext ? { trustedTraceContext } : {}),
   };
@@ -1376,10 +1387,12 @@ export function emitTrustedDiagnosticEvent(event: DiagnosticEventInput) {
   const toolExecutionLiveness = consumeToolExecutionLivenessDiagnosticEvent(event);
   const hostPluginId = consumeHostPluginUsageDiagnosticEvent(event);
   const coreSemanticRunProgress = consumeCoreSemanticRunProgressDiagnosticEvent(event);
+  const toolExecutionSettled = consumeToolExecutionSettledDiagnosticEvent(event);
   emitDiagnosticEventWithTrust(event, true, {
     ...(toolExecutionLiveness ? { toolExecutionLiveness } : {}),
     ...(hostPluginId ? { hostPluginId, internal: true } : {}),
     ...(coreSemanticRunProgress ? { coreSemanticRunProgress: true } : {}),
+    ...(toolExecutionSettled ? { toolExecutionSettled: true } : {}),
   });
 }
 
@@ -1451,8 +1464,13 @@ export function emitTrustedDiagnosticEventWithPrivateData(
   privateData?: DiagnosticEventPrivateData,
 ) {
   const coreModelRequestLifecycle = consumeCoreModelRequestLifecycleDiagnosticEvent(event);
+  const toolExecutionSettled = consumeToolExecutionSettledDiagnosticEvent(event);
   if (!privateData || !Object.hasOwn(privateData, "hostPluginId")) {
-    emitDiagnosticEventWithTrust(event, true, { coreModelRequestLifecycle, privateData });
+    emitDiagnosticEventWithTrust(event, true, {
+      coreModelRequestLifecycle,
+      toolExecutionSettled,
+      privateData,
+    });
     return;
   }
   // Plugin-facing emitters may provide trusted private content, but host attribution
@@ -1461,6 +1479,7 @@ export function emitTrustedDiagnosticEventWithPrivateData(
   Reflect.deleteProperty(sanitized, "hostPluginId");
   emitDiagnosticEventWithTrust(event, true, {
     coreModelRequestLifecycle,
+    toolExecutionSettled,
     privateData: sanitized,
   });
 }

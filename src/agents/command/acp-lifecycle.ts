@@ -8,6 +8,7 @@ import { resolveAcpToolTerminalOutcome } from "../../acp/tool-status.js";
 import { normalizeReplyPayload } from "../../auto-reply/reply/normalize-reply.js";
 import { emitAgentAuditEvent, emitAgentEvent } from "../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent } from "../../infra/diagnostic-events.js";
+import { markToolExecutionSettledDiagnosticEvent } from "../../infra/diagnostic-tool-execution-settled-provenance.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../agent-run-terminal-outcome.js";
 import type { AgentRunTerminalReplySnapshot } from "../agent-run-terminal-reply.types.js";
@@ -246,7 +247,10 @@ function emitAcpToolExecutionEvent(
   };
   emitTrustedDiagnosticEvent(
     terminalOutcome === "completed"
-      ? { type: "tool.execution.completed", ...terminalFields }
+      ? markToolExecutionSettledDiagnosticEvent({
+          type: "tool.execution.completed",
+          ...terminalFields,
+        })
       : {
           type: "tool.execution.error",
           ...terminalFields,
