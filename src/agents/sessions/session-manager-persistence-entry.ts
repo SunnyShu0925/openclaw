@@ -127,13 +127,11 @@ export function adoptPersistedMessage(
   }
   const effectiveParentId = adoptCommittedMessagePayload(entry, result, idempotencyLookup);
   if (result.messageId !== entry.id) {
-    // A concurrent keyed user is adopted only after reloading its current path.
-    if (!result.anchor) {
-      throw new Error(`Session transcript anchor was not returned: ${result.messageId}`);
-    }
+    // Adopt without an anchor when the projection is dirty (#152511);
+    // the caller reloads and revalidates the current turn.
     return {
       adoptedMessageId: result.messageId,
-      anchor: result.anchor,
+      ...(result.anchor ? { anchor: result.anchor } : {}),
       appended: result.appended,
       effectiveParentId,
     };

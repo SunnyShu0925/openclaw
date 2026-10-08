@@ -593,15 +593,24 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
         const anchor = this.persistenceTarget
           ? readActiveTranscriptEntryAnchor({ ...this.persistenceTarget, entryId: current.id })
           : undefined;
-        if (this.persistenceTarget && !anchor) {
-          throw new Error(`Session transcript anchor was not returned: ${current.id}`);
+        if (anchor) {
+          return {
+            entryId: current.id,
+            message: current.message,
+            anchor,
+            appended: false,
+          };
         }
-        return {
-          entryId: current.id,
-          message: current.message,
-          ...(anchor ? { anchor } : {}),
-          appended: false,
-        };
+        // Dirty projection (side append) or displaced entry. Reload and
+        // revalidate; if the user still owns the turn, the anchor is
+        // harmlessly absent (#152511).
+        if (!this.persistenceTarget) {
+          return { entryId: current.id, message: current.message, appended: false };
+        }
+        this.reloadPersistedTranscriptSync();
+        if (this.resolveCurrentTurnEntryId() === current.id) {
+          return { entryId: current.id, message: current.message, appended: false };
+        }
       }
     }
     const entry: SessionMessageEntry = {
