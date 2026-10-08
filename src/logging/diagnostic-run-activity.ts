@@ -9,19 +9,21 @@ import type {
   DiagnosticEmbeddedRunOwner,
 } from "../infra/diagnostic-model-request-provenance.js";
 import { resolveCoreModelRequestLifecycleDiagnosticMetadata } from "../infra/diagnostic-model-request.js";
-import { isCoreSemanticRunProgressDiagnosticMetadata } from "../infra/diagnostic-semantic-run-progress.js";
+import type { CoreSemanticRunProgressProvenance } from "../infra/diagnostic-semantic-run-progress-provenance.js";
+import {
+  emitCoreSemanticRunProgressDiagnosticEvent,
+  resolveCoreSemanticRunProgressDiagnosticMetadata,
+} from "../infra/diagnostic-semantic-run-progress.js";
 import {
   resolveToolExecutionLivenessDiagnosticMetadata,
   type DiagnosticToolExecutionLiveness,
 } from "../infra/diagnostic-tool-execution-liveness.js";
-import { isToolExecutionSettledDiagnosticMetadata } from "../infra/diagnostic-tool-execution-settled-provenance.js";
 import {
   applyArgumentChurnObservation,
   clearArgumentChurnActivity,
   clearArgumentChurnPolicyWaits,
   type DiagnosticArgumentChurnObservationParams,
 } from "./diagnostic-argument-churn-activity.js";
-import { resolveCurrentDiagnosticRunId } from "./diagnostic-embedded-run-index.js";
 import { resolveCurrentDiagnosticOwner } from "./diagnostic-owned-activity.js";
 import {
   clearRepeatedRequestActivity,
@@ -137,47 +139,56 @@ function recordToolStarted(
   touchSessionActivity(activity, `tool:${event.toolName}:started`, now);
 }
 
-function recordToolEnded(
-  event: DiagnosticToolStartedActivityEvent,
-  terminal: "completed" | "error" | "blocked",
-  coreSettled = false,
-): void {
+function recordToolEnded(event: DiagnosticToolStartedActivityEvent): void {
   const activity = resolveSessionActivity(event);
   if (!activity) {
     return;
   }
   activity.activeTools.delete(toolKey(event));
-  // A successfully completed tool under the current run owner is meaningful
-  // progress, independent of the enclosing response stop reason. This clears
-  // repeated-request stagnation evidence so the watchdog does not abort a run
-  // that recently did useful work. Only a core-private settlement fact may
-  // clear semantic evidence; public and trusted plugin emitters cannot forge
-  // it, so their completion events remain mechanical activity.
-  if (terminal === "completed" && coreSettled) {
-    const currentOwnerRunId = resolveCurrentDiagnosticRunId(activity.activeEmbeddedRuns.values());
-    if (currentOwnerRunId !== undefined && event.runId === currentOwnerRunId) {
-      touchSemanticSessionActivity(activity, `tool:${event.toolName}:completed`, {
-        runId: event.runId,
-      });
-      return;
-    }
-  }
   touchSessionActivity(activity, `tool:${event.toolName}:ended`);
+}
+
+/** Capture at source execution, before a tool can outlive its attempt. */
+export function captureDiagnosticToolProgress(event: DiagnosticToolStartedActivityEvent) {
+  const runId = event.runId;
+  const activity = runId ? activityByRunId.get(runId) : undefined;
+  const generation = event.sessionId
+    ? activity?.activeEmbeddedRuns.get(event.sessionId)?.generation
+    : undefined;
+  const owner = generation ? activeDiagnosticOwners.get(generation)?.owner : undefined;
+  if (
+    !runId ||
+    !owner ||
+    owner.runId !== runId ||
+    owner.sessionKey !== event.sessionKey ||
+    !resolveCurrentDiagnosticOwner(owner)
+  ) {
+    return undefined;
+  }
+  return () => {
+    if (resolveCurrentDiagnosticOwner(owner)) {
+      emitCoreSemanticRunProgressDiagnosticEvent(
+        {
+          runId,
+          sessionId: owner.sessionId,
+          sessionKey: owner.sessionKey,
+          reason: `tool:${event.toolName}:completed`,
+        },
+        owner,
+      );
+    }
+  };
 }
 
 export function markDiagnosticOwnedToolActivity(
   owner: DiagnosticEmbeddedRunOwner,
   event: Pick<DiagnosticToolStartedActivityEvent, "toolName" | "toolCallId" | "deadlineAtMs"> & {
     phase: "start" | "end";
-    terminal?: "completed" | "error";
   },
 ): void {
   if (activeDiagnosticOwners.get(owner.generation)?.owner === owner) {
-    if (event.phase === "start") {
-      recordToolStarted({ ...event, ...owner });
-    } else {
-      recordToolEnded({ ...event, ...owner }, event.terminal ?? "completed", true);
-    }
+    const record = event.phase === "start" ? recordToolStarted : recordToolEnded;
+    record({ ...event, ...owner });
   }
 }
 
@@ -331,8 +342,17 @@ export function markDiagnosticRunProgress(
 
 function applyRunProgress(
   params: RunProgressEvent,
-  provenance: "direct" | "semantic" | "unbound" = "direct",
+  provenance: "direct" | "unbound" | CoreSemanticRunProgressProvenance = "direct",
 ): void {
+  if (typeof provenance === "object") {
+    const registration = resolveCurrentDiagnosticOwner(provenance);
+    if (registration) {
+      touchSemanticSessionActivity(registration.activity, params.reason, {
+        runId: provenance.runId,
+      });
+    }
+    return;
+  }
   const runId = params.runId?.trim() || undefined;
   // Exact owners record transport progress synchronously. Delayed public events
   // must neither merge their session refs nor refresh a replacement or tool phase.
@@ -344,7 +364,7 @@ function applyRunProgress(
     return;
   }
   // Only an explicit fact from the current owner may clear its recovery evidence.
-  if (provenance !== "semantic" || !runId) {
+  if (provenance !== true || !runId) {
     touchSessionActivity(activity, params.reason);
     return;
   }
@@ -656,15 +676,9 @@ export function startDiagnosticRunActivityTracking(): void {
         case "tool.execution.started":
           return recordToolStarted(event, resolveToolExecutionLivenessDiagnosticMetadata(metadata));
         case "tool.execution.completed":
-          return recordToolEnded(
-            event,
-            "completed",
-            isToolExecutionSettledDiagnosticMetadata(metadata),
-          );
         case "tool.execution.error":
-          return recordToolEnded(event, "error");
         case "tool.execution.blocked":
-          return recordToolEnded(event, "blocked");
+          return recordToolEnded(event);
         case "model.call.started":
           recordModelStarted(event, resolveCoreModelRequestLifecycleDiagnosticMetadata(metadata));
           return;
@@ -675,7 +689,7 @@ export function startDiagnosticRunActivityTracking(): void {
         case "run.progress":
           return applyRunProgress(
             event,
-            isCoreSemanticRunProgressDiagnosticMetadata(metadata) ? "semantic" : "unbound",
+            resolveCoreSemanticRunProgressDiagnosticMetadata(metadata) ?? "unbound",
           );
         case "run.completed":
           return recordRunCompleted(event);

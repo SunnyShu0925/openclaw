@@ -15,7 +15,6 @@ import {
 } from "../infra/diagnostic-events.js";
 import { emitCoreModelRequestStartedDiagnosticEvent } from "../infra/diagnostic-model-request.js";
 import { emitCoreSemanticRunProgressDiagnosticEvent } from "../infra/diagnostic-semantic-run-progress.js";
-import { markToolExecutionSettledDiagnosticEvent } from "../infra/diagnostic-tool-execution-settled-provenance.js";
 import {
   BLOCKED_TOOL_CALL_ABORT_FLOOR_MS,
   clearDiagnosticEmbeddedRunActivityForSession,
@@ -25,7 +24,6 @@ import {
   markDiagnosticEmbeddedRunEnded,
   markDiagnosticEmbeddedRunStarted,
   markDiagnosticRunProgress,
-  markDiagnosticOwnedToolActivity,
   resetDiagnosticRunActivityForTest,
   resolveRunStaleThresholdMs,
   RUN_STALE_TAKEOVER_MS,
@@ -964,176 +962,6 @@ describe("repeated request liveness", () => {
     startDiagnosticRunActivityTracking();
     expect(getDiagnosticSessionActivitySnapshot(ref)).toEqual({});
   });
-
-  function setupStagnatingRun(ref: { sessionId: string; sessionKey?: string }, runId: string) {
-    startDiagnosticRunActivityTracking();
-    const owner = createDiagnosticEmbeddedRunOwner({ ...ref, runId });
-    markDiagnosticEmbeddedRunStarted({ ...ref, runId, owner });
-    for (let i = 0; i < 2; i++) {
-      markDiagnosticModelStartedForTest({
-        ...ref,
-        runId,
-        provider: "mock",
-        model: "m",
-        observationUnit: "request" as const,
-      });
-    }
-    return owner;
-  }
-
-  function emitToolTerminal(
-    ref: { sessionId: string; sessionKey?: string },
-    runId: string,
-    terminal: "completed" | "error" | "blocked",
-    toolCallId: string,
-  ) {
-    emitTrustedDiagnosticEvent({
-      type: `tool.execution.${terminal}`,
-      ...ref,
-      runId,
-      toolName: "read",
-      toolCallId,
-      durationMs: 1,
-      ...(terminal === "error"
-        ? { errorCategory: "test" }
-        : terminal === "blocked"
-          ? { deniedReason: "tool_result_blocked", reason: "tool_result_blocked" }
-          : {}),
-    } as Parameters<typeof emitTrustedDiagnosticEvent>[0]);
-  }
-
-  it.each([
-    {
-      terminal: "completed" as const,
-      shouldClear: false,
-      label: "completed does not clear without core settlement",
-    },
-    { terminal: "error" as const, shouldClear: false, label: "error does not clear" },
-    { terminal: "blocked" as const, shouldClear: false, label: "blocked does not clear" },
-  ])("tool.execution.$label stagnation under current owner", async ({ terminal, shouldClear }) => {
-    const ref = { sessionId: `tool-${terminal}`, sessionKey: `agent:main:tool-${terminal}` };
-    setupStagnatingRun(ref, `tool-${terminal}-run`);
-    expect(
-      getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-    ).not.toBeUndefined();
-    emitToolTerminal(ref, `tool-${terminal}-run`, terminal, `${terminal}-tool`);
-    await waitForDiagnosticEventsDrained();
-    const snapshot = getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs;
-    expect(snapshot === undefined).toBe(shouldClear);
-  });
-
-  it("core-settled tool.execution.completed clears stagnation under current owner", async () => {
-    const ref = { sessionId: "settled", sessionKey: "agent:main:settled" };
-    const runId = "settled-run";
-    setupStagnatingRun(ref, runId);
-    expect(
-      getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-    ).not.toBeUndefined();
-    emitTrustedDiagnosticEvent(
-      markToolExecutionSettledDiagnosticEvent({
-        type: "tool.execution.completed",
-        ...ref,
-        runId,
-        toolName: "read",
-        toolCallId: "settled-tool",
-        durationMs: 1,
-      }),
-    );
-    await waitForDiagnosticEventsDrained();
-    expect(
-      getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-    ).toBeUndefined();
-  });
-
-  it("core-settled tool.execution.completed from a stale owner does not clear current owner stagnation", async () => {
-    const ref = { sessionId: "stale-owner", sessionKey: "agent:main:stale-owner" };
-    startDiagnosticRunActivityTracking();
-    const oldOwner = createDiagnosticEmbeddedRunOwner({ ...ref, runId: "old-run" });
-    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "old-run", owner: oldOwner });
-    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "new-run" });
-    for (let i = 0; i < 2; i++) {
-      markDiagnosticModelStartedForTest({
-        ...ref,
-        runId: "new-run",
-        provider: "mock",
-        model: "m",
-        observationUnit: "request" as const,
-      });
-    }
-    expect(
-      getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-    ).not.toBeUndefined();
-    emitTrustedDiagnosticEvent(
-      markToolExecutionSettledDiagnosticEvent({
-        type: "tool.execution.completed",
-        ...ref,
-        runId: "old-run",
-        toolName: "read",
-        toolCallId: "stale-tool",
-        durationMs: 1,
-      }),
-    );
-    await waitForDiagnosticEventsDrained();
-    expect(
-      getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-    ).not.toBeUndefined();
-  });
-
-  it("public plugin tool.execution.completed does not clear stagnation", async () => {
-    const ref = { sessionId: "forged", sessionKey: "agent:main:forged" };
-    const runId = "forged-run";
-    setupStagnatingRun(ref, runId);
-    expect(
-      getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-    ).not.toBeUndefined();
-    emitPluginDiagnosticEvent({
-      type: "tool.execution.completed",
-      ...ref,
-      runId,
-      toolName: "read",
-      toolCallId: "forged-tool",
-      durationMs: 1,
-    } as Parameters<typeof emitPluginDiagnosticEvent>[0]);
-    emitPluginTrustedDiagnosticEvent({
-      type: "tool.execution.completed",
-      ...ref,
-      runId,
-      toolName: "read",
-      toolCallId: "forged-trusted-tool",
-      durationMs: 1,
-    } as Parameters<typeof emitPluginTrustedDiagnosticEvent>[0]);
-    await waitForDiagnosticEventsDrained();
-    expect(
-      getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-    ).not.toBeUndefined();
-  });
-
-  it.each([
-    { terminal: undefined, shouldClear: true, label: "success clears" },
-    { terminal: "error" as const, shouldClear: false, label: "error does not clear" },
-  ])(
-    "worker tool end ($label) via markDiagnosticOwnedToolActivity",
-    async ({ terminal, shouldClear }) => {
-      const ref = {
-        sessionId: `worker-${terminal ?? "success"}`,
-        sessionKey: `agent:main:worker-${terminal ?? "success"}`,
-      };
-      const runId = `worker-${terminal ?? "success"}-run`;
-      const owner = setupStagnatingRun(ref, runId);
-      expect(
-        getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs,
-      ).not.toBeUndefined();
-      markDiagnosticOwnedToolActivity(owner, {
-        toolName: "exec",
-        toolCallId: `worker-${terminal ?? "success"}-tool`,
-        phase: "end",
-        ...(terminal ? { terminal } : {}),
-      });
-      expect(
-        getDiagnosticSessionActivitySnapshot(ref).repeatedRequestNoProgressAgeMs === undefined,
-      ).toBe(shouldClear);
-    },
-  );
 });
 
 describe("resolveRunStaleThresholdMs", () => {

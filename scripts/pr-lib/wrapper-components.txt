@@ -821,7 +821,6 @@ src/infra/diagnostic-otel-listener-provenance.ts
 src/infra/diagnostic-plugin-usage-provenance.ts
 src/infra/diagnostic-semantic-run-progress-provenance.ts
 src/infra/diagnostic-tool-execution-liveness.ts
-src/infra/diagnostic-tool-execution-settled-provenance.ts
 src/infra/diagnostic-trace-context.ts
 src/infra/diagnostic-trace-propagation.ts
 src/infra/diagnostics-timeline.ts

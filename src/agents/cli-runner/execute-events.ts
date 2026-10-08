@@ -2,7 +2,6 @@ import { projectAgentToolActivity } from "../../infra/agent-activity-events.js";
 import { emitAgentEvent, type AgentEventStream } from "../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { markToolExecutionLivenessDiagnosticEvent } from "../../infra/diagnostic-tool-execution-liveness.js";
-import { markToolExecutionSettledDiagnosticEvent } from "../../infra/diagnostic-tool-execution-settled-provenance.js";
 import { projectProgressCardChannelUpdate } from "../../session-cards/progress-card-channel-summary.js";
 import { isAgentPlanProgressToolName } from "../../session-cards/progress-card-input.js";
 import { registerListener } from "../../shared/listeners.js";
@@ -343,10 +342,7 @@ export function createCliEventHandlers(params: {
                     : "cli_tool",
               terminalReason,
             }
-          : markToolExecutionSettledDiagnosticEvent({
-              type: "tool.execution.completed",
-              ...diagnosticBase,
-            }),
+          : { type: "tool.execution.completed", ...diagnosticBase },
     );
   };
   const emitParsedToolResult = (event: CliToolResultDelta) => {

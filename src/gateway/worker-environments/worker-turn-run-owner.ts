@@ -119,9 +119,6 @@ export async function createWorkerTurnRunOwner(params: {
             toolName: event.payload.name,
             toolCallId: event.payload.toolCallId,
             phase: event.payload.phase === "start" ? "start" : "end",
-            ...(event.payload.phase === "result" && event.payload.isError
-              ? { terminal: "error" as const }
-              : {}),
             // The host owns this already-enforced run budget. A remote tool cannot
             // choose an exemption or extend its parent while provisioning a child.
             deadlineAtMs,
