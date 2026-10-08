@@ -22,10 +22,7 @@ import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.w
 import { createModelObserver } from "./embedded-agent-runner/run/attempt.model-diagnostic-observation.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
-// Mirrors the production watchdog's repeated-request abort threshold. The
-// evidence clock starts at the first repeated request, so advancing past this
-// boundary exercises the same final cancellation decision the heartbeat makes.
-const STUCK_SESSION_ABORT_MS = 30_000;
+const STUCK_SESSION_ABORT_MS = 360_000;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -81,8 +78,7 @@ it.each(["completed", "error", "blocked", "retired-during-execution", "retired-b
       getDiagnosticSessionActivitySnapshot(ref, baselineNow).repeatedRequestNoProgressAgeMs,
     ).toBeDefined();
 
-    // Replay the tool execution at the issue's observed time, then let the
-    // enclosing response end with length immediately after.
+    // The issue reported successful execution 76 seconds before the false abort.
     vi.setSystemTime(startedAt + 583_000);
     await tool.execute("read-call", {});
     if (outcome === "retired-before-delivery") {
@@ -99,9 +95,8 @@ it.each(["completed", "error", "blocked", "retired-during-execution", "retired-b
     );
     await vi.advanceTimersByTimeAsync(0);
     await waitForDiagnosticEventsDrained();
-    // Advance to the issue's abort instant so the evidence age crosses the
-    // production abort boundary and the watchdog's final decision is exercised.
     const abortNow = startedAt + 659_000;
+    vi.setSystemTime(abortNow);
     const snapshot = getDiagnosticSessionActivitySnapshot(ref, abortNow);
     const stalled = isRepeatedModelRequestStalled(snapshot, STUCK_SESSION_ABORT_MS);
     const attention = classifySessionAttention({
@@ -113,9 +108,6 @@ it.each(["completed", "error", "blocked", "retired-during-execution", "retired-b
     });
     if (outcome === "completed") {
       expect(snapshot.repeatedRequestNoProgressAgeMs).toBeUndefined();
-      // Successful execution cleared stagnation evidence for its live owner, so
-      // the watchdog does not classify the run as repeated-request stalled even
-      // at the abort boundary.
       expect(stalled).toBe(false);
       expect(attention).not.toMatchObject({
         eventType: "session.stalled",
@@ -123,8 +115,6 @@ it.each(["completed", "error", "blocked", "retired-during-execution", "retired-b
       });
     } else {
       expect(snapshot.repeatedRequestNoProgressAgeMs).toBeDefined();
-      // Failed, blocked, and retired-owner completions preserve recovery
-      // evidence, so the watchdog's final decision still cancels the run.
       expect(stalled).toBe(true);
       expect(attention).toMatchObject({
         eventType: "session.stalled",
