@@ -168,8 +168,8 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
           speech,
           consult,
         ]);
-        expect(loadTranscriptEventsSync(target).filter((entry) => entry.type === "leaf")).toEqual(
-          [],
+        expect(loadTranscriptEventsSync(target)).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ type: "leaf" })]),
         );
       },
     );
