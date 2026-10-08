@@ -20,7 +20,7 @@ type CoreSemanticRunProgressMetadata = DiagnosticEventMetadata &
     [CORE_SEMANTIC_RUN_PROGRESS_METADATA_KEY]?: CoreSemanticRunProgressProvenance;
   }>;
 
-/** Emits semantic run progress from the core boundary that validated the model result. */
+/** Emits semantic run progress from the core boundary that validated useful work. */
 export function emitCoreSemanticRunProgressDiagnosticEvent(
   event: CoreSemanticRunProgressEventInput,
   owner?: DiagnosticEmbeddedRunOwner,
@@ -30,7 +30,7 @@ export function emitCoreSemanticRunProgressDiagnosticEvent(
   );
 }
 
-/** Returns whether core validated the semantic model result that produced this progress event. */
+/** Returns the private provenance attached by the core progress emitter. */
 export function resolveCoreSemanticRunProgressDiagnosticMetadata(
   metadata: DiagnosticEventMetadata,
 ): CoreSemanticRunProgressProvenance | undefined {
