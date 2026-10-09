@@ -88,6 +88,89 @@ afterEach(() => {
 });
 
 describe("Agents API completed reply settlement", () => {
+  it("preserves the first settlement monotonic seed across onSettled and finally (observed expiry)", async () => {
+    // The native session calls onSettled (first beginSettlement), then the
+    // attempt's finally block calls beginSettlement again. The second call
+    // must not overwrite the first monotonic seed, otherwise the cleanup
+    // budget restarts from a fresh 30s instead of the remaining budget.
+    //
+    // Observes real abort: performance.now is mocked to advance the monotonic
+    // clock near the 30s budget so cleanupMs ≈ 50ms. The real
+    // AbortSignal.timeout fires and aborts the signal — the test waits for
+    // the actual abort event and bounds the real elapsed time.
+    // Pre-fix (no seed): cleanupMs ≈ 30_000, so the signal takes ~30s to
+    // abort → exceeds the 2s bound → RED.
+    let performanceNow = 1_000;
+    const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => performanceNow);
+
+    // Force terminal=failed so the finally block enters the
+    // reconcileAfterClose(cleanupSignal) cleanup branch.
+    readItems.mockRejectedValue(new Error("proof: items failure"));
+
+    let capturedCleanupSignal: AbortSignal | undefined;
+    let signalAborted = false;
+    let realAbortMs = Number.POSITIVE_INFINITY;
+    createSession.mockImplementation((options) => ({
+      isAvailable: () => false,
+      isSettled: () => true,
+      wasSubmitted: () => true,
+      queueMessage: async () => {},
+      readUsageTurns: async () => [completedTurn],
+      run: async () => {
+        // Native settlement fires onSettled first (captures monotonic seed
+        // at performanceNow=1_000).
+        options.onSettled?.();
+        // Advance monotonic time near the 30s budget so cleanupMs is small.
+        // seed=1_000, now=30_950 → cleanupMs = floor(30_000 - 29_950) = 50.
+        performanceNow += 29_950;
+        await options.onReconcile?.(completedTurn, [completedItem]);
+        return { turn: completedTurn, cancelled: false, terminatedByTool: false };
+      },
+      close: async () => {},
+      reconcileAfterClose: async (cleanupSignal: AbortSignal) => {
+        capturedCleanupSignal = cleanupSignal;
+        // Measure real elapsed time until the signal aborts. AbortSignal.timeout
+        // uses real Node timers (not the fake setTimeout), so this is the actual
+        // wall-clock duration the cleanup budget allows.
+        const realStart = vi.getRealSystemTime();
+        // Observe the REAL abort: wait for AbortSignal.timeout(cleanupMs) to
+        // fire. This is observable cleanup expiry, not a mocked argument.
+        if (!cleanupSignal.aborted) {
+          await new Promise<void>((resolve) => {
+            cleanupSignal.addEventListener(
+              "abort",
+              () => {
+                signalAborted = true;
+                realAbortMs = vi.getRealSystemTime() - realStart;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+        } else {
+          signalAborted = true;
+          realAbortMs = vi.getRealSystemTime() - realStart;
+        }
+        return completedTurn;
+      },
+    }));
+
+    const fixture = await createAttempt();
+    const result = await fixture.run();
+
+    // terminal=failed triggers the cleanup reconciliation branch.
+    expect(result.terminal.kind).toBe("failed");
+    // The cleanup signal is a REAL AbortSignal.timeout: it actually aborted.
+    expect(capturedCleanupSignal).toBeDefined();
+    expect(signalAborted).toBe(true);
+    expect(capturedCleanupSignal?.aborted).toBe(true);
+    // Post-fix: cleanupMs ≈ 50ms → realAbortMs < 2_000. Pre-fix: cleanupMs ≈
+    // 30_000 → realAbortMs ≈ 30_000 → exceeds 2_000 → RED.
+    expect(realAbortMs).toBeLessThan(2_000);
+
+    perfSpy.mockRestore();
+  });
+
   it("publishes exact committed item identities without acquiring a newer preview", async () => {
     const fixture = await createAttempt();
     const events: Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0][] = [];
