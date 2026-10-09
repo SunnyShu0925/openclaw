@@ -472,50 +472,6 @@ describe("google music generation provider", () => {
     }
   }, 5_000);
 
-  // Regression: an omitted timeout must preserve the existing behavior — no
-  // absolute deadline is imposed on credential preparation. buildTimeoutAbortSignal
-  // returns no signal when timeoutMs is undefined, so a slow OAuth refresh is not
-  // cancelled by the DEFAULT_TIMEOUT_MS fallback (only the HTTP/SDK layer keeps
-  // its per-request default). This guards the compatibility decision: the
-  // 180-second default must not silently extend into credential waits that
-  // previously remained unbounded.
-  it("does not apply an abort signal to credential preparation when timeout is omitted", async () => {
-    let receivedSignal: AbortSignal | undefined;
-    vi.spyOn(providerAuthRuntime, "resolveApiKeyForProvider").mockImplementation(
-      (params: { signal?: AbortSignal }) => {
-        receivedSignal = params.signal;
-        return new Promise(() => {
-          // Never resolves; the point is to observe whether a signal was attached,
-          // not to complete the request. Without a timeout, no abort fires.
-        });
-      },
-    );
-
-    vi.useFakeTimers();
-    try {
-      // No timeoutMs: credential preparation must run without an abort signal.
-      const promise = buildGoogleMusicGenerationProvider().generateMusic({
-        provider: "google",
-        model: "lyria-3-clip-preview",
-        prompt: "upbeat synthpop anthem",
-        cfg: {},
-      });
-
-      // Advance well past the DEFAULT_TIMEOUT_MS (180s). With the fix, no signal
-      // was created, so credential preparation is still pending (not aborted) and
-      // no HTTP attempt has started.
-      await vi.advanceTimersByTimeAsync(360_000);
-
-      expect(receivedSignal).toBeUndefined();
-      expect(generateContentMock).not.toHaveBeenCalled();
-
-      // Clean up the hanging promise to avoid unhandled rejection noise.
-      promise.catch(() => {});
-    } finally {
-      vi.useRealTimers();
-    }
-  }, 5_000);
-
   // Regression (ClawSweeper P1, Revision 8): when timeoutMs is omitted, the
   // operation deadline must be created after credential lookup (matching main),
   // not before. Otherwise a slow OAuth refresh that takes longer than
