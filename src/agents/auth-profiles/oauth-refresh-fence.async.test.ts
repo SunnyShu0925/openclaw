@@ -56,7 +56,8 @@ describe("awaited OAuth persistence", () => {
         if (scenario === "stalled read") {
           await vi.advanceTimersByTimeAsync(100);
         } else {
-          vi.setSystemTime(Date.now() + 101);
+          await vi.advanceTimersByTimeAsync(0);
+          vi.spyOn(performance, "now").mockReturnValue(101);
           if (scenario === "expired rejection") {
             reading.reject(new Error("synthetic late read failure"));
           } else {
@@ -254,4 +255,35 @@ describe("awaited OAuth persistence", () => {
       });
     },
   );
+
+  it("times out on schedule when the wall clock rewinds mid-poll", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    let pending = true;
+    const observing = observeOAuthRefreshFenceSettlement({
+      label: "rewind poll observer",
+      timeoutMs: 100,
+      read: () => Promise.resolve({ pending }),
+      isPending: (s) => s.pending,
+      resolve: vi.fn(async () => "synthetic-access"),
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      vi.setSystemTime(5_000);
+      const settled = observing.then(
+        () => "settled" as const,
+        () => "rejected" as const,
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      const stillPolling = Symbol("still polling");
+      const outcome = await Promise.race([settled, Promise.resolve(stillPolling)]);
+      expect(outcome).toBe("rejected");
+    } finally {
+      vi.setSystemTime(20_000);
+      pending = false;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await observing.catch(() => {});
+      vi.useRealTimers();
+    }
+  });
 });
