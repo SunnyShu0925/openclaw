@@ -238,7 +238,9 @@ describe("Codex app-server startup retry", () => {
             await ready;
             expect(child.exitCode).toBeNull();
             expect(child.signalCode).toBeNull();
-            return failure === "snapshot" ? readSnapshot(Date.now() - 1) : readSnapshot(...args);
+            return failure === "snapshot"
+              ? readSnapshot(performance.now() - 1)
+              : readSnapshot(...args);
           });
         const commandSpy = vi
           .spyOn(processSnapshot, "readCodexAppServerProcessCommand")
@@ -251,7 +253,7 @@ describe("Codex app-server startup retry", () => {
                 store.register(`capacity-${index}`, {});
               }
             }
-            return failure === "command" ? readCommand(args[0], Date.now() - 1) : command;
+            return failure === "command" ? readCommand(args[0], performance.now() - 1) : command;
           });
         try {
           const error = await startFixtureAttempt(
