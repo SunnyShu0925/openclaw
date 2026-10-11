@@ -419,6 +419,7 @@ it
             // Expire synchronous work before a finalizer can register, without
             // dispatching a timer or permitting another updater before release.
             vi.useFakeTimers({ toFake: ["Date"] });
+            vi.spyOn(performance, "now").mockImplementation(() => Date.now());
             vi.setSystemTime(Date.now() + 60_001);
             run.executorFence.assertCurrent();
             throw new Error("The activation deadline did not revoke its owner");
