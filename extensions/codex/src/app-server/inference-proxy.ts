@@ -359,8 +359,8 @@ export async function createCodexInferenceProxy(params: {
       const { promise: setupSettled, resolve: finishSetup } = createDeferred();
       let resident: ReturnType<typeof reserveResident> = null;
       const controller = new AbortController();
-      // Wall-clock deadline feeds permit-pool admission; the monotonic counterpart
-      // feeds setTimeout/handshakeTimeout so a wall-clock jump cannot skew the budget.
+      // Permit-pool admission uses epoch time; handshake timers and callbacks
+      // share an elapsed-time deadline so wall-clock jumps cannot skew the budget.
       const deadlineAtMs = Date.now() + HANDSHAKE_TIMEOUT_MS;
       const deadlineAtMonotonicMs = performance.now() + HANDSHAKE_TIMEOUT_MS;
       let releasePermit: (() => void) | null = null;
@@ -406,7 +406,7 @@ export async function createCodexInferenceProxy(params: {
           });
       };
       const close = () => finish();
-      const failHandshake = () => finish(Date.now() >= deadlineAtMs ? 504 : 502);
+      const failHandshake = () => finish(performance.now() >= deadlineAtMonotonicMs ? 504 : 502);
       try {
         const { target, path } = resolveTarget(req);
         if (params.oauth) {
@@ -456,7 +456,7 @@ export async function createCodexInferenceProxy(params: {
         const assertHandshakeCurrent = () => {
           assertCurrent();
           signal.throwIfAborted();
-          if (Date.now() >= deadlineAtMs) {
+          if (performance.now() >= deadlineAtMonotonicMs) {
             throw new Error(FAILURE);
           }
         };
