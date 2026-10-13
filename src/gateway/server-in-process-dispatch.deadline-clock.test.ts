@@ -17,7 +17,7 @@ describe("dispatchGatewayRequestInProcessRaw deadline clock", () => {
   let dateSpy: ReturnType<typeof vi.spyOn>;
   let monotonicMs: number;
   let wallMs: number;
-  const heldGates: Deferred<void>[] = [];
+  const heldGates: Deferred[] = [];
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -40,8 +40,8 @@ describe("dispatchGatewayRequestInProcessRaw deadline clock", () => {
   it.each([-10_000, 10_000])(
     "preserves the elapsed budget after a %i ms wall-clock step",
     async (step) => {
-      const entered = createDeferredCore<void>();
-      const handlerDone = createDeferredCore<void>();
+      const entered = createDeferredCore();
+      const handlerDone = createDeferredCore();
       heldGates.push(handlerDone);
       handleGatewayRequest.mockImplementation(async (options: GatewayRequestOptions) => {
         wallMs += step;
