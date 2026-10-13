@@ -453,6 +453,71 @@ describe("channelsCapabilitiesCommand", () => {
     });
   });
 
+  it("keeps the capability probe deadline on the monotonic clock across a wall-clock rollback", async () => {
+    // The probe never settles; only the deadline should bound the wait. It first
+    // simulates a wall-clock rollback once the deadline is already armed, which a
+    // wall-clock deadline would turn into a longer budget but a monotonic one ignores.
+    const probeAccount = vi.fn(() => {
+      wallMs -= 5_000;
+      return new Promise<never>(() => {
+        // Intentionally never settles; command timeout should win.
+      });
+    });
+    const plugin = buildPlugin({
+      id: "slack",
+      account: {
+        accountId: "default",
+        botToken: "xoxb-bot",
+      },
+    });
+    plugin.status = { probeAccount };
+    mocks.resolveInstallableChannelPlugin.mockResolvedValue({
+      cfg: { channels: {} },
+      channelId: "slack",
+      plugin,
+      configChanged: false,
+    });
+
+    vi.useFakeTimers();
+    let monotonicMs = 0;
+    let wallMs = 0;
+    const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
+    const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => wallMs);
+    const advance = async (ms: number) => {
+      // Advance the fake monotonic clock first so the deadline's timer callback
+      // observes the updated monotonic read when it fires.
+      monotonicMs += ms;
+      await vi.advanceTimersByTimeAsync(ms);
+    };
+
+    try {
+      const runPromise = channelsCapabilitiesCommand(
+        { channel: "slack", json: true, timeout: "1000" },
+        runtime,
+      );
+      // Flush microtasks so the command reaches the probe, arms the deadline (with
+      // the pre-rollback clock), and applies the wall-clock rollback inside the probe.
+      await vi.advanceTimersByTimeAsync(0);
+      // The deadline fires after its 1000ms budget of monotonic time. A wall-clock
+      // deadline would have had its remaining budget inflated by the 5000ms rollback.
+      await advance(1_000);
+      await runPromise;
+
+      const payload = JSON.parse(logs[0] ?? "{}") as {
+        channels?: Array<{ probe?: unknown }>;
+      };
+      expect(payload.channels?.[0]?.probe).toStrictEqual({
+        ok: false,
+        timedOut: true,
+        error: "check timed out after 1000ms",
+      });
+    } finally {
+      perfSpy.mockRestore();
+      dateSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("installs an explicit optional channel in the selected owner before rendering capabilities", async () => {
     const tokenRef = {
       source: "env",
