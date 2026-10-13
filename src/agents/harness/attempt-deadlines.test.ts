@@ -5,23 +5,13 @@ import { createAgentHarnessAttemptDeadlineController } from "./attempt-deadlines
 const SETTLEMENT_TIMEOUT_MS = 2 * 60_000;
 
 describe("agent harness attempt deadlines", () => {
-  // Performance.now spy aliased to Date.now in beforeEach so existing wall-clock
-  // assertions hold; the clock-jump regression below restores it. Kept on the
-  // describe scope so `typescript(unbound-method)` does not flag a bare
-  // `performance.now` reference when restoring.
-  let performanceNowSpy: ReturnType<typeof vi.spyOn>;
-
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "performance"] });
     vi.setSystemTime(0);
-    // Production deadlines measure elapsed budget with performance.now() (monotonic)
-    // while tests drive time with vi.setSystemTime/advanceTimersByTime, which only
-    // advance Date.now(). Alias performance.now to Date.now so the existing assertions
-    // about elapsed budgets hold; the clock-jump regression below decouples them.
-    performanceNowSpy = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -47,13 +37,13 @@ describe("agent harness attempt deadlines", () => {
   }
 
   it.each(["timer", "clock"] as const)("expires the admitted execution budget via %s", (expiry) => {
-    vi.setSystemTime(20_000);
+    vi.advanceTimersByTime(20_000);
     const { controller, onTimeout, onDeadlineChanged } = createController(60_000, 0);
     expect(controller.ownsExecutionWait()).toBe(true);
     expect(onDeadlineChanged).toHaveBeenCalledWith({ kind: "bounded", deadlineAtMs: 60_000 });
 
     if (expiry === "clock") {
-      vi.setSystemTime(60_000);
+      vi.spyOn(performance, "now").mockReturnValue(60_000);
       expect(controller.ownsExecutionWait()).toBe(false);
       expect(onTimeout).not.toHaveBeenCalled();
       controller.dispose();
@@ -114,23 +104,16 @@ describe("agent harness attempt deadlines", () => {
     expect(onDeadlineChanged).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the execution timeout bounded when the wall clock rewinds", () => {
-    // Drop the beforeEach alias so performance.now() (driven by advanceTimersByTime)
-    // and Date.now() (driven by setSystemTime) can diverge, modeling a clock jump.
-    performanceNowSpy.mockRestore();
-    // Attempt admitted at fake-time 0: performance.now() reads 0 here.
+  it.each([90_000, -90_000])("preserves the admitted budget across a %ims clock jump", (jumpMs) => {
+    vi.advanceTimersByTime(20_000);
+    vi.setSystemTime(20_000 + jumpMs);
     const { controller, onTimeout, onDeadlineChanged } = createController(60_000, 0, 0);
-    // deadlineAtMs is wall-clock (queue owners compare against Date.now()).
     expect(onDeadlineChanged).toHaveBeenCalledWith({ kind: "bounded", deadlineAtMs: 60_000 });
-    vi.advanceTimersByTime(30_000);
     expect(controller.ownsExecutionWait()).toBe(true);
-    // A clock correction rewinds the wall clock by 90s while the monotonic clock
-    // (driven by advanceTimersByTime) keeps running. A wall-clock-based remaining
-    // budget would grow to 120s; the monotonic budget must still expire at 60s
-    // of real elapsed time.
-    vi.setSystemTime(-60_000);
-    vi.advanceTimersByTime(29_999);
+    vi.advanceTimersByTime(39_999);
     expect(onTimeout).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.now() + jumpMs);
+    expect(controller.ownsExecutionWait()).toBe(true);
     vi.advanceTimersByTime(1);
     expect(onTimeout).toHaveBeenCalledExactlyOnceWith({
       kind: "execution",
@@ -138,7 +121,6 @@ describe("agent harness attempt deadlines", () => {
       timeoutMs: 60_000,
     });
     expect(controller.ownsExecutionWait()).toBe(false);
-    controller.dispose();
   });
 
   it.each(["abort", "dispose"] as const)("cannot revive a deadline after %s", (closure) => {
@@ -163,6 +145,7 @@ describe("agent harness attempt deadlines", () => {
     const onDeadlineChanged = vi.fn();
     const controller = createAgentHarnessAttemptDeadlineController({
       startedAtMs: 0,
+      startedAtMonotonicMs: 0,
       timeoutMs: 60_000,
       settlementTimeoutMs: SETTLEMENT_TIMEOUT_MS,
       signal: abort.signal,
