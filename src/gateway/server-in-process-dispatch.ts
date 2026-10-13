@@ -66,7 +66,6 @@ type DispatchDeadline = {
   readonly diagnosticDeadlineMs: number;
   /** Monotonic deadline and clock for timeout computation (consumed by setTimeout). */
   readonly monotonicDeadlineMs: number;
-  readonly now: () => number;
 };
 
 function resolveDispatchDeadline(timeoutMs?: number): DispatchDeadline | undefined {
@@ -77,7 +76,6 @@ function resolveDispatchDeadline(timeoutMs?: number): DispatchDeadline | undefin
   return {
     diagnosticDeadlineMs: Date.now() + safeTimeoutMs,
     monotonicDeadlineMs: performance.now() + safeTimeoutMs,
-    now: () => performance.now(),
   };
 }
 
@@ -108,7 +106,7 @@ async function waitForDispatch<T>(
     const remainingTimeoutMs =
       deadline === undefined
         ? undefined
-        : resolveSafeTimeoutDelayMs(deadline.monotonicDeadlineMs - deadline.now(), { minMs: 0 });
+        : resolveSafeTimeoutDelayMs(deadline.monotonicDeadlineMs - performance.now(), { minMs: 0 });
     if (remainingTimeoutMs === undefined && !signal) {
       return await promise;
     }
