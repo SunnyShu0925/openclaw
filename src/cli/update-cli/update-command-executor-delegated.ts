@@ -69,7 +69,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         retainedChild,
         slot,
         slotChild,
-      } = resolveUpdateCommandChildBinding(grant, runId, root, identityWarnings.warn);
+      } = await resolveUpdateCommandChildBinding(grant, runId, root, identityWarnings.warn);
       using readConnections = new DisposableStack();
       readConnections.use(store.retainReadConnection());
       let active = true;
@@ -186,10 +186,6 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         return await withUpdateCommandExecutorOperation(
           {
             children: owner,
-            assertCurrent: () => {
-              fence.assertCurrent();
-              identityWarnings.flush();
-            },
             operation: () => {
               fence.assertCurrent();
               admittedAuthorities.set(fence, {
@@ -224,6 +220,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
           "delegated",
         );
       } finally {
+        identityWarnings.flush();
         active = false;
         childOwners.delete(fence);
         slotReservations.delete(fence);
