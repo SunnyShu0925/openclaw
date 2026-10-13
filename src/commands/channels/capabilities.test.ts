@@ -375,7 +375,7 @@ describe("channelsCapabilitiesCommand", () => {
       expect(logs).toHaveLength(1);
       await run;
 
-      expect(JSON.parse(logs[0]).channels).toMatchObject([
+      expect(JSON.parse(logs.join("\n")).channels).toMatchObject([
         {
           accountId: "stalled",
           probe: { ok: false, timedOut: true, error: "check timed out after 1000ms" },
