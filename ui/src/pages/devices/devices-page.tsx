@@ -74,6 +74,7 @@ class DevicesPageController {
   private canAdmin = false;
   private execApprovalsTarget: "gateway" | "node" = "gateway";
   private execApprovalsTargetNodeId: string | null = null;
+  private pendingPairingActions = new Set<string>();
   private readonly dialogs = new DevicesDialogController({
     canManagePairing: () => this.canManagePairing,
     gatewayConnected: () => this.gateway.connected,
@@ -233,6 +234,7 @@ class DevicesPageController {
     this.presence = [];
     this.canManagePairing = false;
     this.canAdmin = false;
+    this.pendingPairingActions = new Set();
   }
 
   setRouteData(data: DevicesRouteData | undefined) {
@@ -243,6 +245,14 @@ class DevicesPageController {
 
   get requestGeneration(): number {
     return this.pageState.requestGeneration;
+  }
+
+  private pairingActionKey(
+    kind: "device" | "node",
+    requestId: string,
+    action: "approve" | "reject" | "rotate" | "revoke",
+  ): string {
+    return `${kind}:${requestId}:${action}`;
   }
 
   private handleGatewaySnapshot(change: GatewayPageChange) {
@@ -537,6 +547,7 @@ class DevicesPageController {
       devicesList: devices.devicesList,
       canPairDevice: this.canAdmin,
       canManagePairing: this.canManagePairing,
+      pendingPairingActions: this.pendingPairingActions,
       canAdmin: this.canAdmin,
       configForm: currentConfigObject(config),
       configLoading: config.configLoading,
@@ -557,17 +568,73 @@ class DevicesPageController {
         }
       },
       onDeviceApprove: (requestId) => {
-        if (this.canManagePairing) {
-          void this.runPageTask((pageState) => approveDevicePairing(pageState, requestId));
+        if (!this.canManagePairing) {
+          return;
         }
+        const key = this.pairingActionKey("device", requestId, "approve");
+        if (this.pendingPairingActions.has(key)) {
+          return;
+        }
+        this.pendingPairingActions = new Set(this.pendingPairingActions).add(key);
+        void this.runPageTask((pageState) => approveDevicePairing(pageState, requestId)).finally(
+          () => {
+            const next = new Set(this.pendingPairingActions);
+            next.delete(key);
+            this.pendingPairingActions = next;
+            this.publish();
+          },
+        );
       },
-      onDeviceReject: (requestId) => void this.dialogs.confirmPairingReject("device", requestId),
+      onDeviceReject: (requestId) => {
+        if (!this.canManagePairing) {
+          return;
+        }
+        const key = this.pairingActionKey("device", requestId, "reject");
+        if (this.pendingPairingActions.has(key)) {
+          return;
+        }
+        this.pendingPairingActions = new Set(this.pendingPairingActions).add(key);
+        void this.dialogs.confirmPairingReject("device", requestId).finally(() => {
+          const next = new Set(this.pendingPairingActions);
+          next.delete(key);
+          this.pendingPairingActions = next;
+          this.publish();
+        });
+      },
       onNodeApprove: (requestId) => {
-        if (this.canManagePairing) {
-          void this.runPageTask((pageState) => approveNodePairingRequest(pageState, requestId));
+        if (!this.canManagePairing) {
+          return;
         }
+        const key = this.pairingActionKey("node", requestId, "approve");
+        if (this.pendingPairingActions.has(key)) {
+          return;
+        }
+        this.pendingPairingActions = new Set(this.pendingPairingActions).add(key);
+        void this.runPageTask((pageState) =>
+          approveNodePairingRequest(pageState, requestId),
+        ).finally(() => {
+          const next = new Set(this.pendingPairingActions);
+          next.delete(key);
+          this.pendingPairingActions = next;
+          this.publish();
+        });
       },
-      onNodeReject: (requestId) => void this.dialogs.confirmPairingReject("node", requestId),
+      onNodeReject: (requestId) => {
+        if (!this.canManagePairing) {
+          return;
+        }
+        const key = this.pairingActionKey("node", requestId, "reject");
+        if (this.pendingPairingActions.has(key)) {
+          return;
+        }
+        this.pendingPairingActions = new Set(this.pendingPairingActions).add(key);
+        void this.dialogs.confirmPairingReject("node", requestId).finally(() => {
+          const next = new Set(this.pendingPairingActions);
+          next.delete(key);
+          this.pendingPairingActions = next;
+          this.publish();
+        });
+      },
       onInventoryRemove: (entry) =>
         void this.dialogs.confirmInventoryRemoval({ kind: "entry", entry }),
       onInventoryCleanup: (entries) => {
@@ -575,9 +642,38 @@ class DevicesPageController {
           void this.dialogs.confirmInventoryRemoval({ kind: "stale", entries });
         }
       },
-      onDeviceRotate: (device, role, scopes) =>
-        void this.reportRotationOutcome(device, role, scopes),
-      onDeviceRevoke: (deviceId, role) => void this.dialogs.confirmTokenRevoke(deviceId, role),
+      onDeviceRotate: (device, role, scopes) => {
+        if (!this.canManagePairing) {
+          return;
+        }
+        const key = this.pairingActionKey("device", device.id, "rotate");
+        if (this.pendingPairingActions.has(key)) {
+          return;
+        }
+        this.pendingPairingActions = new Set(this.pendingPairingActions).add(key);
+        void this.reportRotationOutcome(device, role, scopes).finally(() => {
+          const next = new Set(this.pendingPairingActions);
+          next.delete(key);
+          this.pendingPairingActions = next;
+          this.publish();
+        });
+      },
+      onDeviceRevoke: (deviceId, role) => {
+        if (!this.canManagePairing) {
+          return;
+        }
+        const key = this.pairingActionKey("device", deviceId, "revoke");
+        if (this.pendingPairingActions.has(key)) {
+          return;
+        }
+        this.pendingPairingActions = new Set(this.pendingPairingActions).add(key);
+        void this.dialogs.confirmTokenRevoke(deviceId, role).finally(() => {
+          const next = new Set(this.pendingPairingActions);
+          next.delete(key);
+          this.pendingPairingActions = next;
+          this.publish();
+        });
+      },
       onDeviceRename: (device) => void this.dialogs.editAlias(device),
       onLoadConfig: () => void this.context.runtimeConfig.discardDraft({ reloadOnly: true }),
       onLoadExecApprovals: () =>

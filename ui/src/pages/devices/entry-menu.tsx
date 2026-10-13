@@ -95,7 +95,13 @@ export function DeviceEntryMenu(props: {
           .map((action): MenuItem => ({
             id: action.value,
             label: t(action.labelKey),
-            disabled: action.pairing && !props.devices.canManagePairing,
+            disabled:
+              (action.pairing && !props.devices.canManagePairing) ||
+              (action.value === "approve" &&
+                Boolean(props.entry.pendingRequestId) &&
+                props.devices.pendingPairingActions.has(
+                  `node:${props.entry.pendingRequestId}:approve`,
+                )),
             attributes: {
               title:
                 action.pairing && !props.devices.canManagePairing

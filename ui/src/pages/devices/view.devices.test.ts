@@ -716,6 +716,27 @@ describe("devices inventory rendering", () => {
     expect(revocations).toEqual([{ deviceId: "device-1", role: "operator" }]);
   });
 
+  it("disables rotate and revoke when their action is pending", () => {
+    const container = renderDevicesContainer({
+      devicesList: {
+        pending: [],
+        paired: [
+          {
+            deviceId: "device-1",
+            displayName: "Device One",
+            roles: ["operator"],
+            scopes: ["operator.read"],
+            tokens: [{ role: "operator", scopes: ["operator.read"], createdAtMs: Date.now() }],
+          },
+        ],
+      },
+      pendingPairingActions: new Set(["device:device-1:rotate"]),
+    });
+    const section = getInventorySection(container);
+    expect(findButton(section, "Rotate").disabled).toBe(true);
+    expect(findButton(section, "Revoke").disabled).toBe(false);
+  });
+
   it("brands platform names instead of naive capitalization", () => {
     const container = renderDevicesContainer({
       devicesList: {

@@ -112,14 +112,20 @@ function PendingDevice(props: {
       <div class="settings-row__control">
         <button
           class="btn btn--sm"
-          disabled={!props.devices.canManagePairing}
+          disabled={
+            !props.devices.canManagePairing ||
+            props.devices.pendingPairingActions.has(`device:${props.req.requestId}:approve`)
+          }
           onClick={() => props.devices.onDeviceApprove(props.req.requestId)}
         >
           {t("devices.inventory.approve")}
         </button>
         <button
           class="btn btn--sm"
-          disabled={!props.devices.canManagePairing}
+          disabled={
+            !props.devices.canManagePairing ||
+            props.devices.pendingPairingActions.has(`device:${props.req.requestId}:reject`)
+          }
           onClick={() => props.devices.onDeviceReject(props.req.requestId)}
         >
           {t("devices.inventory.reject")}

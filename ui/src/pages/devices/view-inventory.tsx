@@ -569,7 +569,10 @@ function TokenRow(props: {
         <div class="device-entry__token-actions">
           <button
             class="btn btn--sm"
-            disabled={!props.devices.canManagePairing}
+            disabled={
+              !props.devices.canManagePairing ||
+              props.devices.pendingPairingActions.has(`device:${props.device.id}:rotate`)
+            }
             onClick={() =>
               props.devices.onDeviceRotate(
                 props.device,
@@ -583,7 +586,10 @@ function TokenRow(props: {
           {props.tokenSummary.revokedAtMs ? undefined : (
             <button
               class="btn btn--sm danger"
-              disabled={!props.devices.canManagePairing}
+              disabled={
+                !props.devices.canManagePairing ||
+                props.devices.pendingPairingActions.has(`device:${props.device.id}:revoke`)
+              }
               onClick={() => props.devices.onDeviceRevoke(props.device.id, props.tokenSummary.role)}
             >
               {t("devices.inventory.revoke")}
