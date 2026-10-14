@@ -772,6 +772,27 @@ describe("browser control server", () => {
     expect(requirePwMock("downloadViaPlaywright")).not.toHaveBeenCalled();
   });
 
+  it.each([".", "./"])("download rejects the downloads root itself (%s)", async (rootPath) => {
+    const base = await startServerAndBase();
+    const downloadRes = await postJson<{ error?: string }>(`${base}/download`, {
+      ref: "e12",
+      path: rootPath,
+    });
+    expect(downloadRes.error).toContain("Invalid path");
+    expect(requirePwMock("downloadViaPlaywright")).not.toHaveBeenCalled();
+  });
+
+  it("download preserves surrounding whitespace in the output path", async () => {
+    const base = await startServerAndBase();
+    expect(await postJson(`${base}/download`, { ref: "e12", path: " report.pdf " })).toMatchObject({
+      ok: true,
+    });
+    expectBrowserCallFields(requirePwMock("downloadViaPlaywright"), {
+      ref: "e12",
+      path: path.resolve(DEFAULT_DOWNLOAD_DIR, " report.pdf "),
+    });
+  });
+
   it.runIf(process.platform !== "win32")("trace writes reject symlink escapes", async () => {
     const base = await startServerAndBase();
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-route-escape-"));

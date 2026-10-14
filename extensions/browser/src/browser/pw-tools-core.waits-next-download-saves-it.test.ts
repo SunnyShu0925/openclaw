@@ -327,6 +327,54 @@ describe("pw-tools-core", () => {
     });
   });
 
+  it("preserves surrounding whitespace in the explicit download path", async () => {
+    await withTempDir(async (tempDir) => {
+      const harness = createDownloadEventHarness();
+
+      const clicked = createDeferred<void>();
+      const click = vi.fn(async () => {
+        clicked.resolve();
+      });
+      setPwToolsCoreCurrentRefLocator({ click });
+
+      const saveAs = vi.fn(async (outPath: string) => {
+        await fs.writeFile(outPath, "whitespace-content", "utf8");
+      });
+      const download = {
+        url: () => "https://example.com/report.pdf",
+        cancel: vi.fn(async () => {}),
+        suggestedFilename: () => "report.pdf",
+        saveAs,
+      };
+
+      const rootDir = path.join(tempDir, "downloads");
+      await fs.mkdir(rootDir, { recursive: true });
+      // A trimmed-name neighbor must not receive the download.
+      const neighborPath = path.join(rootDir, "report.pdf");
+      const literalPath = path.join(rootDir, " report.pdf ");
+      const p = mod.downloadViaPlaywright({
+        ...target,
+        ref: "e12",
+        path: " report.pdf ",
+        rootDir,
+        timeoutMs: 1000,
+      });
+
+      await Promise.race([
+        clicked.promise,
+        p.then(() => {
+          throw new Error("Download completed before its trigger");
+        }),
+      ]);
+      harness.trigger(download);
+
+      const res = await p;
+      expect(res.path).toBe(literalPath);
+      await expect(fs.readFile(literalPath, "utf8")).resolves.toBe("whitespace-content");
+      await expectPathMissing(neighborPath);
+    });
+  });
+
   it("rejects a policy-denied waited download before saving it", async () => {
     await withTempDir(async (tempDir) => {
       const harness = createDownloadEventHarness();

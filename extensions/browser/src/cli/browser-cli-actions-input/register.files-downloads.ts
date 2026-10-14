@@ -95,7 +95,10 @@ export function registerBrowserFilesAndDownloadsCommands(
       await runHook<{ download: { path: string } }>(parentOpts(cmd), opts, {
         path: "/wait/download",
         body: {
-          path: normalizeOptionalString(outPath),
+          // Preserve surrounding whitespace in the save path; trimming here
+          // would redirect " report.pdf " to the trimmed-name neighbor. The
+          // route rejects blank input; non-string stays absent.
+          path: readStringValue(outPath),
         },
         successMessage: (result) => `downloaded: ${shortenHomePath(result.download.path)}`,
       });

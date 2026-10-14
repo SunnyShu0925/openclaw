@@ -4,6 +4,7 @@ import {
   isPrivateNetworkAllowedByPolicy,
   normalizeHostname,
 } from "openclaw/plugin-sdk/security-runtime";
+import { readNonBlankString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import type { Frame, Page } from "playwright-core";
 import { DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS } from "./constants.js";
@@ -337,7 +338,9 @@ export async function waitForDownloadViaPlaywright(
       state,
       timeoutMs: timeout,
       outPath: opts.path,
-      rootDir: opts.path?.trim() ? opts.rootDir : (opts.rootDir ?? resolveImplicitDownloadRoot()),
+      rootDir: readNonBlankString(opts.path)
+        ? opts.rootDir
+        : (opts.rootDir ?? resolveImplicitDownloadRoot()),
       signal,
       ...navigationPolicy,
     });
@@ -381,7 +384,9 @@ export async function downloadViaPlaywright(
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120_000);
 
   const ref = requireRef(opts.ref);
-  const outPath = opts.path?.trim() ?? "";
+  // Preserve surrounding whitespace in the output path; the downstream writer
+  // confines it without trimming, so only blank input is rejected here.
+  const outPath = readNonBlankString(opts.path);
   if (!outPath) {
     throw new Error("path is required");
   }

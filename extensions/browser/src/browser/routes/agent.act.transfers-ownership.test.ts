@@ -101,13 +101,13 @@ const cases = [
   {
     kind: "download",
     path: "/download",
-    body: { ref: "1", path: "/tmp/download.txt" },
+    body: { ref: "1", path: "download.txt" },
     preparation: "output",
   },
   {
     kind: "download waiter",
     path: "/wait/download",
-    body: { path: "/tmp/download.txt" },
+    body: { path: "download.txt" },
     preparation: "output",
   },
 ] as const;

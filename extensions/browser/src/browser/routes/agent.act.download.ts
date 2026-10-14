@@ -1,3 +1,5 @@
+import path from "node:path";
+import { readNonBlankString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { ensureOutputDirectory } from "../output-directories.js";
 import { DEFAULT_DOWNLOAD_DIR } from "../paths.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
@@ -17,7 +19,11 @@ export function registerBrowserAgentActDownloadRoutes(
   const register = createTabRouteRegistrar(app, ctx);
   for (const mode of ["wait", "download"] as const) {
     register(mode === "wait" ? "/wait/download" : "/download", (body, res) => {
-      const out = toStringOrEmpty(body.path);
+      // Preserve surrounding whitespace in the output path: trimming here would
+      // silently redirect " report.pdf " to the trimmed-name neighbor. Blank
+      // input is still rejected; confinement is enforced by the downstream
+      // writer (writeExternalFileWithinRoot), which does not trim.
+      const out = readNonBlankString(body.path) ?? "";
       const ref = toStringOrEmpty(body.ref);
       const currentDocument = mode === "download" && body.currentDocument === true;
       const expectedUrl = typeof body.expectedUrl === "string" ? body.expectedUrl : "";
@@ -60,16 +66,23 @@ export function registerBrowserAgentActDownloadRoutes(
         await ensureOutputDirectory(DEFAULT_DOWNLOAD_DIR);
         let downloadPath: string | undefined;
         if (!currentDocument && out) {
+          // Resolve through the temp-downloads-root gate to fail fast on
+          // traversal/absolute escapes and on the root itself ("." trims to
+          // blank and is rejected by the scoped resolver), satisfying
+          // GHSA-XWJM-J929-XQ7C. The scoped resolver trims the request for
+          // its own containment check; preserve the caller's literal path
+          // (surrounding whitespace) for the downstream capture/writer, which
+          // re-confines the path without trimming.
           const resolved = await resolveWritableOutputPathOrRespond({
             res,
             rootDir: DEFAULT_DOWNLOAD_DIR,
             requestedPath: out,
             scopeLabel: "downloads directory",
           });
-          if (!resolved) {
+          if (resolved === null) {
             return;
           }
-          downloadPath = resolved;
+          downloadPath = path.resolve(DEFAULT_DOWNLOAD_DIR, out);
         }
         const target = {
           cdpUrl,
