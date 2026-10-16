@@ -1,21 +1,18 @@
 name: Windows Native Proof (PR #172869)
 
 on:
+  push:
+    branches:
+      - proof/windows-native-172869
   workflow_dispatch:
-    inputs:
-      pr_head:
-        description: "PR head SHA or branch name"
-        required: false
-        default: "fix/cron-cwd-trim-201"
 
 jobs:
   windows-proof:
     runs-on: windows-latest
     steps:
-      - name: Checkout PR branch
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.pr_head || github.ref_name }}
           fetch-depth: 1
 
       - name: Setup Node.js
@@ -41,15 +38,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-          $output = & pwsh -File .github/workflows/windows-runner-proof.ps1 2>&1
-          $output | Out-File -FilePath windows-proof-output.txt -Encoding UTF8
-          Write-Host $output
-          # Check for PASS in summary
-          if ($output -match "Case 1.*PASS" -and $output -match "Case 2.*PASS") {
-            Write-Host "::notice::Both Windows proof cases PASSED"
-          } else {
-            Write-Host "::warning::One or more proof cases did not PASS"
-          }
+          & pwsh -File .github/workflows/windows-runner-proof.ps1 2>&1 | Tee-Object -FilePath windows-proof-output.txt
 
       - name: Upload proof output
         if: always()
