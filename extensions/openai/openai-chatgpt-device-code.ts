@@ -262,11 +262,8 @@ async function pollOpenAICodexDeviceCode(params: {
   signal?: AbortSignal;
   assertCurrent?: () => void;
 }): Promise<DeviceCodeAuthorizationCode> {
-  // Monotonic deadline so wall-clock jumps (NTP correction, sleep/resume,
-  // manual changes) cannot stretch or shrink the 15-minute device-code budget.
-  // The remaining budget is consumed through setTimeout (waitForDeviceCodePoll)
-  // and buildTimeoutAbortSignal, both monotonic; seeding with Date.now() would
-  // cross clock domains and let a rollback enlarge the budget.
+  // Keep the polling budget independent of wall-clock corrections. Whether
+  // suspended time counts toward performance.now() depends on the host runtime.
   const deadline = performance.now() + OPENAI_CODEX_DEVICE_CODE_TIMEOUT_MS;
 
   while (performance.now() < deadline) {

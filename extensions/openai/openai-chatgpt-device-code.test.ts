@@ -1,7 +1,7 @@
 // Openai tests cover openai chatgpt device code plugin behavior.
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resolveOpenAICodexAccessTokenExpiry } from "openclaw/plugin-sdk/provider-auth";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cancelTrackedTextResponse } from "../test-support/streaming-error-response.js";
 import { loginOpenAICodexDeviceCode } from "./openai-chatgpt-device-code.js";
 
@@ -80,19 +80,6 @@ function createBodyThatStallsUntilAbort(init?: RequestInit): Response {
 }
 
 describe("loginOpenAICodexDeviceCode", () => {
-  // Production deadlines seed and read the remaining budget with performance.now()
-  // (monotonic) while these tests drive time with vi.useFakeTimers +
-  // advanceTimersByTime, which only advance Date.now(). Alias performance.now to
-  // Date.now so existing wall-clock assertions hold; the clock-jump regression
-  // below restores it to model a divergence. Kept on the describe scope so
-  // `typescript(unbound-method)` does not flag a bare `performance.now`
-  // reference when restoring.
-  let performanceNowSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    performanceNowSpy = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
-  });
-
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -353,7 +340,7 @@ describe("loginOpenAICodexDeviceCode", () => {
       expect(credentials.access.length).toBeGreaterThan(0);
       expect(credentials.refresh).toBe("refresh-token-123");
       expect(credentials).not.toHaveProperty("accountId");
-      expect(credentials.expires).toBeGreaterThan(Date.now());
+      expect(credentials.expires).toBe(Date.now() + 600_000);
     } finally {
       vi.useRealTimers();
       vi.unstubAllEnvs();
@@ -688,49 +675,65 @@ describe("loginOpenAICodexDeviceCode", () => {
     );
   });
 
-  it("keeps the device-code deadline bounded when the wall clock rewinds", async () => {
-    // Drop the beforeEach alias so performance.now() (driven by
-    // advanceTimersByTime) and Date.now() (driven by setSystemTime) can diverge,
-    // modeling an NTP correction or manual clock change mid-login.
-    performanceNowSpy.mockRestore();
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    try {
-      // The usercode request succeeds; every authorization poll request
-      // stalls until its request-timeout AbortSignal fires, so the loop only
-      // exits via the overall deadline.
+  it.each([
+    { clockStepMs: -30 * 60_000, response: "blocked headers" },
+    { clockStepMs: 30 * 60_000, response: "blocked headers" },
+    { clockStepMs: -30 * 60_000, response: "pending authorization" },
+    { clockStepMs: 30 * 60_000, response: "pending authorization" },
+  ])(
+    "keeps the 15-minute boundary after a $clockStepMs ms clock step with $response",
+    async ({ clockStepMs, response }) => {
+      // setSystemTime changes Date, independently of the fake monotonic clock and timers.
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      const controller = new AbortController();
       const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
         const url =
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         if (url.endsWith("/api/accounts/deviceauth/usercode")) {
           return createDeviceCodeResponse();
         }
-        return waitForFetchAbort(init);
+        return response === "blocked headers"
+          ? waitForFetchAbort(init)
+          : new Response(null, { status: 404 });
       });
-
-      const login = loginOpenAICodexDeviceCode({
+      let settled = false;
+      const observing = loginOpenAICodexDeviceCode({
         fetchFn: fetchMock,
+        signal: controller.signal,
         onVerification: async () => {},
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      // usercode request issued, then the first authorization poll starts.
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-
-      // Rewind the wall clock by 30 minutes while the monotonic clock keeps
-      // running. A wall-clock-based remaining budget would grow to 45 minutes;
-      // the monotonic budget must still expire at 15 minutes of real elapsed
-      // time.
-      vi.setSystemTime(-30 * 60_000);
-      const rejected = expect(login).rejects.toThrow(
-        "OpenAI device authorization timed out after 15 minutes",
+      }).then(
+        (value) => {
+          settled = true;
+          return { value };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { error };
+        },
       );
-      // Advance the monotonic clock the full 15-minute budget. The request
-      // timeout (30s) fires repeatedly and the loop continues until the
-      // overall deadline is reached.
-      await vi.advanceTimersByTimeAsync(15 * 60_000);
-      await rejected;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        vi.setSystemTime(clockStepMs);
+        await vi.advanceTimersByTimeAsync(15 * 60_000 - 1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(settled).toBe(true);
+        expect(await observing).toEqual({
+          error: expect.objectContaining({
+            message: "OpenAI device authorization timed out after 15 minutes.",
+          }),
+        });
+        const completedRequests = fetchMock.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(fetchMock).toHaveBeenCalledTimes(completedRequests);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        controller.abort(new Error("test cleanup"));
+        await observing;
+        vi.useRealTimers();
+      }
+    },
+  );
 });
