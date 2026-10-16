@@ -325,6 +325,12 @@ describe("executable path helpers", () => {
       expect(resolveExecutablePathCandidate("./tool", { cwd: "/srv/data " })).toBe(
         "/srv/data /tool",
       );
+      expect(resolveExecutablePathCandidate("./tool", { cwd: " job" })).toBe(
+        path.resolve(" job", "tool"),
+      );
+      expect(resolveExecutablePathCandidate("./tool", { cwd: "job " })).toBe(
+        path.resolve("job ", "tool"),
+      );
     },
   );
 

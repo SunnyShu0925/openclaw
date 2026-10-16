@@ -74,6 +74,25 @@ windowsIt("honors PATHEXT precedence before package-manager shim fallback", ({ c
   });
 });
 
+it("preserves trailing cwd whitespace when resolving bare commands from relative PATH", async () => {
+  await withTempDir("openclaw-windows-command-trailing-", async (base) => {
+    await mkdir(path.join(base, "job", "bin"), { recursive: true });
+    await mkdir(path.join(`${base}/job `, "bin"), { recursive: true });
+    await writeFile(path.join(base, "job", "bin", "tool.exe"), "");
+    await writeFile(path.join(`${base}/job `, "bin", "tool.exe"), "");
+    const cwd = `${path.join(base, "job")} `;
+    withMockedWindowsPlatform(() => {
+      expect(
+        resolveSafeChildProcessInvocation({
+          argv: ["tool.exe"],
+          cwd,
+          env: { PATH: "bin", PATHEXT: ".EXE" },
+        }).command,
+      ).toBe(path.join(`${base}/job `, "bin", "tool.exe"));
+    });
+  });
+});
+
 describe.runIf(process.platform === "win32")("Windows batch argv preservation", () => {
   const ordinary = ["alpha", "omega"];
   const cases = [
