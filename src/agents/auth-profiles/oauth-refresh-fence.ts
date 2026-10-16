@@ -87,7 +87,8 @@ export async function observeOAuthRefreshFenceSettlement<TSnapshot, TResult>(par
     if (remainingMs <= 0) {
       throw createOAuthRefreshTimeoutError(params.label, params.timeoutMs);
     }
-    await sleepWithAbort(Math.min(25, Math.floor(remainingMs)), params.signal);
+    // Preserve a positive fractional remainder so polling yields until the deadline.
+    await sleepWithAbort(Math.min(25, Math.ceil(remainingMs)), params.signal);
   }
 }
 
@@ -378,7 +379,8 @@ async function observeOAuthRefreshSettlementBeforeDeadline<T>(
           () => {
             reject(createOAuthRefreshTimeoutError(label, timeoutMs));
           },
-          Math.max(0, Math.floor(deadline - performance.now())),
+          // performance.now() is fractional; rounding down can expire before the deadline.
+          Math.max(0, Math.ceil(deadline - performance.now())),
         );
         settlement
           .finally(() => {
