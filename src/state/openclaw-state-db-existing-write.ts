@@ -10,9 +10,11 @@ import {
 import { assertNoActiveSqliteReaders } from "../infra/sqlite-reader-lifecycle.js";
 import {
   assertSqliteSchemaContains,
+  getCanonicalSqliteNamedIndexNames,
   getCanonicalSqliteTableNames,
   type SqliteSchemaCompatibility,
 } from "../infra/sqlite-schema-contract.js";
+import { createSqliteSchemaEnsurer } from "../infra/sqlite-schema-ensure.js";
 import { admitSqliteSchema } from "../infra/sqlite-schema-facts.js";
 import {
   assertTransactionUsable,
@@ -75,13 +77,15 @@ function assertExistingOpenClawStateSchemaMetadata(
 function assertExistingOpenClawStateSchema(
   db: DatabaseSync,
   pathname: string,
-  schemaSql: string,
+  schemaSql: string | undefined,
   compatibility?: SqliteSchemaCompatibility,
 ): number {
   const version = assertSupportedStateSchemaVersion(db, pathname);
   assertExistingOpenClawStateSchemaMetadata(db, pathname, version);
   assertStateDatabaseIntegrityOnce(db, pathname);
-  assertSqliteSchemaContains(db, pathname, schemaSql, compatibility);
+  if (schemaSql !== undefined) {
+    assertSqliteSchemaContains(db, pathname, schemaSql, compatibility);
+  }
   return version;
 }
 
@@ -164,6 +168,12 @@ function createExistingOpenClawStateWriter(
       .digest("hex")}`,
     (value) => (typeof value === "number" ? value : undefined),
   );
+  const ensureAdditiveSchema = contract.initializeAdditiveSchema
+    ? createSqliteSchemaEnsurer(() => contract.schemaSql, {
+        tables: getCanonicalSqliteTableNames(contract.schemaSql),
+        indexes: getCanonicalSqliteNamedIndexNames(contract.schemaSql),
+      })
+    : undefined;
   let closed = false;
   return {
     run<T>(operation: ExistingWriteOperation<T>, currentOptions: ExistingWriteOptions) {
@@ -200,7 +210,7 @@ function createExistingOpenClawStateWriter(
             assertExistingOpenClawStateSchema(
               db,
               pathname,
-              needsAdmission && contract.initializeAdditiveSchema ? "" : contract.schemaSql,
+              needsAdmission && contract.initializeAdditiveSchema ? undefined : contract.schemaSql,
               contract.schemaCompatibility,
             );
           let version: number;
@@ -228,7 +238,8 @@ function createExistingOpenClawStateWriter(
               ...contract.schemaCompatibility,
               allowedMissingTables: getCanonicalSqliteTableNames(contract.schemaSql),
             });
-            db.exec(contract.schemaSql); // sqlite-allow-raw -- Declared canonical feature-local additive DDL only.
+            admitSqliteSchema(db);
+            ensureAdditiveSchema?.(db);
             assertSqliteSchemaContains(
               db,
               pathname,

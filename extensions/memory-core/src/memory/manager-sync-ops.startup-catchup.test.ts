@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveSessionTranscriptsDirForAgent } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
-import { buildSessionEntry } from "openclaw/plugin-sdk/memory-core-host-engine-sessions";
+import * as memorySessions from "openclaw/plugin-sdk/memory-core-host-engine-sessions";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import {
   captureRuntimeConfigAsyncReader,
@@ -16,7 +16,10 @@ import {
   publishSessionTranscriptUpdateByIdentity,
 } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { openOpenClawAgentDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
-import { observeHostDataSql } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  requireNativeSqliteDatabase,
+  observeHostDataSql,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -146,7 +149,8 @@ describe("session startup catch-up", () => {
       agentId: "main",
       storePath,
       sessionKey,
-      entry: { sessionId, updatedAt: 10 },
+      // Keep the synthetic session recent so retention cannot prune it during the test.
+      entry: { sessionId, updatedAt: Date.now() },
     });
     const identity = { agentId: "main", sessionId, sessionKey, storePath, cwd: stateDir };
     await appendSessionTranscriptMessageByIdentity({
@@ -176,7 +180,10 @@ describe("session startup catch-up", () => {
       true,
     );
 
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     await expect(harness.catchUp()).resolves.toEqual([]);
+    expect(harness.syncCalls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(30_000);
     await harness.waitForSessionSync();
 
     expect(harness.syncCalls).toEqual([{ reason: "session-startup-catchup" }]);
@@ -189,7 +196,7 @@ describe("session startup catch-up", () => {
   it("indexes a same-size file transcript whose mtime rolled back", async () => {
     const archiveName = "thread.jsonl.deleted.2026-08-01T10-00-00.000Z";
     const original = await writeSessionFile(archiveName, "version before");
-    const originalEntry = await buildSessionEntry(original.filePath);
+    const originalEntry = await memorySessions.buildSessionEntry(original.filePath);
     if (!originalEntry) {
       throw new Error("expected original file transcript entry");
     }
@@ -212,7 +219,9 @@ describe("session startup catch-up", () => {
       true,
     );
 
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     await expect(harness.catchUp()).resolves.toEqual([replacement.filePath]);
+    await vi.advanceTimersByTimeAsync(30_000);
     await harness.waitForSessionSync();
 
     expect(harness.syncCalls).toEqual([{ reason: "session-startup-catchup" }]);
@@ -224,13 +233,13 @@ describe("session startup catch-up", () => {
     const archiveName = "thread.jsonl.deleted.2026-08-01T11-00-00.000Z";
     const messageTimestamp = "2026-08-01T10:30:00.000Z";
     const original = await writeSessionFile(archiveName, "unchanged content", messageTimestamp);
-    const originalEntry = await buildSessionEntry(original.filePath);
+    const originalEntry = await memorySessions.buildSessionEntry(original.filePath);
     if (!originalEntry) {
       throw new Error("expected original file transcript entry");
     }
     const rolledBackMtime = new Date(Math.max(1, original.mtimeMs - 60_000));
     await fs.utimes(original.filePath, rolledBackMtime, rolledBackMtime);
-    const restoredEntry = await buildSessionEntry(original.filePath);
+    const restoredEntry = await memorySessions.buildSessionEntry(original.filePath);
     if (!restoredEntry) {
       throw new Error("expected restored file transcript entry");
     }
@@ -248,7 +257,9 @@ describe("session startup catch-up", () => {
       true,
     );
 
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     await expect(harness.catchUp()).resolves.toEqual([original.filePath]);
+    await vi.advanceTimersByTimeAsync(30_000);
     await harness.waitForSessionSync();
     expect(harness.indexedPaths).toEqual([]);
     expect(harness.getIndexedSourceState(originalEntry.path)).toEqual({
@@ -267,7 +278,7 @@ describe("session startup catch-up", () => {
 
   it("converges a legacy SQLite activity fingerprint without reindexing unchanged text", async () => {
     const session = await writeSqliteSession({ updatedAt: 10 });
-    const entry = await buildSessionEntry(session.sessionKey, {
+    const entry = await memorySessions.buildSessionEntry(session.sessionKey, {
       agentId: "main",
       sessionId: session.sessionId,
       storePath: session.storePath,
@@ -289,14 +300,15 @@ describe("session startup catch-up", () => {
       ],
       true,
       false,
-      true,
     );
 
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const observed = observeHostDataSql();
     const cpuStart = process.threadCpuUsage();
     const started = performance.now();
     try {
       await expect(harness.catchUp()).resolves.toEqual([session.sessionKey]);
+      await vi.advanceTimersByTimeAsync(30_000);
       await harness.waitForSessionSync();
       const sourceSql = observed.queries.filter((sql) =>
         /\b(?:from|update)\s+["`]?memory_index_sources\b/i.test(sql),
@@ -358,7 +370,7 @@ describe("session startup catch-up", () => {
     });
     const forgotten = await writeSqliteSession({ storePath, sessionId: "forgotten-thread" });
     await writeSqliteSession({ storePath, sessionId: "unrelated-thread" });
-    const harness = await SessionStartupCatchupHarness.create([], true, false, false, {
+    const harness = await SessionStartupCatchupHarness.create([], true, false, {
       session: { store: storePath },
     });
     harness.addPendingSessionTarget({
@@ -375,7 +387,7 @@ describe("session startup catch-up", () => {
       cwd: stateDir,
       message: { role: "user", content: "appended after queuing" },
     });
-    const { db } = openOpenClawAgentDatabase({ agentId: "main" });
+    const db = requireNativeSqliteDatabase(openOpenClawAgentDatabase({ agentId: "main" }).db);
     ensureMemorySessionTombstones(db);
     recordMemorySessionTombstonesInDatabase(db, {
       agentId: "main",
@@ -423,7 +435,7 @@ describe("session startup catch-up", () => {
       content: "replacement store target",
     });
     await configureTestSessionStore(session.storePath);
-    const harness = await SessionStartupCatchupHarness.create([], false, false, false, {
+    const harness = await SessionStartupCatchupHarness.create([], false, false, {
       session: { store: session.storePath },
     });
     harness.afterNextCorpusListForTest(async () => {
@@ -457,7 +469,7 @@ describe("session startup catch-up", () => {
     const timerContexts: Array<{ turn?: string; pendingInput?: string }> = [];
     const originalSetTimeout = globalThis.setTimeout;
     const timerObserver = vi.spyOn(globalThis, "setTimeout").mockImplementation((...args) => {
-      if (args[1] === 5000) {
+      if (args[1] === 30_000) {
         timerContexts.push({
           turn: turnContext.getStore(),
           pendingInput: pendingInputContext.getStore(),
@@ -484,7 +496,7 @@ describe("session startup catch-up", () => {
       );
       expect(timerContexts).toEqual([{ turn: undefined, pendingInput: undefined }]);
 
-      await vi.advanceTimersByTimeAsync(6000);
+      await vi.advanceTimersByTimeAsync(31_000);
       await harness.waitForCorpusList();
       await harness.waitForSessionSync();
 
@@ -517,7 +529,7 @@ describe("session startup catch-up", () => {
       await harness.waitForCorpusList();
       expect(harness.getPendingArchiveFiles()).toHaveLength(1);
 
-      await vi.advanceTimersByTimeAsync(6000);
+      await vi.advanceTimersByTimeAsync(31_000);
       await harness.waitForSessionSync();
 
       expect(harness.indexedPaths).toHaveLength(1);
@@ -541,7 +553,7 @@ describe("session startup catch-up", () => {
       try {
         emitSessionTranscriptUpdate({ sessionFile: session.filePath });
         await harness.waitForCorpusList();
-        await vi.advanceTimersByTimeAsync(6000);
+        await vi.advanceTimersByTimeAsync(31_000);
         await harness.waitForSessionSync();
 
         expect([harness.getPendingArchiveFiles(), harness.getDirtyArchiveFiles()]).toEqual([

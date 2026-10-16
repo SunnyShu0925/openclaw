@@ -58,7 +58,7 @@ const waitForPortBindable = vi.fn(async (_port: number, _opts?: unknown) => 0);
 const findVerifiedGatewayListenerPidsOnPortSync = vi.fn((_port: number) => [] as number[]);
 const formatGatewayPidList = vi.fn((pids: number[]) => pids.join(", "));
 const isTerminalInteractive = vi.fn(() => true);
-const offerInvalidConfigRecovery = vi.fn(async () => ({ status: "declined" as const }));
+const offerInvalidConfigRecovery = vi.fn(async () => false);
 const parkCurrentLaunchAgentForMaintenance = vi.fn(async () => false);
 const ensureDevGatewayConfig = vi.fn(async (_opts?: unknown) => {});
 const runGatewayLoop = vi.fn(async ({ start }: GatewayLoopParams) => {
@@ -161,6 +161,14 @@ vi.mock("../../config/config.js", () => ({
   readConfigFileSnapshot: async () => configState.snapshot,
   readConfigFileSnapshotWithPluginMetadata: (options?: ConfigSnapshotReadOptionsStub) =>
     readConfigFileSnapshotWithPluginMetadata(options),
+}));
+
+// mock-isolation: CLI option cases use the synthetic config snapshot without filesystem recovery.
+vi.mock("../../config/io.factory.js", () => ({
+  createConfigIO: () => ({
+    readConfigFileSnapshot: async () => configState.snapshot,
+    prepareConfigRecovery: async () => null,
+  }),
 }));
 
 vi.mock("../../config/paths.js", async (importOriginal) => ({

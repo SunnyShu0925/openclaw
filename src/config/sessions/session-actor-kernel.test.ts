@@ -4,6 +4,7 @@ import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-ou
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
 import { readSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
 import {
   deleteSessionEntryRows,
@@ -15,6 +16,7 @@ import {
 } from "./session-accessor.sqlite-pending-inputs.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { applySessionActorAppend } from "./session-actor-append.worker.js";
+import { initializeSessionActorContextStats } from "./session-actor-context-stats.worker.js";
 import type { SessionActorAppend, SessionActorTarget } from "./session-actor-contract.js";
 import type { SessionActorStoredState } from "./session-actor-hydration.types.js";
 import {
@@ -22,11 +24,12 @@ import {
   projectSessionActorHotState,
 } from "./session-actor-hydration.worker.js";
 import {
-  cloneSessionActorStoredState,
+  forkSessionActorStoredState,
   withSessionActorTransactionState,
 } from "./session-actor-transaction.js";
 import { createSessionCompoundWorkerFixture } from "./session-compound-worker.test-support.js";
 import { mutatePendingInput, readPendingInput } from "./session-pending-input-operations.kernel.js";
+import { readSessionTranscriptAnchorFactsInDatabase } from "./session-transcript-anchor-read.kernel.js";
 import { applySessionTurn } from "./session-turn.worker.js";
 
 // mock-isolation: Session storage proof does not schedule unrelated background maintenance.
@@ -116,16 +119,16 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
       state = hydrateSessionActorState(database, target, { epoch: "test", sequence: 0 }, "initial");
       expect(counter.counts.reads).toBe(1);
       expect(state.hot.transcript.modelContext).toEqual({
-        kind: "resident",
-        entries: [{ rawSeq: 1, eventId: "user" }],
+        kind: "unavailable",
+        reason: "projection",
+        generation: state.hot.transcript.version.generation,
       });
-      expect(state.hot.transcript.idempotency).toEqual([
-        { key: "first-user", eventId: "user", rawSeq: 1 },
-      ]);
+      expect(state.hot.transcript.idempotency).toEqual([]);
       expect(state.hot.completionKeys).toEqual([]);
       counter.counts.reads = 0;
       reads.length = 0;
-      const working = cloneSessionActorStoredState(state);
+      const beforeCommit = structuredClone(state);
+      const working = forkSessionActorStoredState(state);
       runOpenClawAgentWriteTransaction(
         (db) =>
           withSessionActorTransactionState(db, working, () => {
@@ -185,28 +188,40 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
       expect(postimage.pendingInputs).toMatchObject([
         { input_id: "accepted-input", state: "queued" },
       ]);
-      expect(postimage.transcript.anchors).toMatchObject([
-        { entryId: "user" },
-        { entryId: "assistant", effectiveParentId: "user" },
-      ]);
+      expect(postimage.transcript.anchorsState).toBe("unavailable");
+      expect(postimage.transcript.anchors).toEqual([]);
       expect(postimage.transcript.modelContext).toEqual({
-        kind: "resident",
-        entries: [
-          { rawSeq: 1, eventId: "user" },
-          { rawSeq: 2, eventId: "assistant" },
-        ],
+        kind: "unavailable",
+        reason: "projection",
+        generation: postimage.transcript.version.generation,
       });
-      expect(state.hot.entry?.activeWriterRunId).toBeUndefined();
+      expect(state).toEqual(beforeCommit);
       state = working;
     } finally {
       counter.restore();
     }
+    expect(
+      readSessionTranscriptAnchorFactsInDatabase(database, scope, {
+        entryIds: ["user", "assistant"],
+      }).anchors,
+    ).toMatchObject([
+      { entryId: "user", idempotencyKey: "first-user" },
+      { entryId: "assistant", effectiveParentId: "user", idempotencyKey: "assistant-once" },
+    ]);
+    expect(
+      readSessionTranscriptBoundedActiveContextCore(scope, { maxBytes: 10_000, maxEvents: 20 })
+        .events,
+    ).toMatchObject([{ type: "session" }, { id: "user" }, { id: "assistant" }]);
     expect(cachedEntries().entries.get(scope.sessionKey)?.label).toBe("actor committed");
     const committed = projectSessionActorHotState(state);
     const projectionState = {
       ...state,
       hot: {
         ...state.hot,
+        entry: {
+          ...state.hot.entry!,
+          cliSessionIds: { synthetic: "original-session" },
+        },
         participants: [
           {
             identity: { type: "profile" as const, id: "owner" },
@@ -222,6 +237,7 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     const detached = projectSessionActorHotState(projectionState);
     const original = structuredClone(detached);
     detached.entry!.label = "caller edit";
+    detached.entry!.cliSessionIds!.synthetic = "caller edit";
     Object.assign(detached.target.database, { birthtime: "caller edit" });
     Object.assign(detached.version, { sequence: -1 });
     detached.participants[0]!.identity.id = "caller edit";
@@ -229,18 +245,31 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     detached.pendingInputs[0]!.input_id = "caller edit";
     detached.transcript.version.rawSeq = -1;
     detached.transcript.watermark.maxSeq = -1;
-    Object.assign(detached.transcript.anchors[0]!, { entryId: "caller edit" });
-    detached.transcript.idempotency[0]!.eventId = "caller edit";
-    if (detached.transcript.modelContext.kind === "resident") {
-      detached.transcript.modelContext.entries[0]!.eventId = "caller edit";
-    }
     expect(projectionState).toEqual(retained);
     expect(projectSessionActorHotState(projectionState)).toEqual(original);
-    const abandoned = cloneSessionActorStoredState(state);
+    const beforeRollback = structuredClone(state);
+    const abandoned = forkSessionActorStoredState(state);
     expect(() =>
       runOpenClawAgentWriteTransaction(
         (db) =>
           withSessionActorTransactionState(db, abandoned, () => {
+            writeSessionEntry(db, scope.sessionKey, {
+              ...abandoned.hot.entry!,
+              label: "rolled back",
+            });
+            appendTranscriptEventsInTransaction(db, scope, [
+              {
+                type: "message",
+                id: "rolled-back-message",
+                parentId: "assistant",
+                timestamp: "2026-01-01T00:00:03.000Z",
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "rolled back" }],
+                  idempotencyKey: "rolled-back-once",
+                },
+              },
+            ]);
             mutatePendingInput(
               {
                 ...pending,
@@ -261,12 +290,13 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
         options,
       ),
     ).toThrow("authority revoked");
+    expect(state).toEqual(beforeRollback);
     expect(projectSessionActorHotState(state)).toEqual(committed);
     expect(readSessionInputCompletion(database, pending)).toBeUndefined();
     expect(readSessionPendingInputByKey(database, scope, pending.idempotencyKey)?.input_id).toBe(
       "accepted-input",
     );
-    const completed = cloneSessionActorStoredState(state);
+    const completed = forkSessionActorStoredState(state);
     runOpenClawAgentWriteTransaction(
       (db) =>
         withSessionActorTransactionState(db, completed, () => {
@@ -287,7 +317,8 @@ it("hydrates once and commits, rejects, and rolls back against the exact actor p
     );
     const completedPostimage = projectSessionActorHotState(completed);
     expect(completedPostimage.pendingInputs).toEqual([]);
-    expect(completedPostimage.completionKeys).toEqual([pending.idempotencyKey]);
+    expect(completedPostimage.completionKeys).toEqual([]);
+    expect(readSessionInputCompletion(database, pending)).toBeDefined();
     const rehydrated = hydrateSessionActorState(
       database,
       target,
@@ -439,6 +470,7 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
     expect(retainedReads.counts.newer).toBe(0);
     expect(retainedReads.counts.parents).toBe(0);
     expect(retainedReads.counts.projection).toBe(0);
+    initializeSessionActorContextStats(database, state);
     expect(committed.kind).toBe("metadata");
     if (committed.kind !== "metadata") {
       throw new Error("Expected prepared metadata append");
@@ -495,7 +527,7 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
     });
     expect(freshChecks).toBe(1);
     rejectFresh = true;
-    const abandoned = cloneSessionActorStoredState(state);
+    const abandoned = forkSessionActorStoredState(state);
     expect(() =>
       runOpenClawAgentWriteTransaction(
         (db) =>
@@ -528,7 +560,7 @@ it("initializes over a retained transcript and preserves prepared snapshots, rel
         options,
       ),
     ).toThrow("fresh authority revoked");
-    const directAbandoned = cloneSessionActorStoredState(state);
+    const directAbandoned = forkSessionActorStoredState(state);
     expect(() =>
       runOpenClawAgentWriteTransaction(
         (db) =>

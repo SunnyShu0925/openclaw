@@ -120,6 +120,11 @@ export const TSGO_CORE_TEST_SHARDS = [
     config: "test/tsconfig/tsconfig.core.test.ui-components.json",
   },
   {
+    name: "claws",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.claws.json",
+  },
+  {
     name: "ui-e2e-chat",
     group: "ui",
     config: "test/tsconfig/tsconfig.core.test.ui-e2e-chat.json",
@@ -197,7 +202,7 @@ export function resolveChangedCiTsgoInputs(
   if (
     compilerPaths.length === 0 ||
     !compilerPaths.every(isChangedCiTsgoInput) ||
-    (exists && !paths.every(exists))
+    (exists && !compilerPaths.every(exists))
   ) {
     return undefined;
   }

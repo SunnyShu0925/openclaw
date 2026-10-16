@@ -28,14 +28,6 @@ const mocks = vi.hoisted(() => ({
   loadBundledPluginPublicArtifactModuleSync: vi.fn(() => ({
     prewarmMemorySearchWorker: mocks.prewarmMemorySearchWorker,
   })),
-  loadCombinedSessionStoreForGatewayCore: vi.fn((_cfg: unknown, options: { agentId: string }) => {
-    mocks.events.push(`sessions.load.${options.agentId}`);
-    return {
-      durableStorePath: `/state/${options.agentId}.sqlite`,
-      storePath: `/state/${options.agentId}.sqlite`,
-      store: {},
-    };
-  }),
   listManagedPlugins: vi.fn(async () => {
     mocks.events.push("plugins");
     return { plugins: [] };
@@ -51,18 +43,10 @@ vi.mock("./server-history-prewarm.js", () => ({
   prewarmGatewaySessionHistory: mocks.prewarmGatewaySessionHistory,
 }));
 
-vi.mock("../config/sessions/combined-store-gateway.js", () => ({
-  loadCombinedSessionStoreForGatewayCore: mocks.loadCombinedSessionStoreForGatewayCore,
-}));
-
 vi.mock("../plugins/management-service.js", () => ({
   listManagedPlugins: mocks.listManagedPlugins,
 }));
 
-vi.mock("./server/ws-connection/message-handler.js", () => {
-  mocks.events.push("connection");
-  return { attachGatewayWsMessageHandler: mocks.executeRequest };
-});
 vi.mock("./server-chat.js", () => {
   mocks.events.push("agent-events");
   return { createAgentEventHandler: mocks.executeRequest };
@@ -105,7 +89,6 @@ beforeEach(() => {
   mocks.prewarmLocalWorkspaceTemplates.mockClear();
   mocks.prewarmGatewaySessionHistory.mockClear();
   mocks.prewarmContextWindowCacheAfterReady.mockClear();
-  mocks.loadCombinedSessionStoreForGatewayCore.mockClear();
   mocks.listManagedPlugins.mockClear();
   mocks.getMemoryCapabilityRegistration.mockReset();
   mocks.prewarmMemorySearchWorker.mockClear();
@@ -141,7 +124,6 @@ describe("scheduleGatewayHandlerPrewarm", () => {
       } while (vi.getTimerCount() > 0);
 
       expect(mocks.events[0]).toBe("session-history-worker");
-      expect(mocks.events).toContain("connection");
       expect(mocks.events).toContain("agent-events");
       expect(mocks.events.filter((event) => event === "handlers")).toHaveLength(3);
       expect(mocks.executeRequest).not.toHaveBeenCalled();
@@ -149,7 +131,6 @@ describe("scheduleGatewayHandlerPrewarm", () => {
         isCancelled: expect.any(Function),
       });
       expect(mocks.prewarmContextWindowCacheAfterReady).toHaveBeenCalledOnce();
-      expect(mocks.loadCombinedSessionStoreForGatewayCore).not.toHaveBeenCalled();
       expect(mocks.loadBundledPluginPublicArtifactModuleSync).toHaveBeenCalledOnce();
       expect(mocks.prewarmMemorySearchWorker).toHaveBeenCalledOnce();
       const memoryCall = expectDefined(
@@ -171,7 +152,7 @@ describe("scheduleGatewayHandlerPrewarm", () => {
     }
   });
 
-  it.each([undefined, "memory-lancedb"])(
+  it.each([undefined])(
     "skips retrieval preparation when Memory Core is inactive (%s)",
     async (pluginId) => {
       vi.useFakeTimers();

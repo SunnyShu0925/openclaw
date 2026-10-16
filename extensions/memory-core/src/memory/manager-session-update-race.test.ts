@@ -26,6 +26,7 @@ import { recordMemoryEntryOrigins } from "../memory-entry-origins.js";
 import { forgetMemoryEntries } from "../memory-forget.js";
 import { seedMemoryForgetTombstones } from "../test-helpers.js";
 import { memoryCpuProcessEntrypoints } from "./manager-cpu-entrypoints.js";
+import * as memoryCpuWorkerRuntime from "./manager-cpu-worker-runtime.js";
 import {
   createManagerIndexFixture,
   memoryIndexFixtureWriter,
@@ -329,6 +330,14 @@ describe("memory session update sync", () => {
     const activeSyncIndexed = new Promise<void>((resolve) => {
       markActiveSyncIndexed = resolve;
     });
+    const sessionSyncQueued = createDeferred<void>();
+    const enqueue = owner.sessionSyncQueue.enqueue.bind(owner.sessionSyncQueue);
+    const enqueueSpy = vi.spyOn(owner.sessionSyncQueue, "enqueue").mockImplementation((params) => {
+      const pending = enqueue(params);
+      sessionSyncQueued.resolve();
+      return pending;
+    });
+    let sessionUpdateBatch: Promise<void> | undefined;
     let syncArchiveFilesSpy: { mockRestore: () => void } | undefined;
     try {
       await seedSessionTranscript({
@@ -357,13 +366,15 @@ describe("memory session update sync", () => {
         messages: [{ role: "assistant", timestamp: Date.now(), content: updatedMarker }],
       });
       owner.sessionPendingTargets.set(sessionKey, { agentId: "main", sessionId, sessionKey });
-      await owner.processSessionUpdateBatch();
+      sessionUpdateBatch = owner.processSessionUpdateBatch();
+      await sessionSyncQueued.promise;
       const queuedSessionSync = owner.sessionSyncQueue.pending;
       expect(queuedSessionSync).not.toBeNull();
 
       releaseActiveSync();
       await activeSync;
       await queuedSessionSync;
+      await sessionUpdateBatch;
 
       const observer = new DatabaseSync(resolveOpenClawAgentSqlitePath({ agentId: "main" }), {
         readOnly: true,
@@ -381,7 +392,9 @@ describe("memory session update sync", () => {
       expect(manager.status().dirty).toBe(false);
     } finally {
       syncArchiveFilesSpy?.mockRestore();
+      enqueueSpy.mockRestore();
       releaseActiveSync();
+      await sessionUpdateBatch?.catch(() => undefined);
       await manager.close?.();
     }
   });
@@ -501,7 +514,25 @@ describe("memory session update sync", () => {
     );
     const database = Reflect.get(manager, "db") as DatabaseSync;
     const sessionPath = `sessions/main/${sessionId}.jsonl`;
-    await manager.sync({ reason: "index-before-forget", force: true });
+    const reads = vi.spyOn(memoryCpuWorkerRuntime, "runMemoryIndexRead");
+    try {
+      await manager.sync({ reason: "index-before-forget", force: true });
+      // Forget checks must not serialize the source's chunks and embeddings.
+      const sessionChecks = reads.mock.calls.flatMap(([, command]) =>
+        command.type === "session.current" ? [command.input] : [],
+      );
+      expect(sessionChecks).toEqual(
+        expect.arrayContaining([
+          { agentId: "main", sessionId },
+          { agentId: "main", sessionId: decoyId },
+        ]),
+      );
+      for (const input of sessionChecks) {
+        expect(input).toStrictEqual({ agentId: "main", sessionId: input.sessionId });
+      }
+    } finally {
+      reads.mockRestore();
+    }
     expect(
       database.prepare("SELECT path FROM memory_index_chunks WHERE path = ?").get(sessionPath),
     ).toEqual({ path: sessionPath });

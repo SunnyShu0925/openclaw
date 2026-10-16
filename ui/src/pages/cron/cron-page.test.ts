@@ -4,6 +4,7 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { CronJob, CronJobsListResult } from "../../api/types.ts";
 import { startCronClone } from "../../lib/cron/index.ts";
 import { updateCronRunsFilter } from "../../lib/cron/runs.ts";
+import { waitForConfirmDialogActions } from "../../test-helpers/modal-dialog.ts";
 import {
   createContext,
   createGateway,
@@ -13,38 +14,17 @@ import {
   operatorHello,
   waitForCronPage,
 } from "./cron-page.test-support.tsx";
-import { createCronViewJob, scheduledJob, selectSegmented } from "./view.test-support.ts";
+import {
+  createCronViewJob,
+  openCronMenu,
+  scheduledJob,
+  selectSegmented,
+} from "./view.test-support.ts";
 import "./cron-page.tsx";
 
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
-});
-
-describe("CronPage header", () => {
-  it("uses the shared settings header with concise context and scope actions", async () => {
-    const gateway = createGateway(
-      { request: createRequest() } as unknown as GatewayBrowserClient,
-      false,
-    );
-    const context = createContext(gateway);
-    context.agents.state.agentsList = {
-      defaultId: "main",
-      mainKey: "main",
-      scope: "global",
-      agents: [{ id: "main" }, { id: "research" }],
-    };
-    const page = createPage(context, { render: true });
-
-    await page.settle();
-
-    expect(page.querySelector(".page-title")?.textContent).toBe("Automations");
-    expect(page.querySelector(".content-header--settings")).not.toBeNull();
-    expect(page.querySelector(".page-subtitle")?.textContent).toBe(
-      "Scheduled tasks and recurring agent runs.",
-    );
-    expect(page.querySelector(".page-header-actions .agent-scope-control")).not.toBeNull();
-  });
 });
 
 describe("CronPage editor state sync", () => {
@@ -73,6 +53,16 @@ describe("CronPage editor state sync", () => {
       await waitForCronPage(() =>
         expect(request).toHaveBeenCalledWith("cron.update", expect.anything()),
       );
+      const editor = page.querySelector<HTMLFieldSetElement>(".cron-editor")!;
+      expect(editor.disabled).toBe(true);
+      expect(editor.getAttribute("aria-busy")).toBe("true");
+      expect(page.querySelector<HTMLInputElement>("#cron-name")!.matches(":disabled")).toBe(true);
+      expect(page.querySelector<HTMLButtonElement>('[data-test-id="cron-back"]')!.disabled).toBe(
+        true,
+      );
+      const submit = page.querySelector<HTMLButtonElement>('[data-test-id="cron-submit"]')!;
+      expect(submit.disabled).toBe(true);
+      expect(submit.textContent).toContain("Saving");
       // Exercise controller intent replacement; the ordinary clone button is busy-disabled.
       startCronClone(page.cron, job);
       page.cron.cronCreateOpen = true;
@@ -449,7 +439,7 @@ describe("CronPage editor state sync", () => {
     expect(Boolean(page.querySelector('[data-test-id="cron-new-task"]'))).toBe(false);
     expect(Boolean(page.querySelector('[data-test-id="cron-row-run-access-job"]'))).toBe(false);
     expect(Boolean(page.querySelector('[data-test-id="cron-row-toggle-access-job"]'))).toBe(false);
-    expect(Boolean(page.querySelector("wa-dropdown.cron-job-menu"))).toBe(false);
+    expect(Boolean(page.querySelector(".cron-job-menu"))).toBe(false);
 
     (page.querySelector('[data-test-id="cron-row-access-job"]') as HTMLElement).click();
     await waitForCronPage(() =>
@@ -820,13 +810,14 @@ describe("CronPage editor state sync", () => {
         (item) => item.textContent?.trim() === "Remove",
       );
     await waitForCronPage(() => expect(findRemoveButton()?.disabled).toBe(false));
+    await openCronMenu(page, ".cron-job-menu");
     findRemoveButton()?.click();
-    const findConfirmButton = () =>
-      Array.from(document.querySelectorAll<HTMLButtonElement>(".exec-approval-actions .btn")).find(
-        (button) => button.textContent?.trim() === "Remove",
-      );
-    await waitForCronPage(() => expect(findConfirmButton()).toBeDefined());
-    findConfirmButton()?.click();
+    const confirmActions = await waitForConfirmDialogActions();
+    const confirmButton = Array.from(
+      confirmActions.querySelectorAll<HTMLButtonElement>(".btn"),
+    ).find((button) => button.textContent?.trim() === "Remove");
+    expect(confirmButton).toBeDefined();
+    confirmButton?.click();
     await removeRequested.promise;
     await waitForCronPage(() => expect(page.cron.cronEditingJob).toBeNull());
     await waitForCronPage(() => expect(page.cron.cronRunsScope).toBe("all"));
@@ -903,11 +894,8 @@ describe("CronPage pacing", () => {
     const gateway = createGateway({ request } as unknown as GatewayBrowserClient, true);
     const page = createPage(createContext(gateway), { render: true });
     await waitForCronPage(() => expect(page.querySelector(".cron-job-menu")).not.toBeNull());
-    page
-      .querySelector(".cron-job-menu")!
-      .dispatchEvent(
-        new CustomEvent("wa-select", { detail: { item: { value: "clone" } }, bubbles: true }),
-      );
+    await openCronMenu(page, ".cron-job-menu");
+    page.querySelector<HTMLButtonElement>('.cron-job-menu [data-value="clone"]')!.click();
     await waitForCronPage(() => expect(page.querySelector("#cron-name")).not.toBeNull());
     expect((page.querySelector("#cron-name") as HTMLInputElement).value).toBe("Daily ping copy");
 

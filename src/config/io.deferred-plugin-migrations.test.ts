@@ -1,30 +1,54 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { finishConfigValidationForCli } from "../cli/config-cli-validation.js";
 import {
   DeferredPluginMigrationConflictError,
   readDeferredPluginMigrations,
   recordDeferredPluginMigrations,
+  recordDeferredPluginMigrationsInTransaction,
+  withDeferredPluginConfigCompletion,
 } from "../infra/deferred-plugin-migrations.js";
+import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { createPluginManifestRecordFixture } from "../plugins/plugin-metadata.test-support.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import { createCanonicalAgentConfigFixture } from "../test-utils/config-roster.js";
 import { resolveDeferredPluginMigrationConfigPaths } from "./deferred-plugin-migration-config.js";
 import { createConfigIO } from "./io.factory.js";
-import { readCurrentConfigForPolicyCheck } from "./io.runtime.js";
+import { readCurrentConfigForPolicyCheck, withCurrentConfigPolicyReader } from "./io.runtime.js";
 import { resolveSessionStoreCompatibilityAgentId } from "./legacy.default-agent-owner.js";
 import { replaceConfigFile } from "./mutate.js";
 import {
   validateConfigObjectRawWithPlugins,
   validateConfigObjectWithPlugins,
 } from "./validation.js";
+
+const ledger = vi.hoisted(() => ({ pendingReadsOutsideWrites: 0 }));
+vi.mock("../infra/kysely-sync.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/kysely-sync.js")>();
+  return {
+    ...actual,
+    executeSqliteQuerySync: ((db, query) => {
+      const { sql, parameters } = query.compile();
+      // Publication reads pending rows inside its write transaction; other reads repeat that check.
+      if (
+        !("isTransaction" in db && db.isTransaction) &&
+        sql.includes('"migration_runs"') &&
+        parameters.includes("pending")
+      ) {
+        ledger.pendingReadsOutsideWrites += 1;
+      }
+      return actual.executeSqliteQuerySync(db, query);
+    }) satisfies typeof actual.executeSqliteQuerySync,
+  };
+});
 
 describe("config IO with deferred plugin migrations", () => {
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
@@ -60,6 +84,50 @@ describe("config IO with deferred plugin migrations", () => {
     return { root, configPath, env, ioOptions };
   }
 
+  it("rereads policy after a config write while migration rows stay pinned", async () => {
+    const { configPath, env } = fixture();
+    fs.writeFileSync(configPath, JSON.stringify({ gateway: { mode: "local", port: 18789 } }));
+
+    await withPluginLifecycleLease({ env }, async (lease) =>
+      withCurrentConfigPolicyReader({ configPath, env, lease }, async (getCurrentConfig) => {
+        expect(getCurrentConfig().gateway?.port).toBe(18789);
+        fs.writeFileSync(configPath, JSON.stringify({ gateway: { mode: "local", port: 18790 } }));
+        expect(getCurrentConfig().gateway?.port).toBe(18790);
+      }),
+    );
+  });
+
+  it.each(["worker", "transaction"] as const)(
+    "invalidates a lease-pinned policy reader before a nested %s migration write",
+    async (writer) => {
+      const { configPath, env } = fixture();
+      fs.writeFileSync(configPath, JSON.stringify({ gateway: { mode: "local" } }));
+      if (writer === "transaction") {
+        await recordDeferredPluginMigrations({ env, pending: [pendingPlugin] });
+      }
+
+      await withPluginLifecycleLease({ env }, async (lease) =>
+        withCurrentConfigPolicyReader({ configPath, env, lease }, async (getCurrentConfig) => {
+          expect(getCurrentConfig().gateway?.mode).toBe("local");
+          if (writer === "worker") {
+            await recordDeferredPluginMigrations({ env, pending: [pendingPlugin] });
+          } else {
+            runOpenClawStateWriteTransaction(
+              ({ db }) =>
+                recordDeferredPluginMigrationsInTransaction(db, {
+                  pending: [],
+                  resolvedPluginIds: [pendingPlugin.pluginId],
+                }),
+              { env },
+            );
+          }
+          expect(() => getCurrentConfig()).toThrow(
+            "Deferred plugin migration policy changed since review.",
+          );
+        }),
+      );
+    },
+  );
   it("normal reads and writes never inspect deferred migration records", async () => {
     const root = tempDirs.make("openclaw-canonical-config-");
     const configPath = path.join(root, "openclaw.json");
@@ -336,6 +404,77 @@ describe("config IO with deferred plugin migrations", () => {
     expect(migrated).not.toHaveProperty("plugins.entries.sample.config.legacyRoot");
     expect(migrated).toHaveProperty("plugins.entries.sample.config.root", "${SESSION_ROOT}/legacy");
     expect((await runtimeIo.readConfigFileSnapshot()).valid).toBe(true);
+  });
+
+  it("checks completion obligations only inside replace-then-write publication", async () => {
+    const { configPath, env, ioOptions } = fixture();
+    const source = {
+      gateway: { mode: "local", port: 18789 },
+      session: { store: "/srv/synthetic-session-state/sessions.json" },
+      plugins: { entries: { sample: { config: { legacyRoot: "/srv/synthetic-sample" } } } },
+    };
+    const original = JSON.stringify(source);
+    fs.writeFileSync(configPath, original);
+    const resolved = {
+      ...pendingPlugin,
+      configPaths: [["plugins", "entries", "sample", "config"]],
+    };
+    const retained = {
+      pluginId: "other",
+      reason: "The configured plugin is not installed.",
+      command: "openclaw plugins install @example/other",
+      configPaths: [["session", "store"]],
+    };
+    const late = {
+      ...retained,
+      pluginId: "late",
+      command: "openclaw plugins install @example/late",
+    };
+    await recordDeferredPluginMigrations({ env, pending: [retained, resolved] });
+    const complete = async (beforeCommit?: () => Promise<void>) => {
+      const expectedPending = readDeferredPluginMigrations({ env });
+      const io = createConfigIO({ ...ioOptions, deferredPluginMigrations: expectedPending });
+      const prepared = await io.readConfigFileSnapshotForWrite();
+      ledger.pendingReadsOutsideWrites = 0;
+      await withDeferredPluginConfigCompletion(
+        {
+          configPath: prepared.snapshot.path,
+          expectedPending,
+          resolvedPluginIds: ["sample"],
+          assertCurrent: () => {},
+        },
+        () =>
+          replaceConfigFile({
+            ...prepared,
+            io,
+            nextConfig: { gateway: { mode: "local", port: 18790 } },
+            writeOptions: {
+              ...prepared.writeOptions,
+              ...writeOptions,
+              auditOrigin: "plugin-install",
+              beforeCommit,
+            },
+          }),
+      );
+    };
+
+    await expect(
+      complete(async () => {
+        await recordDeferredPluginMigrations({ env, pending: [late] });
+      }),
+    ).rejects.toBeInstanceOf(DeferredPluginMigrationConflictError);
+    expect(ledger.pendingReadsOutsideWrites).toBe(0);
+    expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+
+    await complete();
+    expect(ledger.pendingReadsOutsideWrites).toBe(0);
+    const written: unknown = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    expect(written).toMatchObject({
+      gateway: { mode: "local", port: 18790 },
+      session: source.session,
+    });
+    expect(written).not.toHaveProperty("plugins.entries.sample");
+    expect(readDeferredPluginMigrations({ env })).toEqual([late, retained]);
   });
 
   it("keeps the migrated fixed-store owner while excluding a pending plugin field", () => {

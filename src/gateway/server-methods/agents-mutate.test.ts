@@ -4,11 +4,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { WORKSPACE_BOOTSTRAP_FILENAMES } from "../../agents/workspace.js";
 import { getRuntimeConfigWriteApplication } from "../../config/runtime-write-application.js";
+import { memorySessionActorOwners } from "../../config/sessions/session-actor-memory-owner.js";
 import { FsSafeError, root, type ReadResult } from "../../infra/fs-safe.js";
 import { resumeAgentDeletions } from "../server-agent-deletion-recovery.js";
+import { registerAgentDeletionAuthorityTests } from "./agents-delete-authority.test-support.js";
 import { registerAgentDeleteFilesystemTests } from "./agents-delete-filesystem.test-support.js";
 import {
   registerAgentDeleteDrainRecoveryTests,
@@ -19,6 +21,7 @@ import {
   cleanupPath,
   createEnoentError,
   createErrnoError,
+  createTrashAssertions,
   deletionJournal,
   expectRecordFields,
   expectRespondErrorContaining,
@@ -71,7 +74,7 @@ const mocks = vi.hoisted(() => ({
   beginAgentDeletionRetire: vi.fn(),
   readSessionEntrySummariesInWorker: vi.fn(async () => []),
   closeDeletedAgentDatabases: vi.fn(async () => {}),
-  hasDeletedAgentDatabases: vi.fn(() => false),
+  captureDeletedAgentDatabaseFences: vi.fn<() => [string, string][]>(() => []),
   reviveAgentDatabases: vi.fn(async (_agentIds: readonly string[]) => {}),
   logGatewayWarn: vi.fn(),
   runAgentDatabaseCleanup: vi.fn(
@@ -110,7 +113,7 @@ const mocks = vi.hoisted(() => ({
   movePathToTrash: vi.fn(async (_pathname?: string) => "/trashed"),
   fsMkdir: vi.fn(async () => undefined),
   fsAppendFile: vi.fn(async () => {}),
-  fsReadFile: vi.fn(async () => ""),
+  fsReadFile: vi.fn<() => Promise<string>>(),
   fsStat: vi.fn(async (..._args: unknown[]) => null as import("node:fs").Stats | null),
   fsLstat: vi.fn(
     async (..._args: unknown[]) =>
@@ -241,6 +244,7 @@ vi.mock("../../agents/auth-profiles/path-resolve.js", async () => ({
     "../../agents/auth-profiles/path-resolve.js",
   )),
   resolveSharedAuthStoreOwnership: () => mocks.sharedAuthStoreOwnership,
+  prepareSharedAuthStoreOwnership: async () => mocks.sharedAuthStoreOwnership,
   resolveSharedAuthStorePath: () => "/resolved/agents/main/agent/openclaw-agent.sqlite",
 }));
 
@@ -329,7 +333,7 @@ vi.mock("../../state/openclaw-agent-db-readers.js", () => ({
 
 vi.mock("../../infra/agent-database-readers.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/agent-database-readers.js")>()),
-  hasDeletedAgentDatabases: mocks.hasDeletedAgentDatabases,
+  captureDeletedAgentDatabaseFences: mocks.captureDeletedAgentDatabaseFences,
 }));
 
 vi.mock("../../infra/exec-approvals.js", async (importOriginal) => ({
@@ -432,18 +436,9 @@ vi.mock("../../plugin-sdk/browser-maintenance.js", () => ({
   movePathToTrash: mocks.movePathToTrash,
 }));
 
-function expectTrashedWithinParent(pathname: string, declaredPath = pathname): void {
-  expect(mocks.movePathToTrash).toHaveBeenCalledWith(
-    pathname,
-    expect.objectContaining({
-      allowedRoots: expect.arrayContaining([path.dirname(declaredPath)]),
-    }),
-  );
-}
-
-function expectNotTrashed(pathname: string): void {
-  expect(mocks.movePathToTrash.mock.calls.map(([target]) => target)).not.toContain(pathname);
-}
+const { expectTrashedWithinParent, expectNotTrashed } = createTrashAssertions(
+  mocks.movePathToTrash,
+);
 
 vi.mock("../../utils.js", async () => {
   const actual = await vi.importActual<typeof import("../../utils.js")>("../../utils.js");
@@ -453,7 +448,7 @@ vi.mock("../../utils.js", async () => {
   };
 });
 
-// mock-isolation: Preserve canonical key logic without bringing database lookup into this fixture.
+// mock-isolation: Keep deletion lifecycle tests on synthetic config and session metadata without opening databases.
 vi.mock("../session-utils.js", async () => ({
   resolveSessionStoreKey: (await import("../session-store-key.js")).resolveSessionStoreKey,
   listAgentsForGateway: mocks.listAgentsForGateway,
@@ -507,6 +502,10 @@ vi.mock("node:fs/promises", async () => {
 });
 
 const { agentsHandlers } = await import("./agents.js");
+
+afterEach(() => {
+  memorySessionActorOwners.reset();
+});
 
 beforeEach(() => {
   vi.mocked(root).mockReset();
@@ -670,9 +669,6 @@ async function expectUnsafeWorkspaceFile(method: "agents.files.get" | "agents.fi
 }
 
 beforeEach(() => {
-  mocks.fsReadFile.mockImplementation(async () => {
-    throw createEnoentError();
-  });
   mocks.fsStat.mockImplementation(async () => {
     throw createEnoentError();
   });
@@ -685,7 +681,6 @@ beforeEach(() => {
     async () =>
       ({
         stat: async () => makeFileStat(),
-        readFile: async () => Buffer.from(""),
         truncate: async () => {},
         writeFile: async () => {},
         close: async () => {},
@@ -696,7 +691,7 @@ beforeEach(() => {
 describe("agents.create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.hasDeletedAgentDatabases.mockReturnValue(false);
+    mocks.captureDeletedAgentDatabaseFences.mockReturnValue([]);
     mocks.reviveAgentDatabases.mockReset().mockResolvedValue(undefined);
     mocks.loadConfigReturn = {
       agents: { entries: { main: {} } },
@@ -843,103 +838,7 @@ describe("agents.delete", () => {
     expect(mocks.movePathToTrash).not.toHaveBeenCalled();
   });
 
-  it("removes only the deleted agent's authority before committing its roster removal", async () => {
-    const cronJobs = [
-      { id: "deleted-job", agentId: "test-agent" },
-      { id: "other-job", agentId: "other-agent" },
-    ];
-    const approvals = new Set(["test-agent", "other-agent"]);
-    const events: string[] = [];
-    mocks.cronRemoveAgentJobsTransactional.mockImplementation(
-      async (agentId: string, commit: () => Promise<unknown>) => {
-        const snapshot = structuredClone(cronJobs);
-        cronJobs.splice(0, cronJobs.length, ...cronJobs.filter((job) => job.agentId !== agentId));
-        events.push("cron");
-        try {
-          return await commit();
-        } catch (error) {
-          cronJobs.splice(0, cronJobs.length, ...snapshot);
-          throw error;
-        }
-      },
-    );
-    mocks.withAgentExecApprovalsRemoved.mockImplementation(
-      async (agentId: string, commit: () => Promise<unknown>) => {
-        const existed = approvals.delete(agentId);
-        events.push("approvals");
-        try {
-          return await commit();
-        } catch (error) {
-          if (existed) {
-            approvals.add(agentId);
-          }
-          throw error;
-        }
-      },
-    );
-    mocks.writeConfigFile.mockImplementationOnce(async () => {
-      events.push("config");
-    });
-    mocks.unregisterResolvedAgentDir.mockImplementationOnce(() => {
-      events.push("directory");
-      return true;
-    });
-    mocks.closeOpenClawAgentDatabaseByPath.mockImplementation(() => {
-      events.push("database");
-      return true;
-    });
-
-    const respond = await call("agents.delete", { agentId: "test-agent" });
-
-    const result = expectRespondOk(respond, {
-      ok: true,
-      agentId: "test-agent",
-      removedBindings: 2,
-      failed: [],
-    });
-    expect(result).not.toHaveProperty("purgeFailed");
-    expect(result.removed).toEqual(
-      expect.arrayContaining([
-        { path: "/workspace/test-agent", method: "trash" },
-        { path: "/agents/test-agent", method: "trash" },
-        { path: "/transcripts/test-agent", method: "trash" },
-      ]),
-    );
-    expect(mocks.writeConfigFile).toHaveBeenCalledWith(expect.anything(), {
-      allowConfigSizeDrop: true,
-      assertConfigPathForWrite: mocks.assertAgentDeletionCurrentFinal,
-      beforeCommit: mocks.assertAgentDeletionCurrentAsync,
-      allowedAgentRosterRemovals: ["test-agent"],
-    });
-    expect(mocks.deleteWorkspaceState).toHaveBeenCalledWith(
-      { workspaceDir: "/workspace/test-agent" },
-      {
-        deletion: expect.objectContaining({ assertCurrentHost: mocks.assertAgentDeletionCurrent }),
-      },
-    );
-    expect(cronJobs).toEqual([{ id: "other-job", agentId: "other-agent" }]);
-    expect(approvals).toEqual(new Set(["other-agent"]));
-    expect(mocks.cronRemoveAgentJobsTransactional).toHaveBeenCalledWith(
-      "test-agent",
-      expect.any(Function),
-    );
-    expect(mocks.withAgentExecApprovalsRemoved).toHaveBeenCalledWith(
-      "test-agent",
-      expect.any(Function),
-      expect.objectContaining({ assertCurrentHost: mocks.assertAgentDeletionCurrent }),
-    );
-    expect(mocks.closeOpenClawAgentDatabaseByPath).toHaveBeenCalledWith(
-      "/agents/test-agent/openclaw-agent.sqlite",
-      "test-agent",
-    );
-    expect(mocks.beginAgentDeletionFinish).toHaveBeenCalledWith({ unregisterDatabases: true });
-    expect(mocks.unregisterResolvedAgentDir).toHaveBeenCalledWith({
-      agentId: "test-agent",
-      agentDir: "/agents/test-agent",
-    });
-    expect(events).toEqual(["database", "database", "cron", "approvals", "config", "directory"]);
-    expect(mocks.beginAgentDeletionFinish).toHaveBeenCalledOnce();
-  });
+  registerAgentDeletionAuthorityTests({ mocks, call });
 
   registerAgentDeleteRollbackTests(recoveryHarness);
 
@@ -953,7 +852,7 @@ describe("agents.delete", () => {
     const { promise } = makeCall("agents.delete", { agentId: "test-agent" });
 
     await expect(promise).rejects.toThrow("config mutation did not return its target");
-    expect(mocks.closeOpenClawAgentDatabaseByPath).toHaveBeenCalledTimes(2);
+    expect(mocks.closeOpenClawAgentDatabaseByPath).toHaveBeenCalledTimes(1);
     expect(mocks.movePathToTrash).not.toHaveBeenCalled();
     expect(mocks.beginAgentDeletionFinish).not.toHaveBeenCalledWith({ unregisterDatabases: true });
     expect(mocks.beginAgentDeletionRollback).toHaveBeenCalledOnce();
@@ -1581,7 +1480,7 @@ describe("agents.delete", () => {
     const respond = await call("agents.delete", { agentId: "test-agent" });
 
     expectRespondOk(respond, { ok: true });
-    expect(mocks.closeOpenClawAgentDatabaseByPath).toHaveBeenCalledTimes(3);
+    expect(mocks.closeOpenClawAgentDatabaseByPath).toHaveBeenCalledTimes(2);
     expect(mocks.closeOpenClawAgentDatabaseByPath).toHaveBeenCalledWith(
       "/agents/test-agent/openclaw-agent.sqlite",
       "test-agent",
@@ -1776,25 +1675,21 @@ describe("agents.delete", () => {
     expect(mocks.movePathToTrash).not.toHaveBeenCalled();
   });
 
-  it("returns not found when a concurrent delete wins the delete race", async () => {
-    let findCallCount = 0;
-    mocks.findAgentEntryIndex.mockImplementation(() => {
-      findCallCount += 1;
-      return findCallCount >= 2 ? -1 : 0;
-    });
-
-    const respond = await call("agents.delete", {
-      agentId: "test-agent",
-    });
-
-    expectNotFoundResponseAndNoWrite(respond);
-    expect(mocks.movePathToTrash).not.toHaveBeenCalled();
-  });
-
   it("rejects invalid params (missing agentId)", async () => {
     const respond = await call("agents.delete", {});
 
     expectRespondErrorContaining(respond, "invalid");
+  });
+
+  it("returns not found after a previous deletion removed the agent", async () => {
+    const first = await call("agents.delete", { agentId: "test-agent", deleteFiles: false });
+    expectRespondOk(first, { ok: true });
+    mocks.writeConfigFile.mockClear();
+
+    const second = await call("agents.delete", { agentId: "test-agent", deleteFiles: false });
+
+    expectNotFoundResponseAndNoWrite(second);
+    expect(mocks.movePathToTrash).not.toHaveBeenCalled();
   });
 });
 
