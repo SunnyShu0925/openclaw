@@ -24,7 +24,7 @@ import {
 import { withMemoryWikiVaultMutation } from "./mutation-coordinator.js";
 import { resolveQueryableWikiPageByLookup } from "./query-page-lookup.js";
 import { readQueryableWikiPages } from "./query-pages.js";
-import { isMissingWikiPageError, readExistingWikiPage } from "./vault-page-write.js";
+import { readExistingWikiPageUtf8 } from "./vault-page-write.js";
 import { initializeMemoryWikiVault } from "./vault.js";
 
 const GENERATED_START = "<!-- openclaw:wiki:generated:start -->";
@@ -188,10 +188,7 @@ async function writeWikiPage(params: {
       body: params.body,
     }),
   );
-  const existing = await readExistingWikiPage(
-    () => root.readText(params.relativePath),
-    isMissingWikiPageError,
-  );
+  const existing = await readExistingWikiPageUtf8(root, params.relativePath, () => "");
   if (existing === rendered) {
     return false;
   }
@@ -207,10 +204,7 @@ async function applyCreateSynthesisMutation(params: {
   const pageStem = slugifyWikiPageStem(params.mutation.title);
   const pagePath = path.join("syntheses", `${pageStem}.md`).replace(/\\/g, "/");
   const root = await fsRoot(params.config.vault.path);
-  const existing = await readExistingWikiPage(
-    () => root.readText(pagePath),
-    isMissingWikiPageError,
-  );
+  const existing = await readExistingWikiPageUtf8(root, pagePath, () => "");
   const parsed = parseWikiMarkdown(existing);
   const pageId =
     (typeof parsed.frontmatter.id === "string" && parsed.frontmatter.id.trim()) ||

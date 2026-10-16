@@ -330,4 +330,47 @@ keep this note
       status: "review",
     });
   });
+
+  it("rejects updating metadata when an existing page is not valid UTF-8 and leaves it unchanged", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-apply-",
+    });
+
+    const targetPath = path.join(rootDir, "entities", "alpha.md");
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    const pageBytes = Buffer.concat([
+      Buffer.from(
+        renderWikiMarkdown({
+          frontmatter: {
+            pageType: "entity",
+            id: "entity.alpha",
+            title: "Alpha",
+            sourceIds: ["source.old"],
+            confidence: 0.3,
+          },
+          body: `# Alpha\n\n## Notes\n<!-- openclaw:human:start -->\nkeep this note`,
+        }),
+        "utf8",
+      ),
+      // A non-UTF-8 byte inside the human notes block. A lossy decode would
+      // replace it with U+FFFD and rewrite the page, corrupting the note.
+      Buffer.from([0xff]),
+      Buffer.from(`\n<!-- openclaw:human:end -->\n`),
+    ]);
+    await fs.writeFile(targetPath, pageBytes);
+
+    await expect(
+      applyMemoryWikiMutation({
+        config,
+        mutation: {
+          op: "update_metadata",
+          lookup: "entity.alpha",
+          sourceIds: ["source.new"],
+        },
+      }),
+    ).rejects.toThrow(/not valid UTF-8/);
+
+    const after = await fs.readFile(targetPath);
+    expect(after.equals(pageBytes)).toBe(true);
+  });
 });
