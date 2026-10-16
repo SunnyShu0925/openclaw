@@ -188,6 +188,8 @@ describe("Crabbox first capture without upload wait", () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const entered = Promise.withResolvers<void>();
       const controller = new AbortController();
+      let monotonicMs = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
       const { options } = createProjectOptions([], controller);
       const { provider, calls } = createWarmProvider(({ argv }) => {
         if (argv[2] === "create") {
@@ -218,7 +220,11 @@ describe("Crabbox first capture without upload wait", () => {
       await entered.promise;
       await vi.advanceTimersByTimeAsync(0);
       if (outcome === "timeout") {
-        vi.setSystemTime(Date.now() + 45 * 60_000);
+        // Poll budget is measured against the monotonic clock. Jump the
+        // monotonic clock past the seeded deadline so the poll loop observes
+        // remainingMs <= 0 and fails the capture (wall-clock jumps must not
+        // influence the poll budget).
+        monotonicMs = 45 * 60_000 + 1;
       } else if (outcome === "cancel") {
         controller.abort(new Error("cancel capture"));
       } else {
