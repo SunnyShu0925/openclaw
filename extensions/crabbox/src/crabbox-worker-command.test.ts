@@ -161,36 +161,59 @@ describe("Crabbox coordinator timeouts", () => {
     },
   );
 
-  it("keeps the coordinator retry deadline bounded when the wall clock rewinds", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    let monotonicMs = 0;
-    const rewindMs = 90_000;
-    const budgetMs = 5_000;
-    const performanceNow = vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
-    vi.setSystemTime(0);
-    const timeouts: number[] = [];
-    try {
-      const promise = runCrabboxCommandWithCoordinatorRetry({
+  it.each([-90_000, 90_000])(
+    "shares command and backoff budget after a %i ms wall-clock step",
+    async (clockStepMs) => {
+      let monotonicMs = 0;
+      let wallStep = 0;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
+      const wallClock = vi.spyOn(Date, "now").mockImplementation(() => monotonicMs + wallStep);
+      const timeouts: number[] = [];
+      const sleep = vi.fn(async (ms: number) => {
+        monotonicMs += ms;
+      });
+      try {
+        const result = await runCrabboxCommandWithCoordinatorRetry({
+          action: "stop",
+          args: ["stop", "--id", LEASE_ID],
+          binary: "crabbox",
+          timeoutMs: 5_000,
+          runCommand: async (_argv, options) => {
+            timeouts.push(options.timeoutMs);
+            monotonicMs += 1_000;
+            wallStep = clockStepMs;
+            return transportFailure;
+          },
+          sleep,
+        });
+        expect(timeouts).toEqual([5_000, 3_000]);
+        expect(sleep.mock.calls).toEqual([[1_000, undefined]]);
+        expect(result).toMatchObject({ ...transportFailure, coordinatorAttempts: 2 });
+      } finally {
+        wallClock.mockRestore();
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it("does not start another command when cancelled during retry backoff", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled during coordinator retry");
+    const runCommand = vi.fn().mockResolvedValue(transportFailure);
+    const sleep = vi.fn(async () => controller.abort(reason));
+    await expect(
+      runCrabboxCommandWithCoordinatorRetry({
         action: "stop",
         args: ["stop", "--id", LEASE_ID],
         binary: "crabbox",
-        timeoutMs: budgetMs,
-        runCommand: async (_argv, options) => {
-          timeouts.push(options.timeoutMs);
-          monotonicMs += 1_000;
-          vi.setSystemTime(monotonicMs - rewindMs);
-          return transportFailure;
-        },
-        sleep: async () => {},
-      }).catch(() => {});
-      await promise;
-      for (const t of timeouts) {
-        expect(t).toBeLessThanOrEqual(budgetMs);
-      }
-    } finally {
-      performanceNow.mockRestore();
-      vi.useRealTimers();
-    }
+        timeoutMs: 5_000,
+        signal: controller.signal,
+        runCommand,
+        sleep,
+      }),
+    ).rejects.toBe(reason);
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(1_000, controller.signal);
   });
 });
 it.each(["output capture failed", "cleanup could not confirm process exit", "spawn ENOENT"])(
