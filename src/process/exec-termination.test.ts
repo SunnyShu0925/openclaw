@@ -281,10 +281,14 @@ describe.skipIf(process.platform === "win32")("command process-group settlement"
     rewindWallClock();
     await vi.advanceTimersByTimeAsync(300);
     expect(signals.mock.calls.filter(([, signal]) => isForceSignal(signal))).toHaveLength(1);
-    const completion = owner.settle();
+    let settled = false;
+    const completion = owner.settle().finally(() => {
+      settled = true;
+    });
     rewindWallClock();
     await vi.advanceTimersByTimeAsync(COMMAND_PROCESS_GROUP_EXIT_CONFIRMATION_MS);
-    await expect(Promise.race([completion, "pending"])).resolves.toBe("uncertain");
+    expect(settled).toBe(true);
+    await expect(completion).resolves.toBe("uncertain");
   });
 
   it("preserves normal cleanup for a retired group", async () => {
