@@ -6,6 +6,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { fireAndForgetBoundedHook } from "../../../hooks/fire-and-forget.js";
 import { emitAgentEvent } from "../../../infra/agent-events.js";
+import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
 import {
   diagnosticErrorCategory,
   diagnosticErrorFailureKind,
@@ -33,6 +34,7 @@ import { formatPropagatedDiagnosticTraceparent } from "../../../infra/diagnostic
 import { emitDiagnosticsTimelineEvent } from "../../../infra/diagnostics-timeline.js";
 import { withModelTransportContext } from "../../../llm/model-transport-context.js";
 import { createModelCallStreamProgressReporter } from "../../../logging/diagnostic-model-stream-progress.js";
+import type { DiagnosticEmbeddedRunOwner } from "../../../logging/diagnostic-run-activity.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import type {
   PluginHookAgentContext,
@@ -55,6 +57,7 @@ export type ModelCallDiagnosticContext = Omit<PluginHookModelCallStartedEvent, "
   contentCapture?: DiagnosticModelContentCapturePolicy;
   nextCallId: () => string;
   ownerGeneration?: CoreModelRequestOwnerGeneration;
+  diagnosticOwner?: DiagnosticEmbeddedRunOwner;
   onStarted?: (callId: string) => void;
   /** Request observation ended; cleanup settlement and replay admission remain separately owned. */
   onFinished?: (callId: string) => void;
@@ -65,6 +68,7 @@ export type ModelCallDiagnosticContext = Omit<PluginHookModelCallStartedEvent, "
   onAgentEvent?: (event: EmbeddedAgentEvent) => void | Promise<void>;
   suppressPluginHooks?: boolean;
   requestTimeoutMs?: number;
+  priority?: "interactive" | "background";
 };
 
 type ModelCallErrorFields = Pick<
@@ -262,10 +266,23 @@ export function createModelLifecycle(params: {
   createObserver: (capturePromptStats: boolean) => ModelCallObserver;
 }) {
   const callId = params.ctx.nextCallId();
+  const runContext = getAgentRunContext(params.ctx.runId);
   const transportContext = {
     sessionKey: params.ctx.sessionKey,
     runId: params.ctx.runId,
     requestId: callId,
+    priority: params.ctx.priority,
+    onRateLimitWait: (retryAt: number) => {
+      const delayMs = Math.max(0, retryAt - Date.now());
+      reportStatus({
+        phase: "retrying",
+        reason: "rate_limit",
+        message: `Waiting for rate limit. Retrying in ${Math.ceil(delayMs / 1000)}s.`,
+        delayMs,
+        retryAt,
+      });
+      return () => reportStatus({ phase: "starting_model" });
+    },
   };
   const trace = freezeDiagnosticTraceContext(createChildDiagnosticTraceContext(params.ctx.trace));
   const observer = params.createObserver(areDiagnosticsEnabledForProcess());
@@ -276,9 +293,13 @@ export function createModelLifecycle(params: {
     ...(observer.promptStats ? { promptStats: observer.promptStats } : {}),
     trace,
   };
+  const watchdogAttempt = params.ctx.diagnosticOwner?.watchdogAttempt;
   const reportStreamProgress = createModelCallStreamProgressReporter({
     config: params.ctx.config,
     target: eventBase,
+    recordProgress: watchdogAttempt
+      ? () => watchdogAttempt.progress("transport", "model_call:stream_progress")
+      : undefined,
   });
   emitCoreModelRequestStartedDiagnosticEvent(
     eventBase,
@@ -311,6 +332,19 @@ export function createModelLifecycle(params: {
   let firstEventObserved = false;
   const trackStatusDelivery = captureAsyncWorkTracker();
   const signal = params.options?.signal;
+  function reportStatus(data: Record<string, unknown>) {
+    const event = { stream: "run_status" as const, data };
+    emitAgentEvent({ runId: params.ctx.runId, sessionKey: params.ctx.sessionKey, ...event });
+    if (params.ctx.onAgentEvent) {
+      void trackStatusDelivery(async () => {
+        try {
+          await params.ctx.onAgentEvent?.(event);
+        } catch {
+          log.warn("Provider wait status delivery failed");
+        }
+      });
+    }
+  }
   const reportWait: NonNullable<NonNullable<ModelCallStreamOptions>["onProviderWait"]> = (
     reason,
   ) => {
@@ -322,24 +356,14 @@ export function createModelLifecycle(params: {
       return;
     }
     waitReason = reason;
-    const event = {
-      stream: "run_status" as const,
-      data: reason ? { phase: "waiting_for_model", reason } : { phase: "starting_model" },
-    };
-    emitAgentEvent({
-      runId: params.ctx.runId,
-      sessionKey: params.ctx.sessionKey,
-      ...event,
-    });
-    if (params.ctx.onAgentEvent) {
-      void trackStatusDelivery(async () => {
-        try {
-          await params.ctx.onAgentEvent?.(event);
-        } catch {
-          log.warn("Provider wait status delivery failed");
-        }
-      });
+    if (runContext) {
+      if (reason) {
+        runContext.localModelWait = { requestId: callId };
+      } else if (runContext.localModelWait?.requestId === callId) {
+        delete runContext.localModelWait;
+      }
     }
+    reportStatus(reason ? { phase: "waiting_for_model", reason } : { phase: "starting_model" });
     params.options?.onProviderWait?.(reason);
   };
   const clearWait = () => reportWait(null);

@@ -1,4 +1,5 @@
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { isSilentReplyText } from "../../../auto-reply/tokens.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import { withSessionEntryReadOnlyInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
@@ -26,6 +27,7 @@ import type {
 import { commitSubagentLifecycleMutation } from "./subagent-registry-lifecycle-persistence.js";
 import { getCurrentSubagentRunOwner } from "./subagent-registry-memory.js";
 import { assertSubagentRegistryWriteSourceCurrent } from "./subagent-registry-persistence.js";
+import { resolveYieldedRunContinuation } from "./subagent-registry-run-pause.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration, isSameSubagentRunOwner } from "./subagent-run-generation.js";
 import { hasSubagentRunEnded } from "./subagent-run-liveness.js";
@@ -199,9 +201,11 @@ export const captureSubagentRunResult = async (
   }
   const isOwnerCurrent = () => {
     const current = getCurrentSubagentRunOwner(params.runs, entry);
+    // A yield pauses capture only while a continuation could still extend the transcript.
     return (
       current !== undefined &&
-      current.pauseReason !== "sessions_yield" &&
+      (current.pauseReason !== "sessions_yield" ||
+        resolveYieldedRunContinuation(current).state === "unreachable") &&
       !context.newerGenerationOwnsSession(current)
     );
   };
@@ -242,6 +246,15 @@ export const captureSubagentRunResult = async (
             waitForReply: entry.expectsCompletionMessage === true,
             outcome,
             ...(sessionTarget ? { sessionTarget } : {}),
+            // Only unreachable yielded collectors need a historical execution window.
+            ...(entry.collect === true && entry.pauseReason === "sessions_yield"
+              ? {
+                  completedCollectorTurn: {
+                    startedAt: outcome.startedAt ?? entry.execution.startedAt ?? entry.createdAt,
+                    endedAt: outcome.endedAt ?? entry.execution.endedAt ?? Number.NaN,
+                  },
+                }
+              : {}),
           }),
       );
       assertCaptureCurrent();
@@ -322,7 +335,7 @@ export const refreshFrozenResultFromSession = async (
     return false;
   }
   const trimmed = captured?.trim();
-  if (!trimmed) {
+  if (!trimmed || isSilentReplyText(trimmed)) {
     return false;
   }
   // Reply capture yields while registration can transfer session ownership.

@@ -24,6 +24,7 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as defaultSleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS } from "../../../../gateway-shutdown-budget.mjs";
 import { detectChangedScope } from "../../../../scripts/ci-changed-scope.mjs";
 import { isDirectRunUrl } from "../../../../scripts/lib/direct-run.mjs";
 import {
@@ -39,6 +40,7 @@ import {
   resolveBuildRequirement,
   resolveRuntimePostBuildRequirement,
 } from "../../../../scripts/run-node.mts";
+import { resolveRuntimeScriptPosition } from "../../../../src/daemon/runtime-binary.js";
 
 const DEFAULT_EXPECTED_ORIGIN = "openclaw/openclaw";
 const FULL_SHA_RE = /^[0-9a-f]{40}$/u;
@@ -46,7 +48,6 @@ const GATEWAY_READINESS_ATTEMPTS = 7;
 const GATEWAY_READINESS_RETRY_DELAY_MS = 5_000;
 const GATEWAY_CLI_TIMEOUT_MS = 30_000;
 const DEFAULT_LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS = 20;
-const MAX_LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS = 300;
 const LAUNCHD_TEARDOWN_MARGIN_MS = 15_000;
 const GATEWAY_STOP_PROOF_RETRY_DELAY_MS = 250;
 const GATEWAY_PROCESS_START_TIMEOUT_MS = 20_000;
@@ -1235,8 +1236,14 @@ function resolveManagedGatewayCommand(
     prefix = [envFilePath];
   }
   const runtime = programArguments[commandStartIndex];
-  const entrypoint = programArguments[commandStartIndex + 1];
-  const command = programArguments[commandStartIndex + 2];
+  const runtimeArguments = programArguments.slice(commandStartIndex);
+  const { position } = resolveRuntimeScriptPosition(runtimeArguments);
+  if (typeof position !== "number") {
+    return null;
+  }
+  const entrypointIndex = commandStartIndex + position;
+  const entrypoint = programArguments[entrypointIndex];
+  const command = programArguments[entrypointIndex + 1];
   // Arbitrary --wrapper executables contain no checkout entrypoint, so their
   // ownership cannot be proven and conversion must remain a manual operation.
   return typeof runtime === "string" &&
@@ -1245,10 +1252,12 @@ function resolveManagedGatewayCommand(
     command === "gateway"
     ? {
         entrypoint,
-        entrypointIndex: commandStartIndex + 1,
+        entrypointIndex,
         envFilePath,
         executable,
-        invocationPrefix: wrapperPath ? [...prefix, runtime, entrypoint] : [entrypoint],
+        invocationPrefix: wrapperPath
+          ? [...prefix, ...runtimeArguments.slice(0, position + 1)]
+          : runtimeArguments.slice(1, position + 1),
         runtime,
         stateDir: path.dirname(envDir),
         wrapperPath,
@@ -1296,7 +1305,7 @@ function isTrustedOwnedRegularFile(fileStat) {
 }
 
 export function resolveLaunchAgentExitTimeoutSeconds(value) {
-  if (value === 0 || (Number.isInteger(value) && value > MAX_LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS)) {
+  if (value === 0 || (Number.isInteger(value) && value > LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS)) {
     throw new UpdateInvariantError(
       "gateway_launchagent_failed",
       `managed Gateway LaunchAgent ExitTimeOut=${value} prevents bounded stopped proof`,
@@ -1830,7 +1839,6 @@ export function runBuiltGatewayCli(checkout, args, deployment, options = {}) {
     executable,
     invocationPrefix,
     port,
-    runtime,
     serviceEnvironment = {},
     workingDirectory,
     wrapperPath,
@@ -1891,8 +1899,7 @@ export function runBuiltGatewayCli(checkout, args, deployment, options = {}) {
             "-u",
             "OPENCLAW_GATEWAY_URL",
             ...envOverrides,
-            runtime,
-            entrypoint,
+            ...invocationPrefix.slice(executable === "/bin/sh" ? 2 : 1),
             ...args,
           ]
         : [...invocationPrefix, ...args];
