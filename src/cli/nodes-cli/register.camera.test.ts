@@ -197,35 +197,20 @@ describe("nodes camera snap CLI option forwarding", () => {
     ).rejects.toThrow("--delay-ms must be a non-negative integer");
   });
 
-  it("strips terminal controls from device fields in the camera list report", async () => {
+  it("strips node-reported control characters from the camera list table", async () => {
     vi.mocked(rpc.callNodesGatewayCli).mockResolvedValueOnce({
       payload: {
         devices: [
-          { name: "front\u0007bell", position: "front", id: "dev-1" },
-          { name: "\u001b]0;title-pwned\u0007", position: "back", id: "dev-2" },
+          { name: "front\u0007cam", position: "\u001b[2Jback", id: "dev\u001b]0;x\u0007-1" },
         ],
       },
     });
 
-    const log = vi.spyOn(defaultRuntime, "log");
-    try {
-      await buildRootCommand().parseAsync([
-        "node",
-        "nodes",
-        "camera",
-        "list",
-        "--node",
-        "test-node",
-      ]);
-      const raw = log.mock.calls.map((call) => call.join(" ")).join("\n");
-      expect(raw).not.toContain("\u001b");
-      expect(raw).not.toContain("\u0007");
-      expect(raw).toContain("frontbell");
-      expect(raw).toContain("dev-1");
-      expect(raw).toContain("dev-2");
-      expect(raw).not.toContain("title-pwned");
-    } finally {
-      log.mockRestore();
-    }
+    await buildRootCommand().parseAsync(["node", "nodes", "camera", "list", "--node", "test-node"]);
+
+    const output = vi.mocked(defaultRuntime.log).mock.calls.join("\n");
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("\u0007");
+    expect(output).toMatch(/frontcam\s.*back\s.*dev-1/u);
   });
 });
