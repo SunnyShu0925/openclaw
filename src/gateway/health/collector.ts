@@ -34,7 +34,11 @@ import { buildChannelAccountBindings, resolvePreferredAccountId } from "../../ro
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createPermitPool } from "../../shared/permit-pool.js";
-import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../../utils/absolute-deadline.js";
+import {
+  ABSOLUTE_DEADLINE_EXPIRED,
+  awaitWithinDeadline,
+  scheduleAbsoluteDeadline,
+} from "../../utils/absolute-deadline.js";
 import { runTasksWithConcurrency } from "../../utils/run-with-concurrency.js";
 import {
   DEFAULT_CHANNEL_CONNECT_GRACE_MS,
@@ -465,10 +469,16 @@ async function runHealthAccountWithinDeadline(
   const deadlineFallback = { record: buildHealthTimeoutRecord(params.accountId) };
   // Own permit admission and release too: neither a deadline nor shutdown may orphan a hook.
   const operation = trackAsyncWork(async () => {
-    const release = await healthOperationPermits.acquire({
-      deadlineAtMs: params.deadlineAtMs,
-      now: monotonicNow,
-    });
+    // The shared pool's deadlineAtMs is wall-clock; end the wait on the monotonic deadline.
+    const permitWait = new AbortController();
+    const cancelPermitWait = scheduleAbsoluteDeadline(
+      params.deadlineAtMs,
+      () => permitWait.abort(),
+      monotonicNow,
+      { unref: true },
+    );
+    const release = await healthOperationPermits.acquire({ signal: permitWait.signal });
+    cancelPermitWait();
     if (!release) {
       return deadlineFallback.record;
     }
