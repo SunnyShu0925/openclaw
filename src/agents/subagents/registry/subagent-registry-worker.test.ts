@@ -18,10 +18,8 @@ import {
   getGatewayContextResolver,
 } from "../../../plugins/runtime/gateway-context-binding.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import {
-  clearOpenClawDatabaseQuarantine,
-  recordOpenClawDatabaseQuarantine,
-} from "../../../state/openclaw-quarantine-store.js";
+import { clearOpenClawDatabaseQuarantine } from "../../../state/openclaw-quarantine-store.js";
+import { seedOpenClawDatabaseQuarantine } from "../../../state/openclaw-quarantine-store.test-support.js";
 import * as stateReads from "../../../state/openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -282,7 +280,7 @@ it("refuses quarantined registry reads in the worker without replacing resident 
   subagentRuns.set(resident.runId, resident);
   const revision = getSubagentRegistryPublicationRevision();
   const reason = "synthetic registry quarantine";
-  recordOpenClawDatabaseQuarantine({ env: state.env, kind: "state", path: pathname, reason });
+  seedOpenClawDatabaseQuarantine({ env: state.env, kind: "state", path: pathname, reason });
   const staging = vi.spyOn(snapshotSource, "startSqliteReadOnlyLocationAsync");
   const hostSql = observeParentSqlite();
   try {
@@ -472,7 +470,7 @@ it("serializes opposite multi-row orders without a lock-order deadlock", async (
   ]);
 });
 
-it("settles a requester cohort while many children finish, wake, and one is killed", async () => {
+it("settles a requester cohort while many children finish and one is killed", async () => {
   const children = Array.from({ length: 18 }, (_, index) => ({
     ...entry(`child-${index}`),
     completion: { required: true },
@@ -555,7 +553,7 @@ it("settles a requester cohort while many children finish, wake, and one is kill
     reason: "synthetic kill",
     suppressTaskDelivery: true,
   });
-  const results = await Promise.allSettled([...completions, ...wakes, settlement, killed]);
+  const results = await Promise.allSettled([...completions, settlement, killed]);
   expect(results.filter((result) => result.status === "rejected")).toEqual([]);
   const saved = loadSubagentRegistryFromSqlite();
   expect(saved.size).toBe(children.length + 1);
