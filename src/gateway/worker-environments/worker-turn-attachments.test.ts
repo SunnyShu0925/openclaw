@@ -24,6 +24,7 @@ describe("cloud attachment transfer confinement", () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
   });
@@ -170,36 +171,20 @@ describe("cloud attachment transfer confinement", () => {
     expect(await readFile(path.join(remote, directory!, "1-original.pdf"))).toEqual(bytes);
   });
 
-  it("keeps the transfer deadline monotonic and integral when the wall clock rewinds", async () => {
+  it("bounds transfer commands by the monotonic turn budget when the wall clock rewinds", async () => {
     const { remote, execute, input } = await fixture();
-    let perfReads = 0;
-    const performanceNowSpy = vi
-      .spyOn(performance, "now")
-      .mockImplementation(() => (perfReads++ === 0 ? 500 : 500.25));
-    let wallClockReads = 0;
-    const dateNowSpy = vi
-      .spyOn(Date, "now")
-      .mockImplementation(() => (wallClockReads++ === 0 ? 500 : 500 - 90_000));
-    const capturedTimeoutMs: number[] = [];
-    const runWorkspaceCommand = vi.fn(async (command: WorkerWorkspaceCommand) => {
-      capturedTimeoutMs.push(command.timeoutMs ?? -1);
-      return execute(command);
+    vi.spyOn(performance, "now").mockReturnValueOnce(500).mockReturnValue(500.25);
+    vi.spyOn(Date, "now").mockReturnValueOnce(500).mockReturnValue(-89_500);
+    const runWorkspaceCommand = vi.fn(execute);
+    await prepareWorkerTurnAttachments({
+      turn: input,
+      remoteWorkspaceDir: remote,
+      tunnel: { runWorkspaceCommand },
+      assertCurrent: () => {},
     });
-    try {
-      await prepareWorkerTurnAttachments({
-        turn: input,
-        remoteWorkspaceDir: remote,
-        tunnel: { runWorkspaceCommand },
-        assertCurrent: () => {},
-      });
-      expect(capturedTimeoutMs.length).toBeGreaterThan(0);
-      for (const timeoutMs of capturedTimeoutMs) {
-        expect(Number.isSafeInteger(timeoutMs)).toBe(true);
-        expect(timeoutMs).toBe(4999);
-      }
-    } finally {
-      performanceNowSpy.mockRestore();
-      dateNowSpy.mockRestore();
-    }
+    // Integral budget: the node protocol rejects fractional timeoutMs.
+    expect(runWorkspaceCommand.mock.calls.map(([command]) => command.timeoutMs)).toEqual([
+      4999, 4999,
+    ]);
   });
 });
