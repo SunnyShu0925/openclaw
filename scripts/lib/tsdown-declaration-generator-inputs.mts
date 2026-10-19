@@ -2,10 +2,11 @@ import fs from "node:fs";
 import { builtinModules, createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as ts from "typescript/unstable/ast";
-import { API } from "typescript/unstable/sync";
+import * as ts from "typescript/ast";
+import { API } from "typescript/sync";
 import { collectModuleReferencesFromSource } from "./guard-inventory-utils.mjs";
 import { createRuntimeImportGraph } from "./runtime-import-closure.mts";
+import { resolveSqliteSchemaAssetInputs } from "./sqlite-schema-assets.mts";
 import { STATE_SCHEMA_GENERATOR_INPUTS } from "./state-schema-inline-plugin.mts";
 import { resolveTsxImport } from "./tsx-cli-shim.mjs";
 import { resolveWorkerDeployGeneratorInputs } from "./worker-deploy-build-plugin.mts";
@@ -214,6 +215,7 @@ export function resolveTsdownDeclarationGeneratorInputs(
       .toSorted(([left], [right]) => left.localeCompare(right))
       .map(([, file]) => file),
     ...STATE_SCHEMA_GENERATOR_INPUTS,
+    ...resolveSqliteSchemaAssetInputs(root),
     ...resolveWorkerDeployGeneratorInputs(root),
     fs.realpathSync(path.resolve(root, "node_modules/tree-sitter-bash/LICENSE")),
   ];
