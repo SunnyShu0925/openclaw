@@ -442,4 +442,34 @@ describe("RPC source owner boundary", () => {
     await task;
     waiting.cleanup();
   });
+
+  it("keeps the queue deadline monotonic when the wall clock rolls back between seed and consume", async () => {
+    vi.useFakeTimers();
+    const timeoutMs = 1_000;
+    const seedWallClock = 10_000_000;
+    const rollback = 5_000;
+    vi.setSystemTime(seedWallClock);
+    const { initializeTiming, cleanup } = reserve("queued-deadline");
+    // Wall clock rolls back 5000ms before the queue timer is armed: the seed
+    // captured `now` at admission (seedWallClock), but the timer delay is
+    // computed on the rolled-back wall clock.
+    vi.setSystemTime(seedWallClock - rollback);
+    let expiryObservedAtMs = 0;
+    initializeTiming({
+      timeoutMs,
+      now: seedWallClock,
+      onQueueTimeout: () => {
+        expiryObservedAtMs = performance.now();
+      },
+    });
+    const seededAtMs = performance.now();
+    // Advance the (monotonic) fake clock only to ~timeoutMs: the corrected
+    // deadline fires here; the wall-clock-amplified one (timeoutMs + rollback)
+    // has not fired yet, so the corrected expiry time is observed in isolation.
+    await vi.advanceTimersByTimeAsync(timeoutMs + 10);
+    const expiryElapsedMs = expiryObservedAtMs - seededAtMs;
+    expect(expiryElapsedMs).toBeGreaterThanOrEqual(timeoutMs - 10);
+    expect(expiryElapsedMs).toBeLessThanOrEqual(timeoutMs + 10);
+    cleanup();
+  });
 });
