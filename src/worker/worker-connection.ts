@@ -237,8 +237,6 @@ export class WorkerConnection {
   }
 
   private async connectUntilReady(): Promise<WorkerHelloOk> {
-    // Use the monotonic clock so NTP adjustments or manual system-clock changes
-    // cannot stretch or shrink the admission deadline window.
     const startedAt = performance.now();
     let attempt = 0;
     let lastFailure: Error | undefined;

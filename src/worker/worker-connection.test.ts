@@ -330,10 +330,15 @@ describe("worker connection endpoint failures", () => {
     });
   });
 
-  it.each(["no hello", "redacted connect failure"] as const)(
-    "retains the last %s diagnosis at the admission deadline",
-    async (scenario) => {
-      vi.useFakeTimers();
+  it.each([
+    ["no hello", 0],
+    ["redacted connect failure", 0],
+    ["no hello", -60_000],
+    ["no hello", 60_000],
+  ] as const)(
+    "retains the last %s diagnosis at the admission deadline (wall-clock shift: %dms)",
+    async (scenario, wallClockShiftMs) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
       const sockets: EventEmitter[] = [];
       const diagnostics: Array<Error | undefined> = [];
       const endpointUrl =
@@ -377,7 +382,9 @@ describe("worker connection endpoint failures", () => {
           ? "connect failed: Opening handshake has timed out"
           : "no hello within deadline";
       const starting = connection.start().catch((error: unknown) => error);
+      vi.setSystemTime(Date.now() + wallClockShiftMs);
       await vi.advanceTimersByTimeAsync(1_000);
+      expect(connection.state.kind).toBe("failed");
       const error = await starting;
       expect(error).toBeInstanceOf(WorkerAdmissionDeadlineExceededError);
       for (const part of [expected, "gateway.example:8443", `after ${sockets.length} attempts`]) {
@@ -399,42 +406,6 @@ describe("worker connection endpoint failures", () => {
       await expect(connection.waitForExit()).resolves.toEqual({ kind: "failed", error });
     },
   );
-
-  it("uses a monotonic clock so wall-clock adjustments cannot stretch the admission deadline", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
-    const sockets: EventEmitter[] = [];
-    const connection = makeConnection({
-      endpoint: {
-        kind: "websocket",
-        url: `ws://127.0.0.1:0${WORKER_PUBLIC_INGRESS_PATH}`,
-      },
-      admissionTimeoutMs: 300,
-      admissionDeadlineMs: 10_000,
-      reconnectBackoff: { initialMs: 100, maxMs: 100, factor: 1, jitter: 0 },
-      createSocket: () => {
-        const socket = Object.assign(new EventEmitter(), {
-          readyState: 0,
-          send: () => {},
-          close: () => socket.emit("close", 1006, Buffer.alloc(0)),
-          terminate: () => socket.emit("close", 1006, Buffer.alloc(0)),
-        });
-        sockets.push(socket);
-        setTimeout(() => {
-          socket.readyState = 1;
-          socket.emit("open");
-        }, 0);
-        return socket as unknown as WebSocket;
-      },
-    });
-    const starting = connection.start().catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(10_000);
-    const error = await starting;
-    expect(error).toBeInstanceOf(WorkerAdmissionDeadlineExceededError);
-    expect(error).toMatchObject({
-      message: expect.stringContaining(`after ${sockets.length} attempts`),
-    });
-    expect(sockets.length).toBeGreaterThan(1);
-  });
 
   it("does not report local cancellation as a gateway connection failure", async () => {
     const accepted = createDeferred<net.Socket>();
