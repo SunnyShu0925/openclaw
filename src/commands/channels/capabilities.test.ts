@@ -319,6 +319,30 @@ describe("channelsCapabilitiesCommand", () => {
     expect(logs[0]?.split("\n")).toContain("Check: failed (check timed out after 1ms)");
   });
 
+  it("renders remote probe failures and diagnostics as terminal-safe text", async () => {
+    const evil = "\u001b]52;c;QQ==\u0007evil\u001b[2J";
+    selectPlugin({
+      id: "telegram",
+      account: { accountId: "default", botToken: "bot-token" },
+      status: {
+        probeAccount: async () => ({ ok: false, error: evil }),
+        formatCapabilitiesProbe: () => [],
+        buildCapabilitiesDiagnostics: async () => ({
+          lines: [{ text: `Diag: ${evil}`, tone: "error" }],
+        }),
+      },
+    });
+
+    await channelsCapabilitiesCommand({ channel: "telegram" }, runtime);
+
+    const output = logs.join("\n");
+    const withoutWhitespaceControl = output.replace(/[\t\n\r]/g, "");
+    expect(withoutWhitespaceControl).not.toMatch(/\p{Cc}/u);
+    expect(output).not.toContain("52;c;QQ==");
+    expect(output).toContain("Check: failed (evil)");
+    expect(output).toContain("Diag: evil");
+  });
+
   it("serializes diagnostics when capability diagnostics exceed their timeout", async () => {
     selectPlugin({
       account: botAccount,
