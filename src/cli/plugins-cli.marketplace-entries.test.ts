@@ -66,7 +66,7 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const runtime = mocks.defaultRuntime;
 const loadFeed = mocks.loadConfiguredHostedOfficialExternalPluginCatalogEntries;
 const output = () => runtime.log.mock.calls.map(([value]) => String(value)).join("\n");
-const privateUrl = "https://packages.acme.example/openclaw/feed#frag";
+const privateUrl = "https://user:secret@packages.acme.example/openclaw/feed?token=leak#frag";
 const calendar = {
   name: "@acme/calendar",
   openclaw: { plugin: { id: "acme-calendar", label: "Acme Calendar" } },
@@ -381,7 +381,7 @@ describe("plugins marketplace list", () => {
       plugins: [
         {
           name: "\u001b[31mred-plugin\u001b[0m",
-          version: "1.2.3",
+          version: "\u001b[32m1.2.3\u001b[0m",
           description: "drops \r\n\u0007bell and \u001b[2J clear",
           source: { kind: "path", path: "./plugins/demo" },
         },
@@ -409,6 +409,7 @@ describe("plugins marketplace list", () => {
     expect(human).not.toContain("\u0007");
     expect(human).toContain("Marketplace");
     expect(human).toContain("red-plugin");
+    expect(human).toContain("v1.2.3");
     expect(human).toContain("drops \\r\\nbell and  clear");
   });
 

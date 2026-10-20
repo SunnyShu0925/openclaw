@@ -39,7 +39,9 @@ export async function runPluginMarketplaceListCommand(
     `${theme.heading("Marketplace")} ${theme.muted(sanitizeTerminalText(result.manifest.name ?? result.sourceLabel))}`,
   );
   for (const plugin of result.manifest.plugins) {
-    const suffix = plugin.version ? theme.muted(` ${formatVersionLabel(plugin.version)}`) : "";
+    const suffix = plugin.version
+      ? theme.muted(` ${formatVersionLabel(sanitizeTerminalText(plugin.version))}`)
+      : "";
     const desc = plugin.description
       ? ` - ${theme.muted(sanitizeTerminalText(plugin.description))}`
       : "";
