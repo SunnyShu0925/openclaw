@@ -693,8 +693,8 @@ export async function statusAllCommand(
         diagnosis.channelIssues.length === 0 ? "ok" : "warn",
       );
       emitLimited(diagnosis.channelIssues, 12, (issue) => {
-        const fixText = issue.fix ? ` · fix: ${issue.fix}` : "";
-        return `  - ${issue.channel}[${issue.accountId}] ${issue.kind}: ${issue.message}${fixText}`;
+        const fixText = issue.fix ? ` · fix: ${sanitizeTerminalText(issue.fix)}` : "";
+        return `  - ${sanitizeTerminalText(issue.channel)}[${sanitizeTerminalText(issue.accountId)}] ${issue.kind}: ${sanitizeTerminalText(issue.message)}${fixText}`;
       });
     } else if (diagnosis.nodeOnlyGateway) {
       emitCheck(

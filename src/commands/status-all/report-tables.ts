@@ -1,3 +1,4 @@
+import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import type { buildChannelsTable } from "./channels.js";
 import { formatTimeAgo } from "./format.js";
 
@@ -32,25 +33,30 @@ export function buildStatusAgentTableRows(params: {
   ok: (text: string) => string;
   warn: (text: string) => string;
 }) {
-  return params.agentStatus.agents.map((agent) => ({
-    Agent: `${agent.name?.trim() ? `${agent.id} (${agent.name.trim()})` : agent.id}${agent.status === "degraded" ? params.warn(" (degraded)") : ""}`,
-    BootstrapFile:
-      agent.bootstrapPending === true
-        ? params.warn("PRESENT")
-        : agent.bootstrapPending === false
-          ? params.ok("ABSENT")
-          : "unknown",
-    Sessions: agent.status === "degraded" ? "unavailable" : String(agent.sessionsCount),
-    Active:
-      agent.status === "degraded"
-        ? params.warn("refused")
-        : agent.lastActiveAgeMs != null
-          ? formatTimeAgo(agent.lastActiveAgeMs)
-          : "unknown",
-    Store: agent.admissionRefusal
-      ? `${agent.sessionsPath}\n${agent.admissionRefusal.reason}\n${agent.admissionRefusal.repairHint}`
-      : agent.sessionsPath,
-  }));
+  return params.agentStatus.agents.map((agent) => {
+    const sessionsPath = sanitizeTerminalText(agent.sessionsPath);
+    const name = agent.name?.trim() ? sanitizeTerminalText(agent.name.trim()) : "";
+    const id = sanitizeTerminalText(agent.id);
+    return {
+      Agent: `${name ? `${id} (${name})` : id}${agent.status === "degraded" ? params.warn(" (degraded)") : ""}`,
+      BootstrapFile:
+        agent.bootstrapPending === true
+          ? params.warn("PRESENT")
+          : agent.bootstrapPending === false
+            ? params.ok("ABSENT")
+            : "unknown",
+      Sessions: agent.status === "degraded" ? "unavailable" : String(agent.sessionsCount),
+      Active:
+        agent.status === "degraded"
+          ? params.warn("refused")
+          : agent.lastActiveAgeMs != null
+            ? formatTimeAgo(agent.lastActiveAgeMs)
+            : "unknown",
+      Store: agent.admissionRefusal
+        ? `${sessionsPath}\n${sanitizeTerminalText(agent.admissionRefusal.reason)}\n${sanitizeTerminalText(agent.admissionRefusal.repairHint)}`
+        : sessionsPath,
+    };
+  });
 }
 
 export function buildStatusChannelDetailSections(params: {
@@ -59,7 +65,7 @@ export function buildStatusChannelDetailSections(params: {
   warn: (text: string) => string;
 }) {
   return params.details.map((detail) => ({
-    title: detail.title,
+    title: sanitizeTerminalText(detail.title),
     columns: detail.columns.map((column) => ({
       key: column,
       header: column,
@@ -68,7 +74,9 @@ export function buildStatusChannelDetailSections(params: {
       minWidth: column === "Notes" ? 28 : 10,
     })),
     rows: detail.rows.map((row) => ({
-      ...row,
+      ...Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [key, sanitizeTerminalText(value)]),
+      ),
       ...(row.Status === "OK"
         ? { Status: params.ok("OK") }
         : row.Status === "WARN"

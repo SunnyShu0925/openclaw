@@ -140,7 +140,17 @@ const baseStatusObservations = {
     selectionRequired: false,
     bootstrapPendingCount: 1,
     totalSessions: 2,
-    agents: [{ id: "main", lastActiveAgeMs: 60_000 }] as AgentLocalStatus[],
+    agents: [
+      {
+        id: "main",
+        workspaceDir: null,
+        bootstrapPending: false,
+        sessionsCount: 2,
+        sessionsPath: "/tmp/main/sessions.json",
+        lastUpdatedAt: null,
+        lastActiveAgeMs: 60_000,
+      },
+    ] as AgentLocalStatus[],
   },
   memory: {
     agentId: "main",
