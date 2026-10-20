@@ -67,6 +67,20 @@ async function parse(args: string[]) {
   await cli().parseAsync(["skills", "library", ...args], { from: "user" });
 }
 
+// C0/C1 control-byte scan (no regex literal so oxlint no-control-regex stays quiet).
+function hasControlChars(s: string, excluded: number[] = []): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const cc = s.charCodeAt(i);
+    if (excluded.includes(cc)) {
+      continue;
+    }
+    if (cc <= 0x1f || (cc >= 0x7f && cc <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 beforeEach(async () => {
   vi.clearAllMocks();
   directory = await fs.mkdtemp(path.join(os.tmpdir(), "skill-library-cli-"));
@@ -216,6 +230,51 @@ describe("skills library CLI", () => {
       expect.stringContaining("--session requires --revision"),
     );
     expect(mocks.call).not.toHaveBeenCalled();
+  });
+
+  it("sanitizes remote-controlled fields in human list output but keeps raw values in JSON", async () => {
+    const nameInjection = "\u001b]52;c;QQ==\u0007red\u001b[2J";
+    const slugInjection = "a\u001b]52;c;QQ==\u0007b";
+    const ownerInjection = "b\u001b[2Jc";
+    const injection = {
+      ...read.entry,
+      name: nameInjection,
+      slug: slugInjection,
+      ownerLabel: ownerInjection,
+    };
+    const listResult = {
+      entries: [injection],
+      profileId: "profile-alice",
+      multipleProfiles: true,
+      defaultTarget: "personal",
+      canManageWorkspace: false,
+      defaultSelectionLimit: 64,
+    };
+    mocks.call.mockResolvedValue(listResult);
+    await parse(["list"]);
+    const listOut = mocks.writeStdout.mock.calls[0]?.[0] ?? "";
+    expect(hasControlChars(listOut, [0x0a])).toBe(false);
+    expect(listOut).not.toContain("\u001b]52;c;QQ==");
+    expect(listOut).toContain("ab");
+    expect(listOut).toContain("owner=bc");
+    mocks.call.mockClear();
+    mocks.writeStdout.mockClear();
+    mocks.call.mockResolvedValue({ ...read, entry: injection });
+    await parse(["read", skillId]);
+    const readOut = mocks.writeStdout.mock.calls[0]?.[0] ?? "";
+    // The read command also prints the SKILL.md content (legit multi-line), so
+    // exclude whitespace control chars (tab/LF/CR/FF) and assert no ESC/BEL/OSC
+    // injection bytes survive.
+    expect(hasControlChars(readOut, [0x09, 0x0a, 0x0c, 0x0d])).toBe(false);
+    expect(readOut).not.toContain("\u001b]52;c;QQ==");
+    expect(readOut).toContain("Command: red");
+    mocks.call.mockClear();
+    mocks.writeStdout.mockClear();
+    mocks.call.mockResolvedValue(listResult);
+    await parse(["list", "--json"]);
+    expect(mocks.writeJson).toHaveBeenCalledWith(
+      expect.objectContaining({ entries: [expect.objectContaining({ name: nameInjection })] }),
+    );
   });
 
   it("imports a directory named x.zip as a complete bundle", async () => {

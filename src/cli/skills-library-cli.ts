@@ -14,6 +14,7 @@ import {
   type SkillsLibraryReceipt,
   type SkillsLibraryUploadResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import { defaultRuntime } from "../runtime.js";
 import { runCommandWithRuntime } from "./cli-utils.js";
 import { inheritOptionFromParent } from "./command-options.js";
@@ -52,7 +53,7 @@ function rpcOptions(command: Command): GatewayRpcOpts {
 }
 
 function receiptText(receipt: SkillsLibraryReceipt): string {
-  return `${receipt.state}: ${receipt.entry.slug} (${receipt.target}, owner ${receipt.entry.ownerLabel})\nSkill ID: ${receipt.entry.skillId}\nRevision: ${receipt.entry.revision}\n${receipt.nextAction}\n`;
+  return `${receipt.state}: ${sanitizeForLog(receipt.entry.slug)} (${receipt.target}, owner ${sanitizeForLog(receipt.entry.ownerLabel)})\nSkill ID: ${sanitizeForLog(receipt.entry.skillId)}\nRevision: ${sanitizeForLog(receipt.entry.revision)}\n${receipt.nextAction}\n`;
 }
 
 async function saveLocalLibrarySkill(input: string, slug: string, rpc: GatewayRpcOpts) {
@@ -117,17 +118,17 @@ export function registerSkillsLibraryCli(skills: Command): void {
                   `Session: ${result.session.sessionKey}`,
                   ...result.session.selections.map(
                     (selection) =>
-                      `Selected: ${selection.skillId}  ${selection.slug}  owner=${selection.ownerLabel}  ${selection.revision}  ${selection.name}`,
+                      `Selected: ${sanitizeForLog(selection.skillId)}  ${sanitizeForLog(selection.slug)}  owner=${sanitizeForLog(selection.ownerLabel)}  ${sanitizeForLog(selection.revision)}  ${sanitizeForLog(selection.name)}`,
                   ),
                   ...result.session.attachable.map(
                     (entry) =>
-                      `Attachable: ${entry.skillId}  ${entry.slug}  owner=${entry.ownerLabel}`,
+                      `Attachable: ${sanitizeForLog(entry.skillId)}  ${sanitizeForLog(entry.slug)}  owner=${sanitizeForLog(entry.ownerLabel)}`,
                   ),
                 ]
               : []),
             ...result.entries.map(
               (entry) =>
-                `${entry.skillId}  ${entry.slug}  owner=${entry.ownerLabel}  ${entry.enabled ? "enabled" : "disabled"}${entry.shared ? " shared" : ""}  ${entry.revision}`,
+                `${sanitizeForLog(entry.skillId)}  ${sanitizeForLog(entry.slug)}  owner=${sanitizeForLog(entry.ownerLabel)}  ${entry.enabled ? "enabled" : "disabled"}${entry.shared ? " shared" : ""}  ${sanitizeForLog(entry.revision)}`,
             ),
             ...(!result.profileId
               ? [
@@ -162,10 +163,10 @@ export function registerSkillsLibraryCli(skills: Command): void {
         },
         (result) =>
           [
-            `${result.entry.slug} (${result.entry.ownerLabel})`,
-            `Skill ID: ${result.entry.skillId}`,
-            `Revision: ${result.entry.revision}`,
-            `Command: ${result.entry.name}`,
+            `${sanitizeForLog(result.entry.slug)} (${sanitizeForLog(result.entry.ownerLabel)})`,
+            `Skill ID: ${sanitizeForLog(result.entry.skillId)}`,
+            `Revision: ${sanitizeForLog(result.entry.revision)}`,
+            `Command: ${sanitizeForLog(result.entry.name)}`,
             "--- SKILL.md ---",
             result.content,
             ...result.files.flatMap((file) => [
@@ -374,7 +375,7 @@ export function registerSkillsLibraryCli(skills: Command): void {
             },
           ),
         (result) =>
-          `Queued for next turn: ${result.sessionKey}\n${result.selections.map((selection) => `${selection.skillId}  ${selection.name}  ${selection.revision}`).join("\n")}\n`,
+          `Queued for next turn: ${sanitizeForLog(result.sessionKey)}\n${result.selections.map((selection) => `${sanitizeForLog(selection.skillId)}  ${sanitizeForLog(selection.name)}  ${sanitizeForLog(selection.revision)}`).join("\n")}\n`,
       ),
     );
   }
