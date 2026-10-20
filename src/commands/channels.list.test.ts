@@ -219,6 +219,30 @@ describe("channels list", () => {
     expect(payload.chat?.telegram?.accounts).toStrictEqual([accountId]);
   });
 
+  it("sanitizes catalog-only channel labels in terminal output but not JSON", async () => {
+    const control = "\u001B]0;catalog-injection\u0007";
+    const label = `${control}QQ Bot\r\nAdmin`;
+    mocks.listTrustedChannelPluginCatalogEntries.mockReturnValue([
+      createCatalogEntry("qqbot", label),
+    ]);
+    mocks.listPluginContributionIds.mockReturnValue([]);
+
+    const textRuntime = createTestRuntime();
+    await channelsListCommand({ all: true }, textRuntime);
+
+    const textOutput = loggedText(textRuntime);
+    expect(textOutput).not.toContain("\u001B");
+    expect(textOutput).not.toContain("\nAdmin");
+    expect(textOutput).toContain("\\r\\nAdmin");
+
+    const jsonRuntime = createTestRuntime();
+    await channelsListCommand({ all: true, json: true }, jsonRuntime);
+    const payload = JSON.parse(loggedText(jsonRuntime)) as {
+      chat?: Record<string, { label: string }>;
+    };
+    expect(payload.chat?.qqbot?.label).toBe(label);
+  });
+
   it("prefers reachable gateway account snapshots over command-local token state", async () => {
     mocks.listReadOnlyChannelPluginsForConfig.mockReturnValue([
       createMockChannelPlugin({ id: "discord", label: "Discord", accountIds: ["default"] }),
