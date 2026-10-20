@@ -15,6 +15,7 @@ import { AgentIdentityAvatar } from "../../components/solid/identity-avatar.tsx"
 import { ModelPicker } from "../../components/solid/model-picker.tsx";
 import { PanelRefreshStatus as PanelRefreshNotice } from "../../components/solid/panel-refresh-status.tsx";
 import { SettingsRow, SettingsSection } from "../../components/solid/settings-ui.tsx";
+import { StrokeIcon } from "../../components/solid/stroke-icon.tsx";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import "../../components/solid/overlay.css";
 import {
@@ -67,9 +68,7 @@ export function AgentOverview(
   const catalogOwnsChoices = createMemo(
     () => params.modelCatalogRetired || params.modelSelectionPolicy?.restricted,
   );
-  const configForm = createMemo(() => (catalogOwnsChoices() ? null : params.configForm), {
-    equals: false,
-  });
+  const configForm = () => (catalogOwnsChoices() ? null : params.configForm);
   const visibleAgent = createMemo(
     () =>
       catalogOwnsChoices()
@@ -92,11 +91,9 @@ export function AgentOverview(
     ),
   );
   const isDefault = createMemo(() => context().isDefault);
-  const primaryModelLabel = createMemo(() =>
-    t(`agents.overview.primaryModel${isDefault() ? "Default" : ""}`),
-  );
+  const primaryModelLabel = () => t(`agents.overview.primaryModel${isDefault() ? "Default" : ""}`);
   const config = createMemo(() => resolveAgentConfig(configForm(), params.agent.id));
-  const agentModel = createMemo(() => visibleAgent().model, { equals: false });
+  const agentModel = () => visibleAgent().model;
   const entryPrimary = createMemo(() => resolveModelPrimary(config().entry?.model));
   const inheritedPrimary = createMemo(() =>
     resolveModelPrimary(config().defaults?.model ?? agentModel()),
@@ -145,7 +142,7 @@ export function AgentOverview(
   const disabled = createMemo(
     () => !params.canUpdateConfig || !configForm() || params.configLoading || params.configSaving,
   );
-  const identityDraft = createMemo(() => params.readData().identityDraft, { equals: false });
+  const identityDraft = () => params.readData().identityDraft;
   const identityName = createMemo(
     () =>
       identityDraft().name ??
@@ -262,16 +259,9 @@ export function AgentOverview(
             >
               {renderIdentityAvatar()}
               <span class="agent-identity-editor__avatar-edit" aria-hidden="true">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
+                <StrokeIcon>
                   <path d="m16 5 3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
-                </svg>
+                </StrokeIcon>
               </span>
             </button>
             <div class="agent-identity-editor__content">
