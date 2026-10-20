@@ -655,32 +655,51 @@ describe("allow-always pattern persistence", () => {
 });
 
 it.runIf(process.platform !== "win32")(
-  "produces distinct shell-script grants for whitespace-distinct cwd values",
+  "keeps shell-script grants bound to cwd and exact arguments",
   () => {
     const base = makeExecApprovalsTempDir();
     const dirWithSpace = path.join(base, "data ");
     const dirNoSpace = path.join(base, "data");
     fs.mkdirSync(dirWithSpace, { recursive: true });
     fs.mkdirSync(dirNoSpace, { recursive: true });
-    const script = path.join(dirWithSpace, "task.sh");
+    const shell = makeExecutable(base, "bash");
+    const script = path.join(dirWithSpace, "bash");
     fs.writeFileSync(script, "echo ok\n");
-    const env = makePathEnv(base);
-    const contextWith = { cwd: dirWithSpace, env, platform: process.platform };
-    const contextNo = { cwd: dirNoSpace, env, platform: process.platform };
-    const analysisWith = analyzeArgvCommand({ argv: ["/bin/sh", script], ...contextWith });
-    const analysisNo = analyzeArgvCommand({ argv: ["/bin/sh", script], ...contextNo });
-    expect(analysisWith.ok).toBe(true);
-    expect(analysisNo.ok).toBe(true);
-    const entriesWith = resolveAllowAlwaysPatternEntries({
-      segments: analysisWith.segments,
-      ...contextWith,
+    const context = { cwd: dirWithSpace, env: makePathEnv(base), platform: process.platform };
+    const approved = analyzeArgvCommand({ argv: [shell, "./bash", "allowed"], ...context });
+    expect(approved.ok).toBe(true);
+    const decision = resolveAllowAlwaysPersistenceDecision({
+      segments: approved.segments,
+      ...context,
     });
-    const entriesNo = resolveAllowAlwaysPatternEntries({
-      segments: analysisNo.segments,
-      ...contextNo,
-    });
-    expect(entriesWith.length).toBeGreaterThan(0);
-    expect(entriesNo.length).toBeGreaterThan(0);
-    expect(entriesWith[0]?.argPattern).not.toBe(entriesNo[0]?.argPattern);
+    expect(decision.kind).toBe("patterns");
+    const entries =
+      decision.kind === "patterns"
+        ? decision.patterns.map((entry) =>
+            Object.assign({}, entry, { source: "allow-always" as const }),
+          )
+        : [];
+    expect(entries).toHaveLength(1);
+
+    for (const [argv, cwd, allowed] of [
+      [[shell, "./bash", "allowed"], dirWithSpace, true],
+      [[shell, script, "./bash", "allowed"], dirWithSpace, false],
+      [[shell, script, "allowed"], dirWithSpace, true],
+      [[shell, script, "allowed"], dirNoSpace, false],
+    ] as const) {
+      const analysis = analyzeArgvCommand({ ...context, argv: [...argv], cwd });
+      expect(analysis.ok).toBe(true);
+      const evaluation = evaluateExecAllowlist({
+        ...context,
+        analysis,
+        allowlist: entries,
+        safeBins: new Set(),
+        cwd,
+      });
+      expect(evaluation.allowlistSatisfied).toBe(allowed);
+      if (!allowed) {
+        expectApprovalRequired({ analysisOk: analysis.ok, ...evaluation });
+      }
+    }
   },
 );
