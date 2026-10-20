@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -613,6 +614,166 @@ describe("browser control server", () => {
     expect(result.error).toContain("Invalid path");
     expect(pw(mock)).not.toHaveBeenCalled();
   });
+
+  it.runIf(process.platform !== "win32")(
+    "download accepts a literal path whose trimmed neighbor is a directory",
+    async () => {
+      await startServerAndBase();
+      await fs.mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
+      // The trimmed neighbor "report.pdf" is a directory; the literal
+      // " report.pdf " is a safe ordinary filename and must not be rejected.
+      await fs.mkdir(path.join(DEFAULT_DOWNLOAD_DIR, "report.pdf"), { recursive: true });
+      try {
+        const result = await post<{ ok?: boolean }>("/download", {
+          ref: "e12",
+          path: " report.pdf ",
+        });
+        expect(result).toMatchObject({ ok: true });
+        expectBrowserCallFields(pw("downloadViaPlaywright"), {
+          ref: "e12",
+          path: path.resolve(DEFAULT_DOWNLOAD_DIR, " report.pdf "),
+        });
+      } finally {
+        await fs.rm(path.join(DEFAULT_DOWNLOAD_DIR, "report.pdf"), {
+          recursive: true,
+          force: true,
+        });
+      }
+    },
+  );
+
+  it("download rejects the output root as a target", async () => {
+    await startServerAndBase();
+    await fs.mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
+    const result = await post<{ error?: string }>("/download", {
+      ref: "e12",
+      path: ".",
+    });
+    expect(result.error).toContain("Invalid path");
+    expect(pw("downloadViaPlaywright")).not.toHaveBeenCalled();
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "download rejects an existing child directory target before dispatch",
+    async () => {
+      await startServerAndBase();
+      await fs.mkdir(path.join(DEFAULT_DOWNLOAD_DIR, "reports"), { recursive: true });
+      try {
+        const result = await post<{ error?: string }>("/download", {
+          ref: "e12",
+          path: "reports",
+        });
+        expect(result.error).toContain("Invalid path");
+        expect(pw("downloadViaPlaywright")).not.toHaveBeenCalled();
+      } finally {
+        await fs.rm(path.join(DEFAULT_DOWNLOAD_DIR, "reports"), {
+          recursive: true,
+          force: true,
+        });
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "download treats a tilde-prefixed name as a literal scoped filename",
+    async () => {
+      await startServerAndBase();
+      // pathScope() documents that "~/file" selects a file inside a directory
+      // named "~" beneath the scope; it must never expand the home directory.
+      await fs.mkdir(path.join(DEFAULT_DOWNLOAD_DIR, "~"), { recursive: true });
+      try {
+        const result = await post<{ ok?: boolean }>("/download", {
+          ref: "e12",
+          path: "~/report.pdf",
+        });
+        expect(result).toMatchObject({ ok: true });
+        expectBrowserCallFields(pw("downloadViaPlaywright"), {
+          ref: "e12",
+          path: path.resolve(DEFAULT_DOWNLOAD_DIR, "~", "report.pdf"),
+        });
+      } finally {
+        await fs.rm(path.join(DEFAULT_DOWNLOAD_DIR, "~"), {
+          recursive: true,
+          force: true,
+        });
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "download rejects a parent symlink escaping the canonical root before dispatch",
+    async () => {
+      await startServerAndBase();
+      // A symlinked parent that resolves outside the output root must be
+      // rejected before the (missing) target is admitted, so the browser action
+      // is never triggered for a destination beyond the trusted root.
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "oc-proof-outside-"));
+      await fs.mkdir(path.join(outside, "existing"), { recursive: true });
+      await fs.mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
+      const link = path.join(DEFAULT_DOWNLOAD_DIR, "escape-link");
+      try {
+        await fs.symlink(outside, link);
+        const result = await post<{ error?: string }>("/download", {
+          ref: "e12",
+          path: "escape-link/existing/report.pdf",
+        });
+        expect(result.error).toContain("Invalid path");
+        expect(pw("downloadViaPlaywright")).not.toHaveBeenCalled();
+      } finally {
+        await fs.rm(link, { force: true });
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "download accepts an existing regular-file target inside the canonical root",
+    async () => {
+      await startServerAndBase();
+      // A pre-existing regular file is a valid overwrite target: canonical
+      // comparison against the canonical root must not reject it (e.g. under
+      // system aliases such as macOS /tmp -> /private/tmp).
+      await fs.mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
+      const existing = path.join(DEFAULT_DOWNLOAD_DIR, "report.pdf");
+      await fs.writeFile(existing, "old");
+      try {
+        const result = await post<{ ok?: boolean }>("/download", {
+          ref: "e12",
+          path: "report.pdf",
+        });
+        expect(result).toMatchObject({ ok: true });
+        expectBrowserCallFields(pw("downloadViaPlaywright"), {
+          ref: "e12",
+          path: existing,
+        });
+      } finally {
+        await fs.rm(existing, { force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "download rejects an existing FIFO destination before dispatch",
+    async () => {
+      await startServerAndBase();
+      // A FIFO is neither a directory nor a symlink, but it is not a regular
+      // file either; it must be rejected before the browser action so an
+      // invalid output destination cannot trigger a download first.
+      await fs.mkdir(DEFAULT_DOWNLOAD_DIR, { recursive: true });
+      const fifo = path.join(DEFAULT_DOWNLOAD_DIR, "report.fifo");
+      try {
+        execFileSync("mkfifo", [fifo]);
+        const result = await post<{ error?: string }>("/download", {
+          ref: "e12",
+          path: "report.fifo",
+        });
+        expect(result.error).toContain("Invalid path");
+        expect(pw("downloadViaPlaywright")).not.toHaveBeenCalled();
+      } finally {
+        await fs.rm(fifo, { force: true });
+      }
+    },
+  );
 
   it("agent contract: stop endpoint", async () => {
     const base = await startServerAndBase();
