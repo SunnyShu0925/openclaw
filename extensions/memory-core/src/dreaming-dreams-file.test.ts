@@ -310,6 +310,18 @@ The old diary entry stays.
       }),
     ).rejects.toBe(failure);
   });
+
+  it("leaves an inline daily file unchanged when it contains invalid UTF-8", async () => {
+    const targetPath = path.join(workspaceDir, "memory", "2026-04-05.md");
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    const bytes = Buffer.concat([Buffer.from("# Daily\n\nprior entry\n\n"), Buffer.from([0xff])]);
+    await fs.writeFile(targetPath, bytes);
+
+    await expect(writePhase()).rejects.toThrow(/not valid UTF-8/);
+
+    const after = await fs.readFile(targetPath);
+    expect(after.equals(bytes)).toBe(true);
+  });
 });
 
 describe("dream narrative publication", () => {

@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
 import {
@@ -31,7 +32,13 @@ export async function readWorkspaceFile(workspaceDir: string, filePath: string):
 }
 
 export async function readWorkspaceText(workspaceDir: string, filePath: string): Promise<string> {
-  return (await readWorkspaceFile(workspaceDir, filePath)).toString("utf8");
+  const bytes = await readWorkspaceFile(workspaceDir, filePath);
+  if (!isUtf8(bytes)) {
+    throw new Error(
+      `Memory file is not valid UTF-8: ${filePath}. The file was left unchanged; convert a copy to UTF-8 before retrying.`,
+    );
+  }
+  return bytes.toString("utf8");
 }
 
 export async function accessWorkspacePath(workspaceDir: string, filePath: string): Promise<void> {
