@@ -625,12 +625,17 @@ async function resolveMarketplaceRef(params: {
     candidates = await listComputerUseMarketplaceCandidates(params.request, params.config);
   }
 
+  // Monotonic clock: the poll delay is consumed by setTimeout (monotonic), so a
+  // wall-clock budget would let a rewind (NTP correction / sleep resume / manual
+  // time change) stretch each poll interval beyond marketplaceDiscoveryTimeoutMs,
+  // or a forward jump abandon the default marketplace early. Keep both sides on
+  // the same monotonic domain, matching inspectCodexComputerUse above.
   const waitUntil = discoverDefaultMarketplace
-    ? Date.now() + params.config.marketplaceDiscoveryTimeoutMs
+    ? performance.now() + params.config.marketplaceDiscoveryTimeoutMs
     : 0;
   if (
     candidates.length === 0 &&
-    waitUntil > Date.now() &&
+    waitUntil > performance.now() &&
     (await codexNativePluginsDisabled(params.request))
   ) {
     return {
@@ -639,11 +644,11 @@ async function resolveMarketplaceRef(params: {
     };
   }
   while (candidates.length === 0) {
-    if (Date.now() >= waitUntil) {
+    if (performance.now() >= waitUntil) {
       break;
     }
     await delay(
-      Math.min(CURATED_MARKETPLACE_POLL_INTERVAL_MS, waitUntil - Date.now()),
+      Math.min(CURATED_MARKETPLACE_POLL_INTERVAL_MS, waitUntil - performance.now()),
       params.signal,
     );
     candidates = await listComputerUseMarketplaceCandidates(params.request, params.config);
