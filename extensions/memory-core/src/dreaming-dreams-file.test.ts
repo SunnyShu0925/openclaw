@@ -107,6 +107,30 @@ it("refuses to overwrite a symlinked DREAMS.md", async () => {
   await expect(fs.readFile(targetPath, "utf8")).resolves.toBe("outside\n");
 });
 
+it("leaves DREAMS.md unchanged when it contains invalid UTF-8", async () => {
+  const bytes = Buffer.concat([Buffer.from("# Diary\n\nprior entry\n\n"), Buffer.from([0xff])]);
+  await fs.writeFile(dreamsPath, bytes);
+
+  await expect(
+    updateDreamsFile({
+      workspaceDir,
+      updater: () => ({ content: "# Rewritten\n", result: undefined }),
+    }),
+  ).rejects.toThrow(/not valid UTF-8/);
+
+  const after = await fs.readFile(dreamsPath);
+  expect(after.equals(bytes)).toBe(true);
+});
+
+it("degrades malformed diary context to empty history so dreaming continues", async () => {
+  const bytes = Buffer.concat([Buffer.from("# Diary\n\nprior entry\n\n"), Buffer.from([0xff])]);
+  await fs.writeFile(dreamsPath, bytes);
+
+  await expect(readRecentDreamDiaryEntries({ workspaceDir })).resolves.toEqual([]);
+  const after = await fs.readFile(dreamsPath);
+  expect(after.equals(bytes)).toBe(true);
+});
+
 it.each(["😀tail"])("publishes unchanged truncated context ending in %s", async (suffix) => {
   const prefix = "a".repeat(359);
   const body = `${prefix}${suffix}`;

@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { extractErrorCode } from "openclaw/plugin-sdk/error-runtime";
@@ -10,6 +11,7 @@ import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 import { readStore } from "./short-term-promotion-store.js";
 
 export const DREAMS_FILENAMES = ["DREAMS.md", "dreams.md"] as const;
+const MALFORMED_DREAMS_UTF8_CODE = "malformed-utf8";
 const DEEP_START_MARKER = "<!-- openclaw:dreaming:deep:start -->";
 const DEEP_END_MARKER = "<!-- openclaw:dreaming:deep:end -->";
 
@@ -53,7 +55,17 @@ export async function readDreamsFile(dreamsPath: string, workspaceDir?: string):
     return await files.readDreams(dreamsPath);
   }
   try {
-    return (await readRegularFile({ filePath: dreamsPath })).buffer.toString("utf-8");
+    const buffer = (await readRegularFile({ filePath: dreamsPath })).buffer;
+    if (!isUtf8(buffer)) {
+      const err = Object.assign(
+        new Error(
+          `DREAMS.md is not valid UTF-8: ${dreamsPath}. The file was left unchanged; convert a copy to UTF-8 before retrying.`,
+        ),
+        { code: MALFORMED_DREAMS_UTF8_CODE },
+      );
+      throw err;
+    }
+    return buffer.toString("utf-8");
   } catch (err) {
     if (isEmptyDreamsReadError(err, extractErrorCode(err))) {
       return "";
@@ -235,7 +247,12 @@ function normalizeDiaryBlockBody(block: string): string {
 function isOptionalDiaryContextReadError(err: unknown): boolean {
   const code = extractErrorCode(err);
   // Optional prompt context may omit unreadable diaries; updates must preserve the failure.
-  return code === "EACCES" || code === "EPERM" || isEmptyDreamsReadError(err, code);
+  return (
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === MALFORMED_DREAMS_UTF8_CODE ||
+    isEmptyDreamsReadError(err, code)
+  );
 }
 
 function readDiaryBlocks(existing: string): string[] | null {
