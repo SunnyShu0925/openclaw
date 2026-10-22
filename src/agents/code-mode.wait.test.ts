@@ -483,33 +483,49 @@ it("keeps an admitted wait alive past idle expiry and expires it only after repa
   expect(testing.activeRuns.size).toBe(0);
 });
 
-it("preserves accepted output when wait expiry exceeds the Date range", async () => {
-  const target = pluginTool("expiry_fixture", "Expiry fixture");
-  const { run, wait } = harness([target], { codeMode: { snapshotTtlSeconds: 1 } });
-  const limit = 8_640_000_000_000_000;
-  const now = vi.spyOn(Date, "now").mockReturnValue(limit - 1_000);
-  const first = await run(
-    `text("delivered"); await yield_control();
-        text("accepted first"); await expiry_fixture({}); text("accepted inline"); await yield_control("pause"); return "done";`,
-    "park",
-  );
-  expect(first).toMatchObject({
-    status: "waiting",
-    output: [{ type: "text", text: "delivered" }],
-  });
-  now.mockReturnValue(limit - 1);
-  const details = resultDetails(await wait.execute("resume", { runId: first.runId }));
-  expect(details).toMatchObject({
-    status: "failed",
-    error: "code mode run expiry is unavailable.",
-    output: [
-      { type: "text", text: "accepted first" },
-      { type: "text", text: "accepted inline" },
-    ],
-  });
-  expect(target.execute).toHaveBeenCalledOnce();
-  expect(testing.activeRuns.size).toBe(0);
-});
+// The 0 ms case is the no-step control: on the base (wall-clock) implementation
+// it passes, while the stepped cases fail with distinct early-expiry (forward)
+// and lingering (rewind) behavior. The oracle is the configured TTL measured
+// from an independently captured monotonic start, so it stays valid regardless
+// of whether expiresAt is an epoch timestamp (base) or a performance.now value.
+const expiryTtlMs = 60_000;
+it.each([-60_000, 0, 60_000] as const)(
+  "keeps a production-parked run on the monotonic clock across a %d ms wall step",
+  async (wallStep) => {
+    mockClock();
+    const { exec } = harness([pluginTool("fake_noop", "Noop")], {
+      codeMode: { snapshotTtlSeconds: expiryTtlMs / 1_000 },
+    });
+    // Independent monotonic start, captured before any parking.
+    const monoStart = performance.now();
+    // Production-seeded parking: the real exec path parks a run and arms its
+    // expiry timer from the seeded deadline.
+    const first = resultDetails(
+      await exec.execute("clock-step", { code: 'await yield_control(); return "done";' }),
+    );
+    expect(first.status).toBe("waiting");
+    const state = parkedState(first);
+    // Step only the wall clock; the monotonic clock is unaffected.
+    vi.setSystemTime(Date.now() + wallStep);
+    // Parking a second run re-arms the shared expiry timer against the first
+    // run's already-seeded deadline. The re-armed deadline must not move with
+    // the wall clock: a forward step must not shrink it, a rewind must not
+    // inflate it.
+    const second = resultDetails(
+      await exec.execute("clock-step-2", { code: 'await yield_control(); return "done";' }),
+    );
+    expect(second.status).toBe("waiting");
+    // The first run is still alive a second before its configured monotonic TTL
+    // elapses, and expires only after that TTL, then cleans up.
+    const remaining = expiryTtlMs - (performance.now() - monoStart);
+    await vi.advanceTimersByTimeAsync(remaining - 1_000);
+    expect(state.owner.signal.aborted).toBe(false);
+    expect(testing.activeRuns.has(String(first.runId))).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(state.owner.signal.aborted).toBe(true);
+    expect(testing.activeRuns.has(String(first.runId))).toBe(false);
+  },
+);
 
 describe("suspended-run owner scope", () => {
   const identities = ["runId", "sessionId", "sessionKey", "agentId"] as const;

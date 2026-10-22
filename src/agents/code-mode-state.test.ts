@@ -36,6 +36,7 @@ function waiting(continuation: CodeModeExecutorContinuation): CodeModeWorkerResu
 
 afterEach(async () => {
   await disposeAllCodeModeRuns();
+  vi.useRealTimers();
 });
 
 describe("Code Mode continuation ownership", () => {
