@@ -381,6 +381,12 @@ function resolveClaudeCliInternalSourceTool(text: string): string | undefined {
   ) {
     return "restart_recovery";
   }
+  // Claude Code writes this marker on every interrupt, including both
+  // OpenClaw yield interrupts and genuine user cancellations. In both cases
+  // it is internal bookkeeping, not a user-authored message.
+  if (body === "[Request interrupted by user]") {
+    return "cli_interrupt";
+  }
   if (
     /^<command-name>\/compact<\/command-name>\s*<command-message>compact<\/command-message>\s*<command-args>[\s\S]*<\/command-args>$/u.test(
       body,

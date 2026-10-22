@@ -75,6 +75,7 @@ const internalInputs = [
       abortedLastRun: true,
     }),
   ],
+  ["cli_interrupt", "[Request interrupted by user]"],
 ] as const;
 const RESTART_RECOVERY_OPENING = formatSystemTurnPrompt(
   "Your previous turn was interrupted by a gateway restart while OpenClaw was waiting on tool/model work.",
@@ -176,6 +177,7 @@ it.each([
   "System: Please explain this log\n\n[System] This is the line I am asking about.",
   "Explain this log:\n```text\nlog\n```\n\nSystem: [2026-10-04 13:15:44 GMT+8] evidence\n\nWhat failed?",
   `Explain this log:\n${frame('{"a":1}')}System: [2026-10-04 13:15:44 GMT+8] evidence\n\nWhat failed?`,
+  "What does [Request interrupted by user] mean?",
 ])("leaves the look-alike human message %j untouched", (text) => {
   expectVisible(importUnmatched(text), text);
 });
