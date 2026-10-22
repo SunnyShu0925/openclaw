@@ -175,4 +175,26 @@ describe("FaceTime helper supervisor", () => {
     expect(run).toHaveBeenCalledOnce();
     expect(run.mock.calls[0]?.[1]).toMatchObject({ killProcessTree: true });
   });
+
+  it("keeps a superseded injection from reporting into the restarted generation", async () => {
+    onlyFaceTimeInstalled();
+    const stale = Promise.withResolvers<CommandResult>();
+    const { supervisor, logger, run } = createSupervisor({ connectedBundles: () => [] });
+    run.mockImplementationOnce(async () => {
+      supervisor.stop().catch(() => undefined);
+      supervisor.start();
+      return stale.promise;
+    });
+    supervisor.start();
+    void supervisor.stop();
+    supervisor.start();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(run).toHaveBeenCalledOnce();
+
+    stale.resolve({ ...completed, code: 1, stderr: "stale generation" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(supervisor.status()[0]).not.toHaveProperty("lastError");
+  });
 });

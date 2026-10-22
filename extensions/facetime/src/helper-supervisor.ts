@@ -45,6 +45,7 @@ export class FaceTimeHelperSupervisor {
   readonly #timers = new Map<FaceTimeHelperTarget, ReturnType<typeof setTimeout>>();
   #injectionChain: Promise<void> = Promise.resolve();
   #started = false;
+  #generation = 0;
   #abortController = new AbortController();
 
   constructor(private readonly params: HelperSupervisorParams) {
@@ -71,6 +72,7 @@ export class FaceTimeHelperSupervisor {
       return;
     }
     this.#started = true;
+    this.#generation += 1;
     this.#abortController = new AbortController();
     this.#refreshConnections();
     for (const target of this.#states.keys()) {
@@ -82,6 +84,7 @@ export class FaceTimeHelperSupervisor {
 
   async stop(): Promise<void> {
     this.#started = false;
+    this.#generation += 1;
     this.#abortController.abort(new Error("FaceTime helper supervisor stopped"));
     for (const timer of this.#timers.values()) {
       clearTimeout(timer);
@@ -178,11 +181,19 @@ export class FaceTimeHelperSupervisor {
     this.#timers.set(target, timer);
   }
 
+  #isCurrentGeneration(generation: number, abortController: AbortController): boolean {
+    return (
+      this.#started && this.#generation === generation && this.#abortController === abortController
+    );
+  }
+
   #scheduleStaleProcessCheck(target: FaceTimeHelperTarget, processId: number): void {
     this.#cancelTimer(target);
+    const generation = this.#generation;
+    const abortController = this.#abortController;
     const timer = setTimeout(() => {
       this.#timers.delete(target);
-      if (!this.#started) {
+      if (!this.#isCurrentGeneration(generation, abortController)) {
         return;
       }
       const state = this.#states.get(target);
@@ -220,30 +231,40 @@ export class FaceTimeHelperSupervisor {
       return;
     }
     state.queued = true;
+    const generation = this.#generation;
+    const abortController = this.#abortController;
     const pending = this.#injectionChain.then(async () => {
       state.queued = false;
-      if (this.#started) {
-        await this.#inject(target);
+      if (this.#isCurrentGeneration(generation, abortController)) {
+        await this.#inject(target, generation, abortController);
       }
     });
     this.#injectionChain = pending.catch(() => undefined);
   }
 
-  async #waitForAuthenticatedConnection(target: FaceTimeHelperTarget): Promise<void> {
+  async #waitForAuthenticatedConnection(
+    target: FaceTimeHelperTarget,
+    generation: number,
+    abortController: AbortController,
+  ): Promise<void> {
     const deadline = Date.now() + 10_000;
-    while (this.#started && Date.now() < deadline) {
+    while (this.#isCurrentGeneration(generation, abortController) && Date.now() < deadline) {
       this.#refreshConnections();
       const state = this.#states.get(target);
       if (!state || state.connected || state.stale) {
         return;
       }
-      await sleepWithAbort(250, this.#abortController.signal).catch(() => undefined);
+      await sleepWithAbort(250, abortController.signal).catch(() => undefined);
     }
     this.#refreshConnections();
   }
 
-  async #inject(target: FaceTimeHelperTarget): Promise<void> {
-    if (!this.#started) {
+  async #inject(
+    target: FaceTimeHelperTarget,
+    generation: number,
+    abortController: AbortController,
+  ): Promise<void> {
+    if (!this.#isCurrentGeneration(generation, abortController)) {
       return;
     }
     this.#refreshConnections();
@@ -259,11 +280,11 @@ export class FaceTimeHelperSupervisor {
         ["/bin/bash", script, "--app", target],
         {
           timeoutMs: 120_000,
-          signal: this.#abortController.signal,
+          signal: abortController.signal,
           killProcessTree: true,
         },
       );
-      if (!this.#started) {
+      if (!this.#isCurrentGeneration(generation, abortController)) {
         return;
       }
       if (result.code !== 0) {
@@ -272,7 +293,7 @@ export class FaceTimeHelperSupervisor {
       state.lastError = undefined;
       this.params.logger.info(`[facetime] injected helper into ${target}`);
       if (!state.connected && !state.stale) {
-        await this.#waitForAuthenticatedConnection(target);
+        await this.#waitForAuthenticatedConnection(target, generation, abortController);
         if (!state.connected && !state.stale) {
           throw new Error(
             `${target} helper injection completed but no authenticated connection arrived`,
@@ -280,14 +301,14 @@ export class FaceTimeHelperSupervisor {
         }
       }
     } catch (error) {
-      if (this.#started) {
+      if (this.#isCurrentGeneration(generation, abortController)) {
         state.lastError = formatErrorMessage(error);
         this.params.logger.warn(`[facetime] ${target} helper injection failed: ${state.lastError}`);
       }
     } finally {
       state.injecting = false;
     }
-    if (!this.#started) {
+    if (!this.#isCurrentGeneration(generation, abortController)) {
       return;
     }
     this.#refreshConnections();
