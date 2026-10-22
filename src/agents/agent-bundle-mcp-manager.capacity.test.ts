@@ -649,7 +649,7 @@ describe("MCP capacity catalog continuity", () => {
       for (let index = 0; index < 255; index++) {
         (await acquire(`busy-${index}`)).releaseLease();
       }
-      const closing = createDeferred<void>();
+      const closing = createDeferred();
       evicted.runtime.joinCleanup = () => closing.promise;
 
       // The deadline seeds the budget and the loop spends it in one synchronous block, so
@@ -666,7 +666,7 @@ describe("MCP capacity catalog continuity", () => {
       for (let tick = 0; tick < 400; tick++) {
         await Promise.resolve();
       }
-      const budgets = timers.mock.calls.map(([, timeout]) => timeout);
+      const budgets = timers.mock.calls.map(([, timeout]) => timeout ?? 0);
       closing.resolve();
       held.push(await pending);
 

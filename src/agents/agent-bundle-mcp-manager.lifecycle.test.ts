@@ -301,7 +301,7 @@ describe("MCP manager creation ownership", () => {
       leases.push(await manager.acquire({ ...params, sessionId: `busy-${index}`, cfg }));
     }
     let fallback: SessionMcpRuntimeLease | undefined;
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     const admission = manager.acquire({ ...params, sessionId: "overflow", cfg }).then((lease) => {
       fallback = lease;
     });
@@ -343,7 +343,7 @@ describe("MCP manager creation ownership", () => {
     for (let index = 0; index < 254; index++) {
       leases.push(await manager.acquire(input(`busy-${index}`)));
     }
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     let reacquiring: Promise<SessionMcpRuntimeLease> | undefined;
     try {
       const overflow = manager.acquire(input("overflow"));
