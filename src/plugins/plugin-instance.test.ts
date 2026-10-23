@@ -70,6 +70,39 @@ it.each(["call", "cleanup", "consumer", "host prelude"] as const)(
   },
 );
 
+it.each([0, -3_000, 3_000])(
+  "keeps the plugin cleanup budget on the monotonic clock across a %dms wall clock jump",
+  async (offset) => {
+    vi.useFakeTimers();
+    // The wall clock steps by `offset` only after the cleanup deadline is seeded;
+    // the monotonic clock advances with the fake timers (pre-fix reads Date.now()
+    // for the remaining budget, post-fix reads performance.now()).
+    let deadlineSeeded = false;
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      const wall = performance.now() + (deadlineSeeded ? offset : 0);
+      return wall;
+    });
+    const instance = new PluginInstance("cleanup-clock");
+    let cleanupSettled = false;
+    instance.lifecycle.onDispose(async () => {
+      deadlineSeeded = true;
+      // The cleanup consumes 3.5s of monotonic time, safely inside the 5s budget.
+      await vi.advanceTimersByTimeAsync(3_500);
+      cleanupSettled = true;
+    });
+    const disposal = trackCompletion(instance.dispose());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deadlineSeeded).toBe(true);
+    // Let the full 5s budget elapse so a healthy cleanup settles.
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await disposal.promise;
+    // A healthy cleanup that settles within the 5s monotonic budget must not be
+    // mis-killed by a wall-clock jump (pre-fix forward shrinks the budget to ~2s).
+    expect(result.errors).toHaveLength(0);
+    expect(cleanupSettled).toBe(true);
+  },
+);
+
 it("optionally drains retained consumers before resources stop while preserving default drain", async () => {
   const instance = new PluginInstance("consumer-drain");
   const consumer = instance.retainConsumer();
