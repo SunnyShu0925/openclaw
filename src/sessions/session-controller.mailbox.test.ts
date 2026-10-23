@@ -3,11 +3,15 @@ import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
 import { scheduleFollowupDrain } from "../auto-reply/reply/queue/drain.js";
 import { reserveSteerCandidate, enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
-import { admitFollowupRunLifecycle } from "../auto-reply/reply/queue/lifecycle.js";
+import {
+  admitFollowupRunLifecycle,
+  completeFollowupRunLifecycle,
+} from "../auto-reply/reply/queue/lifecycle.js";
 import { clearFollowupQueue } from "../auto-reply/reply/queue/state.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { deferSessionControllerClaimBeforeExecution } from "./session-controller.mailbox-claim.js";
+import { pumpSessionControllerMailbox } from "./session-controller.mailbox-dispatch.js";
 import { reserveSessionControllerClaimPredecessor } from "./session-controller.mailbox-predecessor.js";
 import {
   reserveSessionControllerSource,
@@ -385,6 +389,41 @@ describe("controller mailbox scheduling", () => {
     await run.controllerInput!.claim?.settlement.promise;
     expect(findSessionControllerEntry(key)).toBeUndefined();
     expect(dispatched).toHaveBeenCalledOnce();
+  });
+
+  it("uses monotonic clock for debounce delay to survive wall-clock rollback (BUG-217)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scheduledAt = performance.now();
+    let monotonicNow = scheduledAt;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+    vi.setSystemTime(scheduledAt);
+    const dispatch = vi.fn(async () => {});
+
+    const run = source("debounce monotonic");
+    enqueueFollowupRun(key, run, { mode: "followup", debounceMs: 500 }, "none", dispatch, false);
+
+    const mailbox = getExistingSessionControllerMailbox(key)!;
+    mailbox.dispatchEnabled = true;
+    mailbox.dispatch = dispatch;
+    const wake = vi.spyOn(mailbox, "wake");
+
+    const rollbackDelta = 90_000;
+    pumpSessionControllerMailbox(mailbox);
+    const firstDelay = mailbox.debounceMs - (monotonicNow - mailbox.lastEnqueuedAt);
+    expect(firstDelay).toBeGreaterThan(0);
+    expect(firstDelay).toBeLessThanOrEqual(mailbox.debounceMs);
+    vi.setSystemTime(scheduledAt - rollbackDelta);
+    monotonicNow += firstDelay - 1;
+    await vi.advanceTimersByTimeAsync(firstDelay - 1);
+    expect(mailbox.timer).toBeDefined();
+    expect(wake).not.toHaveBeenCalled();
+    monotonicNow += 1;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(wake).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledOnce();
+    completeFollowupRunLifecycle(run, "consumed");
+    await releaseClaim(run.controllerInput!.claim!);
+    expect(findSessionControllerEntry(key)).toBeUndefined();
   });
 });
 
