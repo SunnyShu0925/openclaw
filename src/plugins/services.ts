@@ -165,7 +165,7 @@ async function startPreparedPluginServices({
     if (deadline === undefined) {
       return operation;
     }
-    const remaining = deadline - Date.now();
+    const remaining = deadline - performance.now();
     const timeoutError = () =>
       new PluginServiceTimeoutError(
         `${label} timed out after ${Math.max(0, remaining)}ms${serviceOwner ? ` (${serviceOwner})` : ""}`,
@@ -345,7 +345,7 @@ async function startPreparedPluginServices({
       ]).then(() =>
         runBeforeDeadline(
           waitForDiagnosticEventsDrained,
-          oneShotTimeouts ? Date.now() + oneShotTimeouts.eventDrainMs : resolveDeadline(),
+          oneShotTimeouts ? performance.now() + oneShotTimeouts.eventDrainMs : resolveDeadline(),
           "plugin diagnostic event drain",
           owners,
         ),
@@ -368,7 +368,9 @@ async function startPreparedPluginServices({
       }
     }
     // Fresh one-shot flush budgets start after drain; absolute replacement deadlines span all phases.
-    const stopDeadline = oneShotTimeouts ? Date.now() + oneShotTimeouts.serviceStopMs : undefined;
+    const stopDeadline = oneShotTimeouts
+      ? performance.now() + oneShotTimeouts.serviceStopMs
+      : undefined;
     for (const entry of afterDrain) {
       await stopService(entry, failures, stopDeadline ?? resolveDeadline(), exporterReady);
     }
@@ -425,7 +427,7 @@ async function startPreparedPluginServices({
             selected.toReversed(),
             true,
             undefined,
-            () => Date.now() + PLUGIN_SERVICE_REPLACEMENT_STOP_TIMEOUT_MS,
+            () => performance.now() + PLUGIN_SERVICE_REPLACEMENT_STOP_TIMEOUT_MS,
           );
           for (const entry of selected) {
             // A timed-out stop retains its resources and pending restart until actual cleanup.
@@ -463,7 +465,11 @@ async function startPreparedPluginServices({
         beginServiceStop(entry);
       }
       const strict = options?.strict === true;
-      const deadline = strict ? options.deadlineAtMs : undefined;
+      // Callers seed a wall-clock epoch; the stop chain budgets on the monotonic clock its timers use.
+      const deadline =
+        strict && options?.deadlineAtMs !== undefined
+          ? performance.now() + Math.max(0, options.deadlineAtMs - Date.now())
+          : undefined;
       return Promise.resolve().then(async () => {
         const failures: unknown[] = [];
         await stopServices(selected.toReversed(), strict, failures, deadline);
@@ -662,7 +668,7 @@ async function startPreparedPluginServices({
       // Bound candidate observation only; raw completion remains owned by the entry.
       await runBeforeDeadline(
         () => (startupTrace ? startupTrace.measure(traceName, invokeStart) : invokeStart()),
-        candidate ? Date.now() + PLUGIN_SERVICE_REPLACEMENT_STOP_TIMEOUT_MS : undefined,
+        candidate ? performance.now() + PLUGIN_SERVICE_REPLACEMENT_STOP_TIMEOUT_MS : undefined,
         "plugin service startup",
         `${entry.pluginId}/${id}`,
       );
@@ -686,7 +692,7 @@ async function startPreparedPluginServices({
       await stopService(
         ownedService,
         failures,
-        Date.now() + PLUGIN_SERVICE_REPLACEMENT_STOP_TIMEOUT_MS,
+        performance.now() + PLUGIN_SERVICE_REPLACEMENT_STOP_TIMEOUT_MS,
       );
       return false;
     }

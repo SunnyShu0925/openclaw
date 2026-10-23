@@ -62,7 +62,7 @@ function start(
   registry: PluginRegistry,
   options: Pick<
     Parameters<typeof startPluginServices>[0],
-    "startupTrace" | "broadcastPluginEvent"
+    "startupTrace" | "broadcastPluginEvent" | "oneShotStopTimeouts"
   > = {},
 ) {
   return startPluginServices({
@@ -679,6 +679,67 @@ describe("startPluginServices", () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(["caller deadline", "one-shot stop budget"] as const)(
+    "keeps the %s on the monotonic clock across a wall-clock correction",
+    async (seed) => {
+      // A backward wall-clock step inside the stop window must not stretch the remaining budget:
+      // the seed is captured on the monotonic clock and consumed by a monotonic setTimeout.
+      vi.useFakeTimers({
+        toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+      });
+      const budgetMs = 5_000;
+      const releaseStalled = createDeferredCore();
+      const stalledStop = vi.fn(() => releaseStalled.promise);
+      const registry = createRegistry([
+        { id: "stalled-cleanup", start() {}, stop: stalledStop },
+        {
+          id: "clock-correction",
+          start() {},
+          stop() {
+            // NTP correction or VM resume: the wall clock jumps back an hour mid-stop.
+            vi.setSystemTime(Date.now() - 60 * 60 * 1_000);
+          },
+        },
+      ]);
+      const handle = await start(
+        registry,
+        seed === "one-shot stop budget"
+          ? { oneShotStopTimeouts: { eventDrainMs: budgetMs, serviceStopMs: budgetMs } }
+          : {},
+      );
+      const stopping = handle
+        .stop(
+          seed === "caller deadline"
+            ? { strict: true, deadlineAtMs: Date.now() + budgetMs }
+            : { strict: true },
+        )
+        .catch((error: unknown) => error);
+      try {
+        await vi.advanceTimersByTimeAsync(budgetMs);
+        // If the budget were measured on the wall clock, the backward step would stretch it past
+        // the monotonic 5s window and the stop would still be pending here.
+        const settled = await Promise.race([
+          stopping.then((result) => ({ outcome: "stopping" as const, result })),
+          Promise.resolve().then(() => ({ outcome: "pending" as const })),
+        ]);
+        expect(settled.outcome).toBe("stopping");
+        if (settled.outcome !== "stopping") {
+          throw new Error(`expected stop to settle, got ${settled.outcome}`);
+        }
+        expect(settled.result).toBeInstanceOf(AggregateError);
+        expect(settled.result).toMatchObject({
+          errors: [{ message: expect.stringContaining("plugin service stop timed out after") }],
+        });
+        expect(stalledStop).toHaveBeenCalledOnce();
+      } finally {
+        releaseStalled.resolve();
+        await Promise.allSettled([stopping]);
+        await handle.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("bounds failed-start cleanup and retains it for final shutdown", async () => {
     vi.useFakeTimers();

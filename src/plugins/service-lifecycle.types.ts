@@ -12,6 +12,7 @@ export type PluginServicesHandle = {
   reload: (config: OpenClawConfig, serviceIds: ReadonlySet<string>) => Promise<void>;
   stop: (options?: {
     strict: true;
+    /** Wall-clock epoch; the stop chain converts it once to the clock its timers run on. */
     deadlineAtMs?: number;
     pluginIds?: ReadonlySet<string>;
   }) => Promise<void | { errors: readonly unknown[] }>;
