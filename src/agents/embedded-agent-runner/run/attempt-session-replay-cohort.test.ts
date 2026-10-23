@@ -5,8 +5,10 @@ import { SessionEntryChangedDuringReadError } from "../../../config/sessions/ses
 import * as transcriptReaders from "../../../config/sessions/session-transcript-execution-read.js";
 import { waitForSessionTranscriptProjection } from "../../../config/sessions/session-transcript-reconcile.js";
 import * as historyReaders from "../../../config/sessions/session-transcript-worker-readers.js";
+import { appendAssistantMessageToSessionTranscript } from "../../../config/sessions/transcript.runtime.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { SKILL_WORKSHOP_CHANGE_NOTICE_KIND } from "../../../shared/transcript-only-openclaw-assistant.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../../state/openclaw-agent-db.js";
 import {
   createAssistant,
@@ -16,6 +18,7 @@ import {
 import { SessionManager } from "../../sessions/session-manager.js";
 import { withInterruptedTurn } from "./attempt-session-replay.test-support.js";
 import { cleanupEmbeddedAttemptResources } from "./attempt-subscription-cleanup.js";
+import { preparePersistedCurrentUserTurn } from "./pre-persisted-user-turn.js";
 
 registerAgentSessionLoopTestLifecycle();
 
@@ -288,4 +291,49 @@ describe("transcript replay cohorts", () => {
       );
     },
   );
+
+  it("re-admits a persisted turn when a runId-less workshop notice lands during admission", async () => {
+    await withInterruptedTurn(
+      false,
+      async (fixture) => {
+        const { attempt, target } = fixture;
+        const sessionManager = await SessionManager.openAsync(target, attempt.workspaceDir);
+        const recorder = attempt.userTurnTranscriptRecorder!;
+        const message = await recorder.resolveMessage();
+        expect(message).toBeDefined();
+        const replay = await preparePersistedCurrentUserTurn({
+          sessionManager,
+          message,
+          recorder,
+          runId: attempt.runId,
+        });
+        expect(replay).toBeTypeOf("function");
+        const consume = await replay?.();
+        expect(consume).toBeTypeOf("function");
+        // A background runId-less skill-workshop notice lands between preparation and
+        // consumption, exactly as the reported incidents show. It is not part of the
+        // owner turn, so replay must traverse it back to the interrupted user turn.
+        const appended = await appendAssistantMessageToSessionTranscript({
+          agentId: target.agentId,
+          sessionKey: target.sessionKey,
+          storePath: target.storePath,
+          expectedSessionId: target.sessionId,
+          idempotencyKey: `skill-workshop-notice:${attempt.runId}`,
+          text: "One skill changed after review",
+          deliveryMirror: {
+            kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
+            agentId: target.agentId,
+            runId: attempt.runId,
+            skills: [{ name: "some-skill", action: "updated" }],
+          },
+        });
+        expect(appended.ok).toBe(true);
+        await sessionManager.reloadPersistedTranscriptAsync();
+        const admitted = vi.fn();
+        await expect(consume!(admitted)).resolves.toBeUndefined();
+        expect(admitted).toHaveBeenCalledOnce();
+      },
+      { interruptedTurn: false },
+    );
+  });
 });

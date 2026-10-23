@@ -191,6 +191,9 @@ export async function postWorkshopChangeNotice(params: {
             agentId,
             idempotencyKey,
             expectedSessionId: generation.sessionId,
+            // Carry the Workshop marker through the channel mirror path so replay admission
+            // can identify a channel-delivered notice the same way it does a direct one.
+            deliveryMirror: marker,
           },
           bestEffort: true,
         },

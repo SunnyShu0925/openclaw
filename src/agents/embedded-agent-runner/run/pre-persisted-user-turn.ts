@@ -5,6 +5,7 @@ import type { SessionTranscriptWriteScope } from "../../../config/sessions/sessi
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.types.js";
 import { runWithSessionActorStorage } from "../../../config/sessions/session-actor-storage-binding.js";
 import { readSessionTranscriptAnchorsAsync } from "../../../config/sessions/session-transcript-anchor-read.js";
+import { SessionTranscriptReadFenceError } from "../../../config/sessions/session-transcript-read-fence-error.js";
 import { resolveSessionTranscriptReadFence } from "../../../config/sessions/session-transcript-read-fence.js";
 import { withSessionTranscriptReadSource } from "../../../config/sessions/session-transcript-read-source.js";
 import type { TranscriptEntryAnchor } from "../../../config/sessions/transcript-entry-anchor.js";
@@ -16,13 +17,19 @@ import {
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWriterFence,
 } from "../../../config/sessions/transcript-write-context.js";
-import { SessionWorkStartChangedError } from "../../../config/sessions/work-start-error.js";
+import {
+  isSessionWorkStartInvalidatedError,
+  SessionWorkStartChangedError,
+} from "../../../config/sessions/work-start-error.js";
 import { readNestedToolActivity } from "../../../sessions/nested-tool-activity.js";
 import type {
   PersistedUserTurnMessage,
   UserTurnTranscriptRecorder,
 } from "../../../sessions/user-turn-transcript.types.js";
-import { isOpenClawDeliveryMirrorAssistantMessage } from "../../../shared/transcript-only-openclaw-assistant.js";
+import {
+  isOpenClawDeliveryMirrorAssistantMessage,
+  SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
+} from "../../../shared/transcript-only-openclaw-assistant.js";
 import {
   AGENT_RUN_RESTART_ABORT_ERROR,
   AGENT_RUN_RESTART_ABORT_ERROR_CODE,
@@ -60,6 +67,17 @@ function isInterruptedTurnEntry(entry: SessionEntry, runId: string): boolean {
     return readNestedToolActivity(message)?.details.runId === runId;
   }
   if (Reflect.get(message, "__openclaw")?.runId !== runId) {
+    // A background skill-workshop notice is a runId-less transcript mirror that can
+    // land while the owner turn is persisted but not yet admitted. It is not part of
+    // the user turn, so it must not stop replay traversal back to the interrupted
+    // user turn; final and unrelated-reply mirrors still close the turn below.
+    if (
+      isOpenClawDeliveryMirrorAssistantMessage(message) &&
+      asOptionalRecord(Reflect.get(message, "openclawDeliveryMirror"))?.kind ===
+        SKILL_WORKSHOP_CHANGE_NOTICE_KIND
+    ) {
+      return true;
+    }
     return false;
   }
   if (message.role !== "assistant") {
@@ -394,6 +412,14 @@ export async function preparePersistedCurrentUserTurn(params: {
         ? AbortSignal.any([signal, params.signal])
         : signal;
     replaySignal?.throwIfAborted();
+    // Refresh admission once against the settled transcript so an append conflict
+    // (a delivery mirror or workshop notice landing between preparation and
+    // consumption) is re-read without dropping the still-interrupted user turn.
+    // `select()` re-validates message equality and interrupted-ness on every attempt,
+    // so a newer user, a completion, an abort, or an authority change still refuses
+    // admission. The anchor generation is kept equal across both attempts: ordinary
+    // appends preserve it, so a changed generation still means a rewrite and stays
+    // refused. A second failure surfaces as before.
     const accept = (prepared: CurrentTurnReplayWitness | undefined, onAdmitted?: () => void) => {
       if (
         !prepared ||
@@ -415,7 +441,25 @@ export async function preparePersistedCurrentUserTurn(params: {
     assertCurrent();
     // Read once at core entry; prompt preparation does not reserve a database incarnation.
     return async (onAdmitted) => {
-      await readCurrentTurn(replaySignal, (prepared) => accept(prepared, onAdmitted));
+      const consumeReplay = () =>
+        readCurrentTurn(replaySignal, (prepared) => accept(prepared, onAdmitted));
+      try {
+        await consumeReplay();
+      } catch (error) {
+        if (
+          !isSessionWorkStartInvalidatedError(error) &&
+          !(error instanceof SessionTranscriptReadFenceError)
+        ) {
+          throw error;
+        }
+        // Refresh admission once against the settled transcript. Only a same,
+        // still-interrupted user turn (re-validated by `select()`) is admitted;
+        // terminal, newer-user, and authority changes still fail the retry. A
+        // changed generation after refresh means the transcript was rewritten,
+        // which is beyond the append-only recovery this owner performs; the same
+        // guard that refused the first attempt refuses the second.
+        await consumeReplay();
+      }
     };
   };
 }
