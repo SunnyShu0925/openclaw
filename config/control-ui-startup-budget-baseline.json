@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 281233,
-  "reason": "Defer optional root English at consuming routes: matched bf93c438 startup 282747 to 281233 B gzip; 7 JS and 1 CSS request unchanged.",
-  "updatedAt": "2026-10-23"
+  "startupJsGzipBytes": 281299,
+  "reason": "Shared visible clocks: 20 interleaved pairs reduced script CPU median 9.6% desktop and 12.9% mobile, with both p95s improved. Against 4d49d348, startup is 281299 B (+115 B), New Session +133 B, chat -213 B, and request counts unchanged. Accept the sub-0.5 KB CPU tradeoff and ratchet to the measured head.",
+  "updatedAt": "2026-10-24"
 }
