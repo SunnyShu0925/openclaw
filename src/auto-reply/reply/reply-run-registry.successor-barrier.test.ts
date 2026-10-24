@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { describePendingFakeTimers } from "../../../test/helpers/fake-timer-diagnostics.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
+import { REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS } from "../../sessions/session-controller.contracts.js";
 import {
   registerReplyOperationSuccessorBarrier,
   ReplyRunSuccessorAdmissionBlockedError,
 } from "../../sessions/session-controller.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import { waitForReplyBarrierSettlement } from "../../sessions/session-controller.settlement.js";
 import { testing } from "../../sessions/session-controller.test-support.js";
 import { waitForReplyRunSuccessorAdmission } from "../../sessions/session-controller.wait.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
@@ -170,6 +173,26 @@ describe("reply run successor barriers", () => {
       release.resolve();
       await waitForReplyRunSuccessorAdmission(operation.key, null);
     }
+  });
+
+  it("settles an extendable barrier on its monotonic budget despite a wall-clock rollback", async () => {
+    await withFakeReplyTimers(async () => {
+      const interval = REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS;
+      const settled = vi.fn();
+      const originalDateNow = Date.now;
+      let dateNowCalls = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => {
+        dateNowCalls++;
+        return originalDateNow() - (dateNowCalls === 1 ? 0 : interval);
+      });
+      void waitForReplyBarrierSettlement(createDeferred().promise, {
+        maxTimeoutMs: interval * 3,
+        shouldExtend: () => true,
+      }).then(settled);
+      await vi.advanceTimersByTimeAsync(interval * 3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled, describePendingFakeTimers()).toHaveBeenCalledOnce();
+    });
   });
 
   it("waits for the captured physical owner when logical keys are ambiguous", async () => {
