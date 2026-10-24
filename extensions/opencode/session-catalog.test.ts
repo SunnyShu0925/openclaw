@@ -580,12 +580,12 @@ describe("OpenCode session catalog", () => {
     const hosts = await provider!.list({ limitPerHost: 1 });
     expect(hosts[0]?.sessions.map((session) => session.threadId)).toEqual(["ses_test"]);
 
-    const now = Date.now();
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const now = performance.now();
+    const perfSpy = vi.spyOn(performance, "now").mockReturnValue(now);
     const run = processRuntimeMocks.runCommandBuffered.getMockImplementation()!;
     processRuntimeMocks.runCommandBuffered.mockImplementationOnce(async (...args) => {
       const result = await run(...args);
-      nowSpy.mockReturnValue(now + 30_001);
+      perfSpy.mockReturnValue(now + 30_001);
       return result;
     });
     try {
@@ -593,8 +593,32 @@ describe("OpenCode session catalog", () => {
         listLocalOpenCodeSessionPage({ limit: 1 }, { forceRefresh: true }),
       ).rejects.toThrow("OpenCode session scan exceeded the time limit");
     } finally {
-      nowSpy.mockRestore();
+      perfSpy.mockRestore();
     }
+  });
+
+  itWithCli("bounds per-page CLI budgets when the wall clock runs backwards", async () => {
+    await installFakeOpenCode("hi", "Catalog session", {}, 2, true);
+    const { provider } = captureOpenCodeSessionRegistrations();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const captured: number[] = [];
+    const run = processRuntimeMocks.runCommandBuffered.getMockImplementation()!;
+    processRuntimeMocks.runCommandBuffered.mockImplementation(async (...args) => {
+      const [argv, opts] = args as [string[], { timeoutMs?: number }];
+      if (argv.includes("session.list") && typeof opts?.timeoutMs === "number") {
+        captured.push(opts.timeoutMs);
+      }
+      const result = await run(...args);
+      if (captured.length === 1) {
+        nowSpy.mockReturnValue(Date.now() - 60_000);
+      }
+      return result;
+    });
+    await provider!.list({ limitPerHost: 1 });
+    nowSpy.mockRestore();
+    processRuntimeMocks.runCommandBuffered.mockImplementation(run);
+    expect(captured).toHaveLength(2);
+    expect(captured[1]!).toBeLessThanOrEqual(captured[0]!);
   });
 
   itWithCli("allows a relative OPENCODE_DB as an explicit isolated-state root", async () => {
