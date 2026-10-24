@@ -59,7 +59,7 @@ const hostedTabNotifiers = new WeakMap<HTMLElement, () => void>();
 const FILE_COLUMN_MIN_WIDTH = 176;
 
 /** The workspace owns tab order and selection; this view retains retiring app DOM. */
-defineSolidBridge<Props, Methods>(
+export const ChatFilesPanel = defineSolidBridge<Props, Methods>(
   "openclaw-chat-files-panel",
   (props, host) => {
     const contentId = `chat-files-content-${++filesPanelSequence}`;
@@ -311,6 +311,15 @@ defineSolidBridge<Props, Methods>(
                 rendered();
                 return preview();
               };
+              const FilePath = () => (
+                <span
+                  ref={createTextOverflow(() => entry().label)}
+                  class="sidebar-file-view__path"
+                  title={entry().label}
+                >
+                  {entry().label}
+                </span>
+              );
               const readResult = createMemo(() => ({ pending: entry().readResult }), {
                 equals: (previous, next) => previous.pending === next.pending,
               });
@@ -342,13 +351,7 @@ defineSolidBridge<Props, Methods>(
                       class="chat-files-panel__fallback-rail sidebar-file-view__path-bar session-panel-rail"
                       data-presentation="desktop"
                     >
-                      <span
-                        ref={createTextOverflow(() => entry().label)}
-                        class="sidebar-file-view__path"
-                        title={entry().label}
-                      >
-                        {entry().label}
-                      </span>
+                      <FilePath />
                     </div>
                   </Show>
                   <Show when={rendered().presentation === "mobile"}>
@@ -376,13 +379,7 @@ defineSolidBridge<Props, Methods>(
                               class="sidebar-file-view__path-bar session-panel-rail"
                               data-presentation="desktop"
                             >
-                              <span
-                                ref={createTextOverflow(() => entry().label)}
-                                class="sidebar-file-view__path"
-                                title={entry().label}
-                              >
-                                {entry().label}
-                              </span>
+                              <FilePath />
                             </div>
                             <div class="sidebar-file-view__workspace-body">
                               <PanelEmptyState

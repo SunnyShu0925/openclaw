@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -8,19 +7,24 @@ import * as logging from "openclaw/plugin-sdk/logging-core";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { postRawWebhook } from "openclaw/plugin-sdk/test-env";
 import { WEBHOOK_BODY_READ_DEFAULTS } from "openclaw/plugin-sdk/webhook-request-guards";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { listenOnLoopback } from "../../../test-support/hanging-loopback-server.js";
 import { buildDiscordActivityCustomId } from "../component-custom-id.js";
-import { createDiscordActivityHttpHandler } from "./http.js";
-import { DiscordActivitiesRuntime } from "./runtime.js";
+import { DiscordActivitiesRuntime, setDiscordActivitiesRuntime } from "./runtime.js";
 import {
   createActivityTestConfig,
   createActivityTestRuntime,
+  createRegisteredActivityFixture,
 } from "./test-helpers.test-support.js";
 
 const servers: Server[] = [];
 
 vi.mock("openclaw/plugin-sdk/ssrf-runtime", { spy: true });
 vi.mock("openclaw/plugin-sdk/logging-core", { spy: true });
+
+beforeEach(() => {
+  vi.stubEnv("DISCORD_CLIENT_SECRET", "");
+});
 
 afterEach(async () => {
   for (const server of servers.splice(0)) {
@@ -31,22 +35,20 @@ afterEach(async () => {
   vi.mocked(fetchWithSsrFGuard).mockRestore();
   vi.mocked(logging.logError).mockRestore();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  setDiscordActivitiesRuntime(undefined);
 });
 
 async function startServer(
-  runtime: DiscordActivitiesRuntime,
+  fixture: ReturnType<typeof createRegisteredActivityFixture>,
   options: { vendorAssetPath?: string; fetchGuard?: typeof fetchWithSsrFGuard } = {},
 ): Promise<string> {
   if (options.fetchGuard) {
     vi.mocked(fetchWithSsrFGuard).mockImplementation(options.fetchGuard);
   }
-  const route = createDiscordActivityHttpHandler({
-    runtime,
-    vendorAssetPath:
-      options.vendorAssetPath ?? path.join(os.tmpdir(), "missing-discord-activity-sdk.mjs"),
-  });
+  const { route } = fixture;
   const server = createServer((req, res) => {
-    void route.handleHttpRequest(req, res).then((handled) => {
+    void Promise.resolve(route.handler(req, res)).then((handled) => {
       if (!handled) {
         res.statusCode = 404;
         res.end("not found");
@@ -54,10 +56,8 @@ async function startServer(
     });
   });
   servers.push(server);
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const port = await listenOnLoopback(server);
+  return `http://127.0.0.1:${port}`;
 }
 
 function guardedJsonFetch(params?: {
@@ -113,7 +113,7 @@ function startTokenServer(fetchGuard = guardedJsonFetch()) {
   vi.spyOn(Date, "now").mockReturnValue(1_000);
   const cfg = createActivityTestConfig();
   cfg.gateway = { trustedProxies: ["127.0.0.1"] };
-  return startServer(createActivityTestRuntime(cfg), { fetchGuard });
+  return startServer(createRegisteredActivityFixture(cfg), { fetchGuard });
 }
 
 const activityOrigin = "https://123456789012345678.discordsays.com";
@@ -187,9 +187,10 @@ function consumePendingLaunch(runtime: DiscordActivitiesRuntime, accountId = "de
 async function createWidgetFixture(
   options: Parameters<typeof startServer>[1] = { fetchGuard: guardedJsonFetch() },
 ) {
-  const runtime = createActivityTestRuntime();
+  const fixture = createRegisteredActivityFixture(undefined, options.vendorAssetPath);
+  const { runtime } = fixture;
   const session = await runtime.store.createSession({ discordUserId: "42", accountId: "default" });
-  const base = await startServer(runtime, options);
+  const base = await startServer(fixture, options);
   const request = (query: string) => requestWidget(base, query, session);
   return {
     base,
@@ -251,7 +252,7 @@ describe("Discord Activity HTTP OAuth", () => {
         },
       },
     };
-    const base = await startServer(createActivityTestRuntime(config));
+    const base = await startServer(createRegisteredActivityFixture(config));
     const response = await fetch(`${base}/discord/activity/`);
     await expect(response.text()).resolves.toBe("not found");
     expect(response.status).toBe(404);
@@ -274,7 +275,7 @@ describe("Discord Activity HTTP OAuth", () => {
       vi.spyOn(WEBHOOK_BODY_READ_DEFAULTS.preAuth, "timeoutMs", "get").mockReturnValue(
         bodyTimeoutMs,
       );
-      const base = await startServer(createActivityTestRuntime());
+      const base = await startServer(createRegisteredActivityFixture());
       const result = await postRawWebhook({
         url: `${base}/discord/activity/api/token`,
         body,
@@ -288,9 +289,10 @@ describe("Discord Activity HTTP OAuth", () => {
   );
 
   it("lets a channel member outside the agent allowlist open the widget", async () => {
-    const runtime = createActivityTestRuntime();
+    const fixture = createRegisteredActivityFixture();
+    const { runtime } = fixture;
     const widgetId = await createWidget(runtime);
-    const base = await startServer(runtime, {
+    const base = await startServer(fixture, {
       fetchGuard: guardedJsonFetch({ userId: "99", instanceUsers: ["99"] }),
     });
     const response = await requestToken(base);
@@ -309,7 +311,7 @@ describe("Discord Activity HTTP OAuth", () => {
 
   it("limits token requests to ten per source IP per minute", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_000);
-    const base = await startServer(createActivityTestRuntime());
+    const base = await startServer(createRegisteredActivityFixture());
     await requestTokens(base, 10, () => ({ body: "{}" }), 401);
     expect((await requestToken(base, { body: "{}" })).status).toBe(429);
   });
@@ -371,7 +373,7 @@ describe("Discord Activity HTTP OAuth", () => {
 
 describe("Discord Activity widget routes", () => {
   it("requires a valid bearer session", async () => {
-    const base = await startServer(createActivityTestRuntime());
+    const base = await startServer(createRegisteredActivityFixture());
     expect((await requestWidget(base, "instance_id=abc")).status).toBe(401);
     expect((await requestWidget(base, "instance_id=abc", "a".repeat(43))).status).toBe(401);
   });
@@ -517,7 +519,7 @@ describe("Discord Activity shell assets", () => {
     try {
       await fs.mkdir(path.dirname(vendorAssetPath), { recursive: true });
       await fs.writeFile(vendorAssetPath, "export class DiscordSDK {}\n");
-      const base = await startServer(createActivityTestRuntime(), { vendorAssetPath });
+      const base = await startServer(createRegisteredActivityFixture(undefined, vendorAssetPath));
 
       const vendor = await fetch(`${base}/discord/activity/vendor/embedded-app-sdk.mjs`);
       expect(vendor.status).toBe(200);
@@ -528,7 +530,7 @@ describe("Discord Activity shell assets", () => {
   });
 
   it("serves the shell and module", async () => {
-    const base = await startServer(createActivityTestRuntime());
+    const base = await startServer(createRegisteredActivityFixture());
     const shell = await fetch(`${base}/discord/activity/`);
     expect(shell.status).toBe(200);
     expect(await shell.text()).toContain('<script type="module" src="./shell.js">');
@@ -546,7 +548,7 @@ describe("Discord Activity shell assets", () => {
       .spyOn(fs, "readFile")
       .mockRejectedValueOnce(new Error("transient read failure"))
       .mockResolvedValue(Buffer.from("export class DiscordSDK {}\n"));
-    const base = await startServer(createActivityTestRuntime());
+    const base = await startServer(createRegisteredActivityFixture());
 
     const first = await fetch(`${base}/discord/activity/vendor/embedded-app-sdk.mjs`);
     expect(first.status).toBe(404);

@@ -16,17 +16,16 @@ import type { ChatSubagentWait } from "../chat-subagent-wait.ts";
 import type { MessageRenderOptions } from "./chat-message-bubble-options.ts";
 import { GroupedMessage } from "./chat-message-bubble-view.tsx";
 import {
-  prepareChatMessageRender,
+  prepareChatStreamRender,
   resolveMessageActionDetails,
 } from "./chat-message-markdown-view.tsx";
 import { ChatTimestamp } from "./chat-message-timestamp-view.tsx";
 import { ChatQuestionSummary } from "./chat-question-summary.tsx";
 import { resolveGroupReplyLine } from "./chat-reply-attribution.ts";
 import { ReplyLineView, ReplyLineConnector } from "./chat-reply-attribution.tsx";
-import type { ReplyConnectorElements } from "./chat-reply-connector.ts";
+import type { ReplyConnectorElements } from "./chat-reply-connector.tsx";
 import type { ReplyPreviewLookup } from "./chat-reply-preview.types.ts";
 import type { SidebarContent } from "./chat-sidebar-content-types.ts";
-import type { SubagentActivityProps } from "./chat-subagent-activity.ts";
 import { syncToolDisclosureOverflow } from "./chat-tool-card-chrome.tsx";
 import { BrowserTabPreviews } from "./chat-tool-cards.solid.tsx";
 import type { BrowserTabPreview } from "./chat-tool-cards.ts";
@@ -44,6 +43,7 @@ export type StreamGroupOptions = MessageRenderOptions & {
   resolveReplyPreview?: ReplyPreviewLookup;
   branding?: ThemeBranding;
   bubbleMode?: boolean;
+  bubbleActivityActive?: boolean;
   firstBubbleKey?: string | null;
   onReply?: (target: ChatReplyTarget) => void;
   onOpenSidebar?: (content: SidebarContent) => void;
@@ -54,7 +54,6 @@ export type StreamGroupOptions = MessageRenderOptions & {
   waitingApproval?: boolean;
   waitingSubagents?: ChatSubagentWait;
   runningSubagents?: number;
-  subagentActivity?: SubagentActivityProps;
   onOpenSubagents?: () => void;
   runOutputTokens?: number | null;
   questionPrompts?: ReadonlyMap<string, QuestionPrompt>;
@@ -65,20 +64,18 @@ export function StreamGroupParts(props: {
   options: StreamGroupOptions;
   presentation: "standalone" | "continuation";
 }) {
+  const firstBubbleKey = createMemo(() =>
+    props.options.firstBubbleKey !== undefined
+      ? props.options.firstBubbleKey
+      : (props.parts.find((candidate) => candidate.kind === "stream" && candidate.text.trim())
+          ?.key ?? null),
+  );
   return (
     <For each={props.parts} keyed={(part) => `${part.kind}:${part.key}`}>
       {(part) => (
         <StreamPartView
           part={part()}
-          options={{
-            ...props.options,
-            firstBubbleKey:
-              props.options.firstBubbleKey !== undefined
-                ? props.options.firstBubbleKey
-                : (props.parts.find(
-                    (candidate) => candidate.kind === "stream" && candidate.text.trim(),
-                  )?.key ?? null),
-          }}
+          options={{ ...props.options, firstBubbleKey: firstBubbleKey() }}
           presentation={props.presentation}
         />
       )}
@@ -137,6 +134,7 @@ function NonstreamPart(props: {
           part={part()}
           options={{
             bubbleMode: props.options.bubbleMode,
+            bubbleActivityActive: props.options.bubbleActivityActive,
             mascot: props.options.branding?.mascot,
             workingIndicator: props.options.branding?.workingIndicator,
             workingPhrases: props.options.branding?.workingPhrases,
@@ -144,7 +142,6 @@ function NonstreamPart(props: {
             waitingSubagents:
               part().waitingOn === "subagents" ? props.options.waitingSubagents : undefined,
             runningSubagents: props.options.runningSubagents,
-            subagentActivity: props.options.subagentActivity,
             onOpenSubagents: props.options.onOpenSubagents,
             startupLabel: props.options.startupLabel,
             retryAt: props.options.retryAt,
@@ -162,16 +159,7 @@ function StreamingMessage(props: {
   options: StreamGroupOptions;
 }) {
   const part = () => props.part()!;
-  const prepared = createMemo(() =>
-    prepareChatMessageRender({
-      role: "assistant",
-      content: [
-        ...(part().thinking ? [{ type: "thinking", thinking: part().thinking }] : []),
-        { type: "text", text: part().text },
-      ],
-      timestamp: part().startedAt,
-    }),
-  );
+  const prepared = createMemo(() => prepareChatStreamRender(part()));
   const actions = createMemo(() =>
     resolveMessageActionDetails(prepared(), {
       messageId: part().key,
@@ -236,6 +224,7 @@ export function StreamGroup(props: { parts: StreamGroupPart[]; options: StreamGr
       <Show when={hasAvatar()}>
         <ChatAvatar
           role="assistant"
+          mediaReadAllowed={props.options.mediaReadAllowed}
           assistant={props.options.assistant}
           elementRef={(element) => (replyElements.avatar = element)}
         />
@@ -272,6 +261,7 @@ type WorkGroupSummaryItem = {
   groups: readonly MessageGroup[];
 };
 type WorkGroupSummaryOptions = {
+  mediaReadAllowed?: boolean;
   expanded: boolean;
   onToggle: () => void;
   presentation?: "standalone" | "continuation";
@@ -394,7 +384,10 @@ function WorkGroupSummaryBody(props: {
       </button>
       <div class="chat-work-group__separator" aria-hidden="true" />
       <Show when={!props.options.expanded && !props.options.bubbleMode}>
-        <BrowserTabPreviews previews={props.options.browserTabPreviews} />
+        <BrowserTabPreviews
+          previews={props.options.browserTabPreviews}
+          mediaReadAllowed={props.options.mediaReadAllowed}
+        />
       </Show>
     </div>
   );

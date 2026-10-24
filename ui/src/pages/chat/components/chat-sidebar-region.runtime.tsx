@@ -97,9 +97,23 @@ function Region(props: RegionProps, host: RegionElement) {
     setHostedRevision((value) => value + 1);
     scheduleGeometryCommit();
   };
+  function notifyPanelReady() {
+    if (!props.onPanelReady) {
+      return;
+    }
+    // Direct Solid hosts can settle before their portal inserts them.
+    queueMicrotask(() =>
+      onSettled(() => {
+        if (regionOperations.get(host) === operations && host.isConnected) {
+          props.onPanelReady?.();
+        }
+      }),
+    );
+  }
   const panelHostRegistration = (initialSlot: SidebarSlotId) => (element: SidebarPanelHost) => {
     panelHosts.set(initialSlot, element);
     refreshHostedTabs();
+    notifyPanelReady();
     return () => {
       if (panelHosts.get(initialSlot) === element) {
         panelHosts.delete(initialSlot);
@@ -401,14 +415,13 @@ function Region(props: RegionProps, host: RegionElement) {
         }
       >
         {(type) => (
-          <div class="side-panel-empty side-panel-empty--type">
-            <PanelEmptyState
-              icon={<Icon name={type().icon} />}
-              heading={type().label}
-              description={type().empty.description}
-              action={type().empty.action}
-            />
-          </div>
+          <PanelEmptyState
+            presentation={props.presentation}
+            icon={<Icon name={type().icon} />}
+            heading={type().label}
+            description={type().empty.description}
+            action={type().empty.action}
+          />
         )}
       </Show>
     );
@@ -442,13 +455,12 @@ function Region(props: RegionProps, host: RegionElement) {
               >
                 <SidebarPanelView
                   definition={sidebarPanelType(props.panelDefinitions, panel().slot)}
+                  visible={isSidebarSlotVisible(props.layout, panel().slot)}
                   registerPanelHost={panelHostRegistration(panel().slot)}
                 />
                 <Show
                   when={
                     !sidebarPanelType(props.panelDefinitions, panel().slot).view &&
-                    sidebarPanelType(props.panelDefinitions, panel().slot).loadState ===
-                      undefined &&
                     sidebarPanelType(props.panelDefinitions, panel().slot).content == null
                   }
                 >
@@ -652,6 +664,7 @@ function Region(props: RegionProps, host: RegionElement) {
   onSettled(() => {
     scheduleGeometryCommit();
     scheduleFocusTransition();
+    notifyPanelReady();
     return () => {
       regionOperations.delete(host);
       stopHostedTabs();
@@ -694,6 +707,7 @@ export const ChatSidebarRegion = defineSolidBridge<RegionProps, RegionMethods>(
       sideFocusManaged: { default: false },
       sideFocusOrigin: { default: undefined, attribute: false },
       availableWidth: { default: 0 },
+      onPanelReady: { default: undefined, attribute: false },
     },
     methods: {
       readMobileChromeHeight: (host) => regionOperations.get(host)?.readMobileChromeHeight() ?? 0,

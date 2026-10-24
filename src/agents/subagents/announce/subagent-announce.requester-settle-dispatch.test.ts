@@ -17,6 +17,7 @@ import { markReplyOperationExecutionStarted } from "../../../sessions/session-co
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { prepareEmbeddedAttemptTimeout } from "../../embedded-agent-runner/run/attempt-timeout-prepare.js";
+import { createEnteredGate } from "../../entered-gate.test-support.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { consumeSubagentPauseNotice } from "../registry/subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "../registry/subagent-lifecycle-events.js";
@@ -43,6 +44,7 @@ import {
   useDirectDelivery,
   withGateway,
   useRequesterSettleDispatchFixture,
+  finishProcessedCompletion,
   createRequesterSettleContext as createContext,
 } from "./subagent-announce.requester-settle-dispatch.test-support.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
@@ -187,15 +189,7 @@ describe("requester settle dispatch deadline", () => {
             runId: preflight.request.idempotencyKey,
           });
         });
-        io.emitFinal([
-          true,
-          {
-            status: "ok",
-            inputProcessingCompleted: true,
-            result: { payloads: [{ text: "Completion received." }] },
-          },
-          undefined,
-        ]);
+        finishProcessedCompletion(io);
       });
       useDirectDelivery();
 
@@ -253,15 +247,7 @@ describe("requester settle dispatch deadline", () => {
       await withSessionTurn({ ...REQUESTER_TURN, controllerInput }, async () => {
         io.emitExecutionStarted?.();
       });
-      io.emitFinal([
-        true,
-        {
-          status: "ok",
-          inputProcessingCompleted: true,
-          result: { payloads: [{ text: "Completion received." }] },
-        },
-        undefined,
-      ]);
+      finishProcessedCompletion(io);
     });
     useDirectDelivery();
     const pending = withGateway(context, () =>
@@ -283,6 +269,72 @@ describe("requester settle dispatch deadline", () => {
       await pending.catch(() => {});
     }
   });
+
+  it.each([
+    { name: "all consumed, NO_REPLY", undelivered: false, silent: true },
+    { name: "all consumed, empty reply", undelivered: false, silent: false },
+    { name: "one undelivered, NO_REPLY", undelivered: true, silent: true },
+  ])(
+    "settles a yielded cohort according to its remaining results: $name",
+    async ({ undelivered, silent }) => {
+      vi.useFakeTimers();
+      const context = createContext();
+      const consumed = settledChild();
+      const sibling = settledChild();
+      sibling.runId = "sibling";
+      sibling.childSessionKey = "agent:main:subagent:sibling";
+      sibling.delivery = { status: undelivered ? "pending" : "delivered" };
+      const children = [consumed, sibling];
+      for (const child of children) {
+        child.requesterSettleWake!.batchRunIds = children.map((entry) => entry.runId);
+      }
+      registryRead.listSubagentRunsForRequester.mockReturnValue(children);
+      const completeBatch = vi.fn<Wake["completeBatch"]>(() => {
+        for (const child of children) {
+          child.requesterSettleWake = undefined;
+        }
+      });
+      useDirectDelivery();
+      startTurn.mockImplementation(async ({ preflight, io }) => {
+        acceptTurn({ preflight, io });
+        io.emitFinal([
+          true,
+          {
+            status: "ok",
+            result: {
+              payloads: [],
+              meta: { terminalReply: { disposition: silent ? "silent" : "empty" } },
+            },
+          },
+          undefined,
+        ]);
+      });
+      const params = wakeParams(consumed, completeBatch);
+      const run = () =>
+        withGateway(context, () => maybeWakeRequesterAfterAllChildrenSettled(params));
+
+      await expect(run()).resolves.toBe(!undelivered);
+      expect(startTurn).toHaveBeenCalledOnce();
+      expect(completeBatch).toHaveBeenCalledTimes(undelivered ? 0 : 1);
+      if (undelivered) {
+        expect(consumed.requesterSettleWake).toMatchObject({
+          status: "pending",
+          attemptCount: 1,
+          lastError: "completion agent did not produce a visible reply",
+        });
+        startTurn.mockImplementation(async ({ preflight, io }) => {
+          acceptTurn({ preflight, io });
+          finishTurn(io, "Remaining child result received.");
+        });
+      } else {
+        expect(completeBatch.mock.calls[0]?.[2]).toMatchObject({ delivered: true });
+      }
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(run()).resolves.toBe(undelivered);
+      expect(startTurn).toHaveBeenCalledTimes(undelivered ? 2 : 1);
+      expect(completeBatch).toHaveBeenCalledOnce();
+    },
+  );
 
   it("retains an expired completion until unrelated interrupted requester work recovers", async () => {
     const context = createContext();
@@ -317,15 +369,7 @@ describe("requester settle dispatch deadline", () => {
       await withSessionTurn({ ...REQUESTER_TURN, controllerInput }, async () => {
         io.emitExecutionStarted?.();
       });
-      io.emitFinal([
-        true,
-        {
-          status: "ok",
-          inputProcessingCompleted: true,
-          result: { payloads: [{ text: "Completion received." }] },
-        },
-        undefined,
-      ]);
+      finishProcessedCompletion(io);
     });
 
     expect(await reserveRestoredSubagentControllerSources([child])).toEqual([]);
@@ -479,6 +523,7 @@ describe("requester settle dispatch deadline", () => {
             : undefined,
       );
       const child = settledChild();
+      child.delivery = { status: "pending" };
       child.requesterSessionKey = requesterSessionKey;
       child.requesterSettleWake = {
         status: "pending",
@@ -551,14 +596,10 @@ describe("requester settle dispatch deadline", () => {
     child.requesterSettleWake!.pauseNotice = { acknowledgment: "PAUSE-MARKER-mid-turn" };
     registryRead.listSubagentRunsForRequester.mockReturnValue([child]);
     const accepted = createDeferredCore();
-    const releaseTurn = createDeferredCore();
-    const currentTurnStarted = createDeferredCore();
+    const turnGate = createEnteredGate();
     const received: string[] = [];
-    const currentTurn = withSessionTurn(REQUESTER_TURN, async () => {
-      currentTurnStarted.resolve();
-      await releaseTurn.promise;
-    });
-    await currentTurnStarted.promise;
+    const currentTurn = withSessionTurn(REQUESTER_TURN, turnGate.wait);
+    await turnGate.entered;
     startTurn.mockImplementation(async ({ controllerInput, preflight, io }) => {
       const request = preflight.request;
       acceptTurn({ controllerInput, preflight, io });
@@ -583,7 +624,7 @@ describe("requester settle dispatch deadline", () => {
         activeCount: Number(Boolean(mailbox?.claim)),
         queuedCount: mailbox?.entries.filter((entry) => entry.phase !== "claimed").length ?? 0,
       }).toEqual({ activeCount: 1, queuedCount: 1 });
-      releaseTurn.resolve();
+      turnGate.release();
       await currentTurn;
       await expect(wake).resolves.toBe(true);
       expect(received).toHaveLength(1);
@@ -593,7 +634,7 @@ describe("requester settle dispatch deadline", () => {
       await expect(maybeWakeRequesterAfterAllChildrenSettled(params)).resolves.toBe(false);
       expect(startTurn).toHaveBeenCalledOnce();
     } finally {
-      releaseTurn.resolve();
+      turnGate.release();
       await currentTurn;
       await wake;
     }

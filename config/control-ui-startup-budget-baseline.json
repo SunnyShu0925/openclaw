@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 315881,
-  "reason": "Creation transfer split preserves the stricter 315881 B startup baseline; matched 35637f41 builds measure 316324 to 316294 B startup, 1347441 B Chat and 822816 B New Session.",
-  "updatedAt": "2026-10-23"
+  "startupJsGzipBytes": 281702,
+  "reason": "Combined warm transcript and shared visible clocks: measured 281702 B after integrating main. Warm transcript remote median improved from 509.3 to 304.7 ms; shared clocks retain their separately measured CPU win. Startup requests remain 7 JS and 1 CSS; accept the sub-0.5 KB change against main.",
+  "updatedAt": "2026-10-24"
 }

@@ -12,6 +12,7 @@ import { isSessionWorkStartInvalidatedError } from "../config/sessions/work-star
 import { isAgentRunStaleLifecycleError } from "../infra/agent-lifecycle-error.js";
 import { copyErrorDiagnostic } from "../infra/error-diagnostics.js";
 import { collectErrorGraphCandidates, readErrorName } from "../infra/errors.js";
+import { isLocalStorageOutcomeError } from "../infra/sqlite-error-diagnostics.js";
 import { failoverReasonFromClassification } from "./failover/classification-rules.js";
 import {
   classifyFailoverSignal,
@@ -64,6 +65,7 @@ const RUNTIME_COORDINATION_ERROR_NAMES = new Set([
   "WorkerWorkspaceReconciliationError",
   "ActiveTurnClaimError",
   "CliHistoryOwnerChangedError",
+  "SessionTranscriptReadFenceError",
   "SqliteWorkerError",
 ]);
 
@@ -302,7 +304,7 @@ function hasStaleAgentRunLifecycleFailure(err: unknown): boolean {
 }
 
 function hasRuntimeCoordinationFailure(err: unknown): boolean {
-  if (isChannelRunAuthorizationError(err)) {
+  if (isChannelRunAuthorizationError(err) || isLocalStorageOutcomeError(err)) {
     return true;
   }
   return collectErrorGraphCandidates(err, resolveNestedErrors).some(

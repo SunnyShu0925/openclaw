@@ -297,6 +297,8 @@ const enSessionOrganization = {
     archiveSessionNestedOther:
       '"{session}" has {count} directly nested sessions. If you archive only this session, those nested sessions move to the top level.',
     archiveThisSession: "Archive only this session",
+    archiveSessionNestedOffline:
+      'Archive only "{session}"? Its directly nested sessions move to the top level. Reconnect to archive the complete subtree.',
     archiveAllSessions: "Archive all ({count})",
     moveToTopLevel: en.sessionsView.moveToTopLevel,
     archiveTreeRootRequired:
@@ -329,8 +331,10 @@ const enSessionOrganization = {
       "Worker stop requested. Review the initial message before retrying.",
     deleteSessionMenu: "Delete…",
     deleteSessionCount: "Delete {count}…",
-    deleteSessionStale: en.sessionsView.deleteSessionStale,
-    deleteSessionsStale: en.sessionsView.deleteSessionsStale,
+    deleteSessionStale: 'Gateway connection replaced before "{session}" was deleted. Try again.',
+    deleteSessionIdentityMissing: en.sessionsView.deleteSessionIdentityMissing,
+    deleteSessionsStale:
+      "Gateway connection replaced before {count} sessions were deleted. Try again.",
     groupBy: "Group by",
     groupByNone: "None",
     groupByCategory: "Custom groups",
@@ -382,11 +386,32 @@ const enSessionOrganization = {
     groupRowCount: "{count} sessions",
     groupRowCountOne: "{count} session",
   },
+  worktrees: {
+    adminRequired: "Browsing only. Worktree changes require operator.admin access.",
+    newWorktree: "New worktree",
+    ownerManual: "Manual",
+    ownerSession: "Session",
+    ownerWorkboard: "Workboard",
+    title: "Managed Worktrees",
+    subtitle: "Isolated repository checkouts owned by OpenClaw.",
+    cleanNow: "Clean up now",
+    name: "Name",
+    namePlaceholder: "auto",
+    baseBranch: "Base branch",
+    baseBranchPlaceholder: "Remote default",
+    repo: "Repository",
+    empty: "No managed worktrees.",
+    restorable: "Restorable",
+    restore: "Restore",
+    confirmDelete: "Snapshot and delete {name}?",
+    confirmForceDelete: "Snapshot failed: {error}\n\nDelete without a snapshot?",
+  },
 } satisfies TranslationMap;
 
 export const registerSessionOrganizationEnglish = Object.assign(
   () => {
     Object.assign(en.sessionsView, enSessionOrganization.sessionsView);
+    Object.assign(en.worktrees, enSessionOrganization.worktrees);
   },
   { catalog: enSessionOrganization },
 );
