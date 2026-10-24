@@ -356,7 +356,7 @@ describe("runBrowserProxyCommand", () => {
 
   it("serializes plural action downloads without reading nested page paths", async () => {
     await withTempDir("openclaw-browser-proxy-action-", async (tempDir) => {
-      const firstPath = nodePath.join(tempDir, "first.txt");
+      const firstPath = nodePath.join(tempDir, " first.txt ");
       const secondPath = nodePath.join(tempDir, "second.txt");
       const nestedPagePath = nodePath.join(tempDir, "page-controlled.txt");
       const result = {
@@ -393,31 +393,6 @@ describe("runBrowserProxyCommand", () => {
           },
         ],
       });
-    });
-  });
-
-  it("preserves a literal trailing-space download path through node transfer", async () => {
-    await withTempDir("openclaw-browser-proxy-space-", async (tempDir) => {
-      const literalPath = nodePath.join(tempDir, " report.pdf ");
-      const trimmedNeighbor = nodePath.join(tempDir, "report.pdf");
-      const result = {
-        ok: true,
-        downloads: [{ path: literalPath, suggestedFilename: "report.pdf" }],
-      };
-      await fs.writeFile(literalPath, "literal browser download", "utf8");
-      dispatchResult(result);
-
-      const payload = JSON.parse(await invoke("/act"));
-      expect(payload.files).toEqual([
-        {
-          path: literalPath,
-          base64: Buffer.from("literal browser download").toString("base64"),
-          mimeType: "image/png",
-        },
-      ]);
-      // Node transfer must read the exact literal path, never the trimmed neighbor.
-      expect(payload.files[0].path).toBe(literalPath);
-      expect(payload.files[0].path).not.toBe(trimmedNeighbor);
     });
   });
 

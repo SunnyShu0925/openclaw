@@ -15,20 +15,9 @@ export async function resolveWritableOutputPathOrRespond(params: {
   if (params.ensureRootDir) {
     await ensureOutputDirectory(params.rootDir);
   }
-  // Preserve the operator's literal spelling. pathScope().writable() trims its
-  // requestedPath input, so we route the literal destination through the
-  // empty-request branch as defaultName, which is never trimmed. This reuses the
-  // shared fs-safe writable admission (canonical-parent containment, regular-file
-  // requirement, and Windows namespace-alias rejection) on the literal spelling
-  // instead of duplicating its filesystem policy, matching the downstream
-  // literal-destination writer (GHSA-XWJM-J929-XQ7C containment gate).
-  const literalPath = readNonBlankString(params.requestedPath) ?? params.defaultFileName;
-  if (!literalPath) {
-    params.res.status(400).json({ error: "path is required" });
-    return null;
-  }
+  // defaultName preserves literal whitespace while sharing all writable checks.
   const result = await pathScope(params.rootDir, { label: params.scopeLabel }).writable("", {
-    defaultName: literalPath,
+    defaultName: readNonBlankString(params.requestedPath) ?? params.defaultFileName,
   });
   if (!result.ok) {
     params.res.status(400).json({ error: result.error });

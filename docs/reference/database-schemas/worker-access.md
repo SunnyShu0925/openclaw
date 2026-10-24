@@ -48,6 +48,12 @@ Use the existing read-only worker scope for descriptive reads and the store's
 writer broker for mutations. Keep multi-statement snapshot reads together; use
 the writer's ordered operation when a read must follow its accepted writes.
 Do not open a second main-thread connection or add a synchronous fallback.
+
+Agent creation and workspace mutations keep their recovery-hold recheck inside
+the existing synchronous engine admission; filesystem effects remain outside it.
+PostgreSQL cron-owner and schema inspection use the existing cron read worker,
+including when agent creation or Doctor requests those facts.
+
 Agent provenance presentation and managed outgoing media inventory/lookups use
 that read-only scope, so reconnect reads do not reserve the shared writer queue.
 Missing provenance storage stays absent until an agent is created. Media inserts,
@@ -63,6 +69,11 @@ and the agent's
 [`openclaw-agent-execution.worker.ts`](https://github.com/openclaw/openclaw/blob/main/src/state/openclaw-agent-execution.worker.ts).
 The lifecycle owner closes its read scope and drains accepted writes before
 retiring the store.
+
+If PostgreSQL schema publication invalidates a shared-state reader's admission
+before its callback starts, the reader rolls back and retries admission once
+using the owner's current facts. It never retries caller work or refreshes an
+imported snapshot. Schema validation and live ownership checks remain in force.
 
 Startup client credential preparation uses the existing credential worker and
 its native custody admission. The admission's receipt postimage also decides
@@ -113,6 +124,9 @@ without inspecting the pathname again. Observer reads rely on that same admitted
 reader instead of capturing and rechecking every candidate file independently.
 Committed writes still invalidate retained entries; config routing, native-open
 replacement detection, and live disclosure authority remain with their owners.
+Session row projections borrow the replica's immutable nested entry facts while
+owning their mutable outer rows. Commit receipts carry pending final delivery in
+the canonical entry postimage, without a second copy.
 
 Session file reads retain workspace authority independently of evictable display
 rows. Committed writers carry their existing full postimages to predicates that
@@ -204,7 +218,10 @@ are the limited exceptions. Runtime access still using them is migration debt.
 For engine stores, the synchronous `withEngineStoreAdmission` scope is lexical:
 it cannot return a Promise, and a retained connection does not extend it.
 PostgreSQL rejects construction and SQL on the Gateway main thread outside that
-scope. The CLI entry records an immutable process role before state access;
+scope. Native lease verification, renewal, and release use this scope only for their
+storage primitive. Lifecycle callbacks remain outside it, and ownership checks
+still read the current owner and expiry before permitting an effect.
+The CLI entry records an immutable process role before state access;
 one-shot CLI and Doctor processes may use the synchronous PostgreSQL bridge.
 An unset role still refuses main-thread access. Interactive onboarding and
 `setup` (including `crestodian`) keep the CLI role through their prompts and

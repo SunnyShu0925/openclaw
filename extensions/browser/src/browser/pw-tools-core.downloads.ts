@@ -333,9 +333,7 @@ export async function waitForDownloadViaPlaywright(
       state,
       timeoutMs: timeout,
       outPath: opts.path,
-      rootDir: readNonBlankString(opts.path)
-        ? opts.rootDir
-        : (opts.rootDir ?? resolveImplicitDownloadRoot()),
+      rootDir: opts.path?.trim() ? opts.rootDir : (opts.rootDir ?? resolveImplicitDownloadRoot()),
       signal,
       ...navigationPolicy,
     });
@@ -379,7 +377,7 @@ export async function downloadViaPlaywright(
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120_000);
 
   const ref = requireRef(opts.ref);
-  const outPath = readNonBlankString(opts.path) ?? "";
+  const outPath = readNonBlankString(opts.path);
   if (!outPath) {
     throw new Error("path is required");
   }

@@ -126,10 +126,6 @@ export function hasBrowserNodeHostWork(): boolean {
 function collectBrowserProxyPaths(payload: unknown): string[] {
   const paths = new Set<string>();
   visitBrowserProxyFilePaths(payload, (filePath) => {
-    // Preserve the exact operator-supplied path (e.g. a trailing space in
-    // " report.pdf ") so node transfer reads the same literal file the route
-    // wrote. Trimming here would stat/read the trimmed neighbor and fail with
-    // "browser proxy file read failed ... file not found".
     paths.add(filePath);
     assertBrowserProxyFileCountWithinLimit(paths.size);
   });
