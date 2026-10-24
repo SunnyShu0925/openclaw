@@ -32,6 +32,7 @@ import {
   testModel,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import type { AgentSession } from "../../sessions/agent-session.js";
+import { sessionManagerPrepareCurrentTurnReplay } from "../../sessions/session-manager-current-turn.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import {
   appendCompletedToolWork,
@@ -131,6 +132,70 @@ describe("context engine bootstrap", () => {
 });
 
 describe("interrupted canonical user replay", () => {
+  it.each([false, true])(
+    "replays once across a background Workshop notice (selected reader: %s)",
+    async (selectedOwner) => {
+      await withInterruptedTurn(
+        false,
+        async (fixture) => {
+          const { attempt, target } = fixture;
+          const appendNotice = vi.fn(async () => {
+            const appended = await appendAssistantMessageToSessionTranscript({
+              ...target,
+              expectedSessionId: target.sessionId,
+              idempotencyKey: `skill-workshop-notice:${attempt.runId}`,
+              text: "One skill changed after review",
+              deliveryMirror: {
+                kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
+                agentId: target.agentId,
+                runId: "background-review",
+                skills: [{ name: "some-skill", action: "updated" }],
+              },
+            });
+            expect(appended.ok).toBe(true);
+          });
+          await withReplaySession(
+            fixture,
+            false,
+            async (session, submit, manager) => {
+              if (!selectedOwner) {
+                const select = manager[sessionManagerPrepareCurrentTurnReplay].bind(manager);
+                vi.spyOn(manager, sessionManagerPrepareCurrentTurnReplay).mockImplementationOnce(
+                  async (...args) => {
+                    const selected = await select(...args);
+                    expect(selected).toBeDefined();
+                    // Change the real transcript after selection, before anchor validation.
+                    await appendNotice();
+                    return selected;
+                  },
+                );
+              }
+              streamMocks.streamSimple.mockImplementation((model) =>
+                createAssistantResultStream(
+                  createAssistant(model, [{ type: "text", text: "WORKSHOP_NOTICE_RECOVERED" }]),
+                ),
+              );
+              await submit();
+              expect(appendNotice).toHaveBeenCalledOnce();
+              expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+              expect(session.getLastAssistantText()).toBe("WORKSHOP_NOTICE_RECOVERED");
+              expect(
+                loadTranscriptEventsSync(target).filter(
+                  (entry) =>
+                    isRecord(entry) &&
+                    isRecord(entry.message) &&
+                    entry.message.idempotencyKey === `${attempt.runId}:user`,
+                ),
+              ).toHaveLength(1);
+            },
+            selectedOwner ? { afterReplayPreparation: appendNotice } : {},
+          );
+        },
+        { selectedOwner },
+      );
+    },
+  );
+
   it.each([
     { boundary: "same-run progress", sourceReply: { final: false }, resumes: true },
     { boundary: "same-run final", sourceReply: { final: true }, resumes: false },
@@ -871,52 +936,6 @@ describe("interrupted canonical user replay", () => {
       });
     },
   );
-
-  it("replays exactly one answer when a runId-less workshop notice lands before replay admission", async () => {
-    await withInterruptedTurn(
-      false,
-      async (fixture) => {
-        await withReplaySession(
-          fixture,
-          false,
-          async (session, submit, manager) => {
-            streamMocks.streamSimple.mockImplementation((model) =>
-              createAssistantResultStream(
-                createAssistant(model, [{ type: "text", text: "WORKSHOP_NOTICE_RECOVERED" }]),
-              ),
-            );
-            // A real runId-less skill-workshop delivery mirror lands on the live
-            // transcript between persistence and replay admission, exactly as the
-            // reported incidents (provider openclaw, model delivery-mirror,
-            // idempotencyKey prefix skill-workshop-notice:) produce it.
-            const { attempt, target } = fixture;
-            const appended = await appendAssistantMessageToSessionTranscript({
-              agentId: target.agentId,
-              sessionKey: target.sessionKey,
-              storePath: target.storePath,
-              expectedSessionId: target.sessionId,
-              idempotencyKey: `skill-workshop-notice:${attempt.runId}`,
-              text: "One skill changed after review",
-              deliveryMirror: {
-                kind: SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
-                agentId: target.agentId,
-                runId: attempt.runId,
-                skills: [{ name: "some-skill", action: "updated" }],
-              },
-            });
-            expect(appended.ok).toBe(true);
-            await manager.reloadPersistedTranscriptAsync();
-            // The real run consumes the persisted turn exactly once -> one provider reply.
-            await submit();
-            expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
-            expect(session.getLastAssistantText()).toBe("WORKSHOP_NOTICE_RECOVERED");
-          },
-          {},
-        );
-      },
-      { interruptedTurn: true },
-    );
-  });
 });
 
 it.each([

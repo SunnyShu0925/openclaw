@@ -66,25 +66,20 @@ function isInterruptedTurnEntry(entry: SessionEntry, runId: string): boolean {
   if (message.role === "custom") {
     return readNestedToolActivity(message)?.details.runId === runId;
   }
+  const delivery = isOpenClawDeliveryMirrorAssistantMessage(message)
+    ? asOptionalRecord(Reflect.get(message, "openclawDeliveryMirror"))
+    : undefined;
+  // Background Workshop notices do not complete the foreground user turn.
+  if (delivery?.kind === SKILL_WORKSHOP_CHANGE_NOTICE_KIND) {
+    return true;
+  }
   if (Reflect.get(message, "__openclaw")?.runId !== runId) {
-    // A background skill-workshop notice is a runId-less transcript mirror that can
-    // land while the owner turn is persisted but not yet admitted. It is not part of
-    // the user turn, so it must not stop replay traversal back to the interrupted
-    // user turn; final and unrelated-reply mirrors still close the turn below.
-    if (
-      isOpenClawDeliveryMirrorAssistantMessage(message) &&
-      asOptionalRecord(Reflect.get(message, "openclawDeliveryMirror"))?.kind ===
-        SKILL_WORKSHOP_CHANGE_NOTICE_KIND
-    ) {
-      return true;
-    }
     return false;
   }
   if (message.role !== "assistant") {
     return message.role === "toolResult";
   }
   if (isOpenClawDeliveryMirrorAssistantMessage(message)) {
-    const delivery = asOptionalRecord(Reflect.get(message, "openclawDeliveryMirror"));
     // Only explicit same-run progress can cross this boundary; final or unmarked
     // mirrors still close the turn, even if more tool activity followed them.
     return delivery?.kind === "message-tool-source-reply" && delivery.final === false;
@@ -412,14 +407,6 @@ export async function preparePersistedCurrentUserTurn(params: {
         ? AbortSignal.any([signal, params.signal])
         : signal;
     replaySignal?.throwIfAborted();
-    // Refresh admission once against the settled transcript so an append conflict
-    // (a delivery mirror or workshop notice landing between preparation and
-    // consumption) is re-read without dropping the still-interrupted user turn.
-    // `select()` re-validates message equality and interrupted-ness on every attempt,
-    // so a newer user, a completion, an abort, or an authority change still refuses
-    // admission. The anchor generation is kept equal across both attempts: ordinary
-    // appends preserve it, so a changed generation still means a rewrite and stays
-    // refused. A second failure surfaces as before.
     const accept = (prepared: CurrentTurnReplayWitness | undefined, onAdmitted?: () => void) => {
       if (
         !prepared ||
@@ -439,26 +426,22 @@ export async function preparePersistedCurrentUserTurn(params: {
       }
     };
     assertCurrent();
-    // Read once at core entry; prompt preparation does not reserve a database incarnation.
     return async (onAdmitted) => {
-      const consumeReplay = () =>
+      const consume = () =>
         readCurrentTurn(replaySignal, (prepared) => accept(prepared, onAdmitted));
       try {
-        await consumeReplay();
+        await consume();
       } catch (error) {
         if (
-          !isSessionWorkStartInvalidatedError(error) &&
-          !(error instanceof SessionTranscriptReadFenceError)
+          !pending ||
+          (!isSessionWorkStartInvalidatedError(error) &&
+            !(error instanceof SessionTranscriptReadFenceError))
         ) {
           throw error;
         }
-        // Refresh admission once against the settled transcript. Only a same,
-        // still-interrupted user turn (re-validated by `select()`) is admitted;
-        // terminal, newer-user, and authority changes still fail the retry. A
-        // changed generation after refresh means the transcript was rewritten,
-        // which is beyond the append-only recovery this owner performs; the same
-        // guard that refused the first attempt refuses the second.
-        await consumeReplay();
+        // An append may invalidate selection before admission. Refresh once;
+        // the original user anchor, generation, and live authority must still match.
+        await consume();
       }
     };
   };

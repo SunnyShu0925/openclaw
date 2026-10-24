@@ -239,12 +239,7 @@ describe("postWorkshopChangeNotice", () => {
             presentation: { blocks: [{ type: "buttons", buttons: [button] }] },
           },
         ],
-        mirror: expect.objectContaining({
-          sessionKey,
-          // The channel path must carry the Workshop marker through mirroring so replay
-          // admission can identify the notice the same way it does a direct one.
-          deliveryMirror: marker(true),
-        }),
+        mirror: expect.objectContaining({ sessionKey, deliveryMirror: marker(true) }),
       }),
       undefined,
       undefined,
