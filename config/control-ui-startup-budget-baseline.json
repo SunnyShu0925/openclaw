@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 294961,
-  "reason": "Startup leaf icons, update classification, and lazy English: matched b5b24cf15c2 build 310773 to 294961 B gzip with 7 JS and 1 CSS request.",
-  "updatedAt": "2026-10-23"
+  "startupJsGzipBytes": 281702,
+  "reason": "Combined warm transcript and shared visible clocks: measured 281702 B after integrating main. Warm transcript remote median improved from 509.3 to 304.7 ms; shared clocks retain their separately measured CPU win. Startup requests remain 7 JS and 1 CSS; accept the sub-0.5 KB change against main.",
+  "updatedAt": "2026-10-24"
 }
