@@ -3,7 +3,13 @@ import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  captureActivePluginRegistrySnapshot,
+  restoreActivePluginRegistrySnapshot,
+  setActivePluginRegistry,
+} from "../plugins/runtime.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { sandboxExplainCommand } from "./sandbox-explain.js";
@@ -41,6 +47,141 @@ async function explain(opts: Omit<Parameters<typeof sandboxExplainCommand>[0], "
 }
 
 describe("sandbox explain command", () => {
+  it.each([
+    {
+      label: "canonical delivery before legacy key",
+      session: "agent:builder:telegram:direct:peer",
+      sessionKey: "agent:builder:telegram:direct:peer",
+      delivery: "slack",
+      channel: "slack",
+      mainKey: "main",
+    },
+    {
+      label: "internal delivery without registration",
+      session: "agent:builder:telegram:direct:peer",
+      sessionKey: "agent:builder:telegram:direct:peer",
+      delivery: "webchat",
+      channel: "webchat",
+      mainKey: "main",
+    },
+    {
+      label: "unknown delivery falls back to legacy key",
+      session: "agent:builder:telegram:direct:peer",
+      sessionKey: "agent:builder:telegram:direct:peer",
+      delivery: "unregistered-channel",
+      channel: "telegram",
+      mainKey: "main",
+    },
+    {
+      label: "short configured main is not a channel",
+      session: "telegram",
+      sessionKey: "agent:builder:telegram",
+      delivery: undefined,
+      channel: undefined,
+      mainKey: "telegram",
+    },
+    {
+      label: "blank session selects configured main",
+      session: "   ",
+      sessionKey: "agent:builder:operator",
+      delivery: undefined,
+      channel: undefined,
+      mainKey: "operator",
+    },
+    {
+      label: "main alias selects configured main",
+      session: "main",
+      sessionKey: "agent:builder:operator",
+      delivery: undefined,
+      channel: undefined,
+      mainKey: "operator",
+    },
+    {
+      label: "unscoped slash alias without stored metadata",
+      session: "telegram:slash:123",
+      sessionKey: "agent:builder:telegram:slash:123",
+      delivery: undefined,
+      channel: "telegram",
+      mainKey: "main",
+    },
+    {
+      label: "scoped slash key without stored metadata",
+      session: "agent:builder:telegram:slash:123",
+      sessionKey: "agent:builder:telegram:slash:123",
+      delivery: undefined,
+      channel: "telegram",
+      mainKey: "main",
+    },
+    {
+      label: "stored delivery for an unscoped slash alias",
+      session: "telegram:slash:123",
+      sessionKey: "agent:builder:telegram:slash:123",
+      delivery: "slack",
+      channel: "slack",
+      mainKey: "main",
+    },
+    {
+      label: "unknown alias without channel or sender evidence",
+      session: "unregistered-channel:slash:123",
+      sessionKey: "agent:builder:unregistered-channel:slash:123",
+      delivery: undefined,
+      channel: undefined,
+      mainKey: "main",
+    },
+  ])(
+    "reports $label through the stored session",
+    async ({ session, sessionKey, delivery, channel, mainKey }) => {
+      const previousRegistry = captureActivePluginRegistrySnapshot();
+      try {
+        setActivePluginRegistry(
+          createTestRegistry(
+            ["telegram", "slack"].map((id) => ({
+              pluginId: id,
+              plugin: createChannelTestPluginBase({ id }),
+              source: "test",
+            })),
+          ),
+        );
+        await withOpenClawTestState({ label: "sandbox-explain-channel" }, async (state) => {
+          const storePath = path.join(state.sessionsDir("builder"), "sessions.json");
+          if (delivery) {
+            await replaceSessionEntry(
+              { storePath, sessionKey },
+              {
+                sessionId: "explain-session",
+                updatedAt: 1,
+                delivery: {
+                  kind: "external",
+                  route: { channel: delivery, target: { to: "synthetic-peer" } },
+                  context: { channel: delivery, to: "synthetic-peer" },
+                  origin: { provider: delivery },
+                },
+              },
+            );
+          }
+          mockCfg = config(
+            { mode: "off" },
+            { builder: { workspace: state.workspaceDir } },
+            {
+              session: { store: storePath, mainKey },
+              tools: { elevated: { allowFrom: { telegram: ["*"], slack: ["*"], webchat: ["*"] } } },
+            },
+          );
+          const result = await explain({ session });
+          expect(result.sessionKey).toBe(sessionKey);
+          expect(result.elevated.channel).toBe(channel);
+          expect(result.elevated.allowedByConfig).toBe(channel !== undefined);
+          expect(result.elevated.allowFrom.global).toEqual(channel ? ["*"] : undefined);
+          if (channel) {
+            expect(result.fixIt).toContain(`tools.elevated.allowFrom.${channel}`);
+          }
+        });
+      } finally {
+        restoreActivePluginRegistrySnapshot(previousRegistry);
+      }
+    },
+  );
+
   it.each([
     [
       "unknown",
@@ -184,6 +325,6 @@ describe("sandbox explain command", () => {
   it("rejects a fully qualified session from a different agent", async () => {
     mockCfg = config({ mode: "non-main" }, { main: {}, builder: {} });
     const execution = explain({ agent: "builder", session: "agent:main:main" });
-    await expect(execution).rejects.toThrow('agent "builder" does not match session agent "main"');
+    await expect(execution).rejects.toThrow('belongs to "main", not "builder"');
   });
 });

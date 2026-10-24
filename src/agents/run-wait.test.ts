@@ -666,14 +666,8 @@ describe("waitForAgentRunsToDrain", () => {
 
   it("keeps the agent.wait budget bounded when the wall clock rewinds mid-drain", async () => {
     const wallNow = 1_000_000_000;
-    let dateNowCallCount = 0;
-    const performanceNowSpy = vi.spyOn(performance, "now").mockImplementation(() => 0);
-    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
-      dateNowCallCount += 1;
-      // The first wall-clock read (the deadline conversion) is untainted; a
-      // 90s rewind lands before the second drain iteration.
-      return dateNowCallCount === 1 ? wallNow : wallNow - 90_000;
-    });
+    vi.useFakeTimers();
+    vi.setSystemTime(wallNow);
     callGatewayMock.mockResolvedValue({ status: "pending" });
     let rounds = 0;
     try {
@@ -681,19 +675,21 @@ describe("waitForAgentRunsToDrain", () => {
         deadlineAtMs: wallNow + 5_000,
         getPendingRunIds: async () => {
           rounds += 1;
+          if (rounds === 1) {
+            vi.setSystemTime(wallNow - 90_000);
+          }
           return rounds <= 2 ? [`run-${rounds}`] : [];
         },
       });
 
       const requests = gatewayWaitRequests();
-      expect(requests.length).toBeGreaterThan(0);
+      expect(requests).toHaveLength(2);
       for (const request of requests) {
         const paramTimeoutMs = expectNumber(request.params?.timeoutMs, "param timeoutMs");
         expect(paramTimeoutMs).toBeLessThanOrEqual(5_000);
       }
     } finally {
-      performanceNowSpy.mockRestore();
-      dateNowSpy.mockRestore();
+      vi.useRealTimers();
     }
   });
 });

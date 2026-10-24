@@ -5,6 +5,10 @@
  * Runtime callers import this barrel instead of storage-specific modules.
  */
 export * from "./session-history.js";
+export {
+  listSessionTranscriptInstances,
+  listSessionTranscriptArchivesReadOnly,
+} from "./session-history-read.js";
 export { readSessionPendingInputReceiptsInWorker as listSessionPendingInputReceipts } from "./session-pending-input-receipts.js";
 export {
   bindSessionPendingInputSources,
@@ -44,7 +48,6 @@ export type {
   SessionAbortTargetIdentity,
   SessionAbortTargetResult,
   SessionAccessScope,
-  SessionArchivedTranscriptCleanupRule,
   SessionMessageCutMutationParams,
   SessionMessageCutMutationResult,
   SessionBranchListParams,
@@ -65,7 +68,6 @@ export type {
   SessionEntryPatchOptions,
   SessionEntryPatchResult,
   SessionEntryReadScope,
-  SessionEntryReadView,
   SessionEntryReplacement,
   SessionEntryReplacementSnapshot,
   SessionEntryReplacementUpdate,
@@ -146,7 +148,6 @@ export {
   loadSessionEntry,
   loadSessionEntryByIdReadOnly,
   loadSessionEntryReadOnly,
-  openSessionEntryReadView,
   patchSessionEntryCore,
   patchSessionEntryTarget,
   patchSessionEntryWithKey,
@@ -226,7 +227,6 @@ export {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
   findTranscriptEvent,
-  hasSessionTranscriptEventsSync,
   hasSessionTranscriptMessage,
   inspectTranscriptEventsSync,
   loadTranscriptEventRowsAfterSeqSync,
@@ -241,7 +241,6 @@ export {
   readTranscriptIdentityByEventId,
   readTranscriptRawDelta,
   readTranscriptMutationAtSync,
-  readTranscriptMutationStateSync,
   readTranscriptExportSnapshotReadOnlySync,
   readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,

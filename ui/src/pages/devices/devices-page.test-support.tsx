@@ -10,6 +10,7 @@ import {
   type DevicesPageDataState,
 } from "../../lib/nodes/page-operations.ts";
 import { ApplicationProvider } from "../../lib/reactive/context.ts";
+import { createApplicationGatewaySnapshot } from "../../test-helpers/application-context-fixtures.ts";
 import {
   deviceSystemInfo,
   deviceDesktopEnvironments,
@@ -48,15 +49,10 @@ export function gatewaySnapshot(
   methods: string[] = [],
   scopes = ["operator.read", "operator.pairing"],
 ): ApplicationGatewaySnapshot {
-  return {
+  return createApplicationGatewaySnapshot({
     client,
     phase: connected ? "connected" : "reconnecting",
-    offlineStable: false,
-    canvasPluginSurfaceUrl: null,
-    assistantAgentId: null,
     sessionKey: "main",
-    lastError: null,
-    lastErrorCode: null,
     hello: {
       type: "hello-ok",
       protocol: 1,
@@ -64,7 +60,7 @@ export function gatewaySnapshot(
       features: { methods },
       snapshot: { presence: [gatewayPresence] },
     },
-  } as ApplicationGatewaySnapshot;
+  }) as ApplicationGatewaySnapshot;
 }
 
 export function gatewayFixture(initial: ApplicationGatewaySnapshot) {
@@ -127,6 +123,8 @@ export function mountPage(
   };
   const [currentGateway, setGateway] = createSignal(fixture.source);
   const [presentation, setPresentation] = createSignal({ routeData });
+  const configListeners = new Set<() => void>();
+  const reloadConfig = vi.fn(async () => undefined);
   const router = createRouter({
     routes: [
       definePage({ id: "devices", path: "/devices", component: () => ({}) }),
@@ -141,7 +139,11 @@ export function mountPage(
     router,
     runtimeConfig: runtimeConfig ?? {
       state: { configSnapshot: {}, configForm: {}, configLoading: false, configFormMode: "form" },
-      subscribe: () => () => undefined,
+      subscribe: (listener: () => void) => {
+        configListeners.add(listener);
+        return () => configListeners.delete(listener);
+      },
+      discardDraft: reloadConfig,
     },
   } as unknown as ApplicationContext;
   const container = document.createElement("div");
@@ -170,6 +172,8 @@ export function mountPage(
   return {
     container,
     config: context.runtimeConfig.state,
+    reloadConfig,
+    publishConfig: () => configListeners.forEach((listener) => listener()),
     router,
     dispose,
     leaveRoute() {
@@ -235,6 +239,7 @@ export async function selectEntryAction(
   action: string,
   name = "MacBook Pro",
 ) {
+  // Let initial native readiness settle before keeping an interactive row reference.
   await waitForSolid(() => expect(container.textContent).toContain(name));
   const row = [...container.querySelectorAll(".device-entry")].find(
     (entry) => entry.querySelector(".settings-row__title")?.textContent === name,
