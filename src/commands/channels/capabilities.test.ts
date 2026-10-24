@@ -320,7 +320,7 @@ describe("channelsCapabilitiesCommand", () => {
   });
 
   it("renders remote probe failures and diagnostics as terminal-safe text", async () => {
-    const evil = "\u001b]52;c;QQ==\u0007evil\u001b[2J";
+    const evil = "\u001b]52;c;QQ==\u0007evil\u001b[2J\r\nforged";
     selectPlugin({
       id: "telegram",
       account: { accountId: "default", botToken: "bot-token" },
@@ -328,7 +328,7 @@ describe("channelsCapabilitiesCommand", () => {
         probeAccount: async () => ({ ok: false, error: evil }),
         formatCapabilitiesProbe: () => [],
         buildCapabilitiesDiagnostics: async () => ({
-          lines: [{ text: `Diag: ${evil}`, tone: "error" }],
+          lines: [{ text: `Diag: ${evil}`, tone: "error" }, { text: evil }],
         }),
       },
     });
@@ -336,11 +336,19 @@ describe("channelsCapabilitiesCommand", () => {
     await channelsCapabilitiesCommand({ channel: "telegram" }, runtime);
 
     const output = logs.join("\n");
-    const withoutWhitespaceControl = output.replace(/[\t\n\r]/g, "");
+    const withoutWhitespaceControl = output.replaceAll("\n", "");
     expect(withoutWhitespaceControl).not.toMatch(/\p{Cc}/u);
     expect(output).not.toContain("52;c;QQ==");
-    expect(output).toContain("Check: failed (evil)");
-    expect(output).toContain("Diag: evil");
+    expect(output).toContain("Check: failed (evil\\r\\nforged)");
+    expect(output).toContain("Diag: evil\\r\\nforged");
+    expect(output.split("\n")).toContain("evil\\r\\nforged");
+
+    logs.length = 0;
+    await channelsCapabilitiesCommand({ channel: "telegram", json: true }, runtime);
+    expect(JSON.parse(logs[0] ?? "{}").channels[0]).toMatchObject({
+      probe: { error: evil },
+      diagnostics: { lines: [{ text: `Diag: ${evil}`, tone: "error" }, { text: evil }] },
+    });
   });
 
   it("serializes diagnostics when capability diagnostics exceed their timeout", async () => {

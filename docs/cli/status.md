@@ -100,6 +100,9 @@ and pressured inbound lanes. These warnings include pending, claimed, and blocke
 message counts even when a channel connection is healthy. See
 [Queue warnings](/gateway/health#queue-warnings).
 
+Deep health also warns when a context engine is quarantined or configuration hot
+reload is disabled. Healthy auxiliary components do not add warning rows.
+
 Plain `openclaw status` stays on the fast read-only path and marks memory as
 `not checked` instead of unavailable when it skips memory inspection. Heavy
 security audit, plugin compatibility, and memory-vector checks are left to
@@ -163,6 +166,23 @@ and the last update run, or run `openclaw update` again. `openclaw status --deep
 also fetches for that check; it does not change the ledger. See
 [Release channels](/install/development-channels#checking-current-status).
 
+## Recovery-copy disk usage
+
+The **Recovery copies (local)** row and JSON `recoveryCopies` report logical bytes
+and copy counts in `total` and `byKind.updateCaptures`, `doctorCaptures`, and
+`migrationOriginals`. Each contains `retirable`, `protected`, and
+`unmanifestedOrOrphan` counts and logical bytes. This is local to the CLI's selected
+state, even when its Gateway target is remote; it never deletes anything.
+
+The scan bounds filesystem entries, metadata bytes, and elapsed time. When any
+bound or unreadable input prevents a complete inventory, `incomplete: true`,
+`measurement: "partial"`, and `incompleteReasons` identify an estimate of observed
+bytes, not a full accounting. Eligibility that could not be checked remains
+protected. Large history databases are not copied just for status. Limits never
+make the command fail. Use `openclaw update cleanup --dry-run` for the detailed
+inventory and [explicit retirement](/cli/update/repair-and-recovery#explicitly-retire-an-unmanifested-original).
+Logical bytes do not measure physical blocks or guarantee reclaimed space.
+
 ## Status timing
 
 Use the existing diagnostic timeline to locate time spent outside Gateway RPCs:
@@ -189,6 +209,9 @@ Use `openclaw skills check --agent <id>` to inspect the missing requirements.
 
 ## Session and model resolution
 
+- Configured model labels resolve default and per-agent aliases, including
+  `provider/alias` and `alias@profile`, to the selected model ID. These read-only
+  lookups do not start provider discovery.
 - Session status output separates `Execution:` from `Runtime:`. `Execution`
   is the sandbox path (`direct`, `docker/*`), while `Runtime` tells you
   whether the session is using `OpenClaw Default`, `OpenAI Codex`, a CLI
@@ -312,9 +335,11 @@ succeeds or the Gateway restarts.
 - When command-local SecretRef resolution succeeds, status prefers the
   resolved snapshot and clears transient "secret unavailable" channel
   markers from the final output.
-- `status --all` includes a Secrets overview row and a diagnosis section
-  that summarizes secret diagnostics (truncated for readability) without
-  stopping report generation.
+- Human status combines Gateway-owned degraded secrets with distinct command-local
+  diagnostics, deduplicating matching config paths. It shows cold/stale state,
+  redacted reasons, and `openclaw secrets reload` guidance. The `status --all`
+  Secrets row and diagnosis count use that same list, bounded for readability.
+  JSON keeps Gateway owners and command-local `secretDiagnostics` separate.
 
 ## Memory
 

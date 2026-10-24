@@ -11,11 +11,13 @@ import { doctorDatabasePort } from "../../commands/doctor-database-port.js";
 import * as configIo from "../../config/io.js";
 import * as pluginMetadata from "../../plugins/plugin-metadata-snapshot.js";
 import { readBackupEngine } from "../../snapshot/database-backup.js";
+import { assertOpenClawStateDatabaseForMaintenance } from "../../state/openclaw-state-db-maintenance.js";
 import {
   closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { readClientCredentialReceipt } from "../client-credential-readiness.js";
+import { readClientCredentialFileIdentity } from "../client-credential-receipt.js";
 import { openClientCredentialCustody } from "../client-credential-store.js";
 import * as recovery from "../database-port-recovery.js";
 import * as disk from "../disk-space.js";
@@ -188,6 +190,58 @@ describe("database port command custody and inspection", () => {
   });
 });
 
+it("captures prefixed destination names and preserves them when rolling back before staging", async () => {
+  await fixture(async ({ state, source }) => {
+    const config = JSON.parse(fs.readFileSync(state.configPath, "utf8"));
+    config.database.postgres.schemaPrefix = "rehearsal";
+    await state.writeConfig(config);
+    openOpenClawStateDatabase({ env: state.env });
+    await closeOpenClawStateDatabaseAsync();
+    const shared = state.statePath("state", "openclaw.sqlite");
+    {
+      using db = openNodeSqliteDatabase(shared);
+      db.exec("CREATE TABLE fleet_cells (tenant_id TEXT PRIMARY KEY) STRICT");
+    }
+    const original = hash(source);
+    const run = tasks.runDatabasePortTask;
+    vi.spyOn(tasks, "runDatabasePortTask").mockImplementation(async (...args) => {
+      if (args[0].operation === "preflight") {
+        return { version: 170000, encoding: "UTF8", privilegesChecked: false };
+      }
+      if (args[0].operation === "migrate") {
+        throw new Error(injected);
+      }
+      return await run(...args);
+    });
+    await expect(
+      doctorDatabasePort({ family: "state", to: "postgres", dryRun: true }),
+    ).resolves.toMatchObject({
+      notes: [`${shared}: Skipped empty retained SQLite table fleet_cells`],
+    });
+    await expect(doctorDatabasePort({ to: "postgres" })).rejects.toThrow("private migrate");
+    const saved = manifest(state);
+    expect(saved.targets).toHaveLength(2);
+    for (const target of saved.targets) {
+      assert(target.original.engine === "sqlite");
+      const family = target.original.path === shared ? "state" : "workboard";
+      expect(target.intended).toMatchObject({
+        engine: "postgres",
+        namespace: `rehearsal_${family}_${target.storeId.replaceAll("-", "").slice(0, 16)}`,
+      });
+    }
+    const inspection = saved.artifacts.find((artifact) =>
+      artifact.path.endsWith("/inspection.json"),
+    );
+    assert(inspection);
+    expect(JSON.parse(fs.readFileSync(inspection.path, "utf8"))).toEqual({
+      notes: ["Skipped empty retained SQLite table fleet_cells"],
+    });
+    expect(hash(source)).toBe(original);
+    await doctorDatabasePort({ rollback: recovery.databasePortManifestPath(state.stateDir) });
+    expect(hash(source)).toBe(original);
+  });
+});
+
 describe.skipIf(!connection)("database port command PostgreSQL conformance", () => {
   it("privately adds the first-use deletion phase when porting a current-schema journal", async () => {
     await fixture(async ({ state, client }) => {
@@ -199,9 +253,20 @@ describe.skipIf(!connection)("database port command PostgreSQL conformance", () 
         using db = openNodeSqliteDatabase(shared);
         db.exec(`
           ALTER TABLE agent_deletion_journal DROP COLUMN phase;
+          ALTER TABLE agent_database_leases ADD COLUMN unported_data TEXT;
           INSERT INTO agent_deletion_journal (agent_id, agent_dir, workspace_dir, sessions_dir, created_at)
           VALUES ('retired', '/retired/agent', '/retired/workspace', '/retired/sessions', 17);
         `);
+        assertOpenClawStateDatabaseForMaintenance(db, { pathname: shared });
+      }
+      const unported = hash(shared);
+      await expect(doctorDatabasePort({ to: "postgres", dryRun: true })).rejects.toThrow(
+        "Unknown or missing columns in agent_database_leases",
+      );
+      expect(hash(shared)).toBe(unported);
+      {
+        using db = openNodeSqliteDatabase(shared);
+        db.exec("ALTER TABLE agent_database_leases DROP COLUMN unported_data");
       }
       const original = hash(shared);
       const preview = await doctorDatabasePort({ to: "postgres", dryRun: true });
@@ -213,7 +278,13 @@ describe.skipIf(!connection)("database port command PostgreSQL conformance", () 
       {
         using credentials = openClientCredentialCustody(state.env);
         assert(credentials);
-        expect(readClientCredentialReceipt(credentials.database)?.receipt.source).toBeNull();
+        expect(readClientCredentialReceipt(credentials.database)).toMatchObject({
+          phase: "complete",
+          receipt: {
+            source: { kind: "canonical", engine: "postgres", identity: anchor.storeId },
+            sharedFile: readClientCredentialFileIdentity(shared),
+          },
+        });
       }
       expect(
         (
