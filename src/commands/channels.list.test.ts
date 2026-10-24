@@ -220,8 +220,8 @@ describe("channels list", () => {
   });
 
   it("sanitizes catalog-only channel labels in terminal output but not JSON", async () => {
-    const control = "\u001B]0;catalog-injection\u0007";
-    const label = `${control}QQ Bot\r\nAdmin`;
+    const control = "\u001B]0;catalog-injection\u0007\u001B[2J";
+    const label = `${control}QQ Bot\r\nAdmin\tgroup`;
     mocks.listTrustedChannelPluginCatalogEntries.mockReturnValue([
       createCatalogEntry("qqbot", label),
     ]);
@@ -233,7 +233,8 @@ describe("channels list", () => {
     const textOutput = loggedText(textRuntime);
     expect(textOutput).not.toContain("\u001B");
     expect(textOutput).not.toContain("\nAdmin");
-    expect(textOutput).toContain("\\r\\nAdmin");
+    expect(textOutput).toContain("QQ Bot\\r\\nAdmin\\tgroup");
+    expect(textOutput.replaceAll("\n", "")).not.toMatch(/\p{Cc}/u);
 
     const jsonRuntime = createTestRuntime();
     await channelsListCommand({ all: true, json: true }, jsonRuntime);

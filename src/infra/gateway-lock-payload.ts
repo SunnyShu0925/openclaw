@@ -16,7 +16,9 @@ const host = z.string().min(1);
 export const GatewayProcessNamespaceSchema = z.discriminatedUnion("platform", [
   uuidBoot.extend({ host, platform: z.literal("linux"), pidNsInode: z.string().min(1) }),
   uuidBoot.extend({ host, platform: z.literal("darwin") }),
-  windowsBoot.extend({ host }),
+  // Windows uses host-scoped PIDs and absolute process-start identity. Keep
+  // accepting recorded boot timestamps, but do not require an unused CIM probe.
+  windowsBoot.extend({ host, identity: windowsBoot.shape.identity.optional() }),
   freebsdBoot.extend({ host }),
 ]);
 type ProcessNamespace = z.infer<typeof GatewayProcessNamespaceSchema>;
@@ -31,7 +33,10 @@ export function readGatewayLockProcessNamespace(): ProcessNamespace | null {
     return processNamespace.value;
   }
   try {
-    const boot = createManagedHandoffBootIdentityReader(process.env)();
+    const boot =
+      process.platform === "win32"
+        ? { platform: "win32" as const }
+        : createManagedHandoffBootIdentityReader(process.env)();
     const value = GatewayProcessNamespaceSchema.parse({
       host: os.hostname(),
       ...boot,
@@ -90,12 +95,27 @@ export class GatewayLockNamespaceError extends Error {
   }
 }
 
-/** Qualify PID evidence before any local process probe or same-PID authority shortcut. */
+/** File-lock recovery also covers pre-namespace Windows records from supported upgrades. */
 export function classifyGatewayLockProcessNamespace(
-  value: unknown,
-  _lockPath?: string,
+  holder: { processNamespace?: unknown; pid?: unknown; startTime?: unknown } | null | undefined,
+  lockPath?: string,
 ): "same" | "dead" | "unknown" {
-  return classifyGatewayOwnerProcessNamespace(value);
+  if (process.platform === "win32" && holder && holder.processNamespace === undefined && lockPath) {
+    try {
+      // A missing namespace never grants local authority. Only an expired heartbeat
+      // plus native proof of process death can retire this legacy file owner.
+      if (
+        Date.now() - fs.statSync(lockPath).mtimeMs > GATEWAY_OWNER_HEARTBEAT_STALE_MS &&
+        isLockOwnerDefinitelyStale({ payload: { pid: holder.pid, starttime: holder.startTime } })
+      ) {
+        return "dead";
+      }
+    } catch {
+      // Unavailable heartbeat or process observations preserve the owner.
+    }
+    return "unknown";
+  }
+  return classifyGatewayOwnerProcessNamespace(holder?.processNamespace);
 }
 
 /** File locks and SQLite leases require comparable evidence of process death. */

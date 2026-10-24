@@ -38,7 +38,6 @@ import {
   FEISHU_WEBHOOK_MAX_BODY_BYTES,
   feishuWebhookRateLimiter,
   recordWebhookStatus,
-  wsClients,
 } from "./monitor.state.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 import { normalizeFeishuWebhookPath } from "./webhook-path.js";
@@ -200,7 +199,6 @@ function cleanupFeishuWsClient(params: {
       );
     }
   }
-  wsClients.delete(accountId);
   if (clearIdentity) {
     clearFeishuBotIdentityState(accountId);
   }
@@ -219,6 +217,12 @@ export async function monitorWebSocket({
   const error = runtime?.error ?? console.error;
 
   let attempt = 0;
+  const retry = (label: string, cause: unknown) => {
+    const delayMs = getFeishuWsReconnectDelayMs(++attempt);
+    error(`feishu[${accountId}]: ${label} in ${delayMs}ms: ${formatFeishuWsErrorForLog(cause)}`);
+    return waitForAbortableDelay(delayMs, abortSignal);
+  };
+
   while (true) {
     if (abortSignal?.aborted) {
       break;
@@ -266,7 +270,6 @@ export async function monitorWebSocket({
         cleanupFeishuWsClient({ accountId, wsClient, error, clearIdentity: true });
         break;
       }
-      wsClients.set(accountId, wsClient);
       await wsClient.start({ eventDispatcher });
       attempt = 0;
       log(`feishu[${accountId}]: WebSocket client started`);
@@ -294,13 +297,7 @@ export async function monitorWebSocket({
         }),
       );
 
-      attempt += 1;
-      const delayMs = getFeishuWsReconnectDelayMs(attempt);
-      error(
-        `feishu[${accountId}]: WebSocket connection ended, recreating client in ${delayMs}ms: ${formatFeishuWsErrorForLog(cycleEnd.value)}`,
-      );
-      const shouldRetry = await waitForAbortableDelay(delayMs, abortSignal);
-      if (!shouldRetry) {
+      if (!(await retry("WebSocket connection ended, recreating client", cycleEnd.value))) {
         break;
       }
     } catch (err) {
@@ -322,13 +319,7 @@ export async function monitorWebSocket({
         lastError: formatFeishuWsErrorForLog(err),
       });
 
-      attempt += 1;
-      const delayMs = getFeishuWsReconnectDelayMs(attempt);
-      error(
-        `feishu[${accountId}]: WebSocket start failed, retrying in ${delayMs}ms: ${formatFeishuWsErrorForLog(err)}`,
-      );
-      const shouldRetry = await waitForAbortableDelay(delayMs, abortSignal);
-      if (!shouldRetry) {
+      if (!(await retry("WebSocket start failed, retrying", err))) {
         break;
       }
     }

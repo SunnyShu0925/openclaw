@@ -5,6 +5,7 @@ import {
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionRunStatus, SessionsListResult } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
+import { registerChatQuestionsEnglish } from "../../i18n/locales/en-chat-questions.ts";
 import { redactToolDetail } from "../../lib/browser-redact.ts";
 import type { ChatQueueItem, ChatReplyTarget } from "../../lib/chat/chat-types.ts";
 import { isSessionRunStateActive } from "../../lib/session-run-state.ts";
@@ -41,6 +42,8 @@ import {
 import { resetChatInputHistoryNavigation, type ChatInputHistoryState } from "./input-history.ts";
 import type { ToolStreamHost, ToolStreamState } from "./tool-stream-contract.ts";
 import { resetToolStream, resetToolStreamRun } from "./tool-stream-state.ts";
+
+registerChatQuestionsEnglish();
 
 const CHAT_RUN_STATUS_TOAST_DURATION_MS = 5_000;
 
@@ -197,19 +200,6 @@ export function adoptStartedChatRun(
   if (!adoptedStream) {
     host.chatStream = "";
     host.chatStreamStartedAt = startedAt;
-  }
-}
-
-/** sessions.create acknowledged the first turn the way chat.send does; adopt
- *  its run before roster events catch up so the working claw never drops. */
-export function adoptInitialChatRun(host: Parameters<typeof adoptStartedChatRun>[0]): void {
-  const initial = host.chatSubmissions?.readInitial(
-    host.sessionKey,
-    host.client ?? null,
-    host.currentSessionId,
-  );
-  if (initial?.pending && !host.chatRunId) {
-    adoptStartedChatRun(host, initial.pendingRunId, initial.message.timestamp);
   }
 }
 
