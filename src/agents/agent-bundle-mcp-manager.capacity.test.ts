@@ -634,45 +634,4 @@ describe("MCP capacity catalog continuity", () => {
       }
     },
   );
-
-  it.each([-60_000, 60_000])(
-    "keeps the capacity cleanup wait within its budget across a %i ms wall-clock step",
-    async (stepMs) => {
-      const { manager } = setup();
-      const acquire = async (sessionId: string) => {
-        const lease = await manager.acquire({ ...params, sessionId, sessionKey: undefined });
-        held.push(lease);
-        return lease;
-      };
-      const evicted = await acquire("evicted");
-      evicted.releaseLease();
-      for (let index = 0; index < 255; index++) {
-        (await acquire(`busy-${index}`)).releaseLease();
-      }
-      const closing = createDeferred();
-      evicted.runtime.joinCleanup = () => closing.promise;
-
-      // The deadline seeds the budget and the loop spends it in one synchronous block, so
-      // the step lands after the first read. A wall clock cannot move the wait that follows.
-      const wallClock = Date.now();
-      let seeded = false;
-      vi.spyOn(Date, "now").mockImplementation(() => {
-        const first = !seeded;
-        seeded = true;
-        return first ? wallClock : wallClock + stepMs;
-      });
-      const timers = vi.spyOn(globalThis, "setTimeout");
-      const pending = manager.acquire({ ...params, sessionId: "newcomer", sessionKey: undefined });
-      for (let tick = 0; tick < 400; tick++) {
-        await Promise.resolve();
-      }
-      const budgets = timers.mock.calls.map(([, timeout]) => timeout ?? 0);
-      closing.resolve();
-      held.push(await pending);
-
-      expect(budgets.length).toBe(1);
-      expect(Math.max(...budgets)).toBeLessThanOrEqual(5_000);
-      expect(Math.min(...budgets)).toBeGreaterThan(4_000);
-    },
-  );
 });

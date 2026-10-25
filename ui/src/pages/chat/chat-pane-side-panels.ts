@@ -2,6 +2,7 @@ import type { SessionsCompanionStateResult } from "../../../../packages/gateway-
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
 import { shellViewport } from "../../app/shell-viewport.ts";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
+import { canCallGatewayMethod, canPresentGatewayMethod } from "../../lib/gateway-methods.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { showToast } from "../../lib/toast.ts";
 import { uploadsEnabled, uploadsDisabledMessage } from "../../lib/uploads.ts";
@@ -153,12 +154,8 @@ export abstract class ChatPaneSidePanels extends ChatPaneStateOwner {
           return;
         }
         this.mobilePresentation.height = height;
-        if (mode) {
-          this.mobilePresentation.mode = mode;
-        }
-        if (reservedHeight !== undefined) {
-          this.mobilePresentation.reservedHeight = reservedHeight;
-        }
+        this.mobilePresentation.mode = mode;
+        this.mobilePresentation.reservedHeight = reservedHeight;
       },
       keyboardVisible:
         this.mobilePresentation.publishedKeyboard ?? shellViewport.snapshot?.keyboardVisible,
@@ -287,10 +284,9 @@ export abstract class ChatPaneSidePanels extends ChatPaneStateOwner {
   } = { focusRequest: undefined, subagentsShowRequest: undefined, sideFocusOrigin: undefined };
   readonly sessionCompanionThreads = new ChatSessionCompanionThreads();
   protected readonly setSessionObserverVisibility = (visible: boolean) => {
-    const state = this.state;
-    if (state?.connected && state.client) {
-      void sendSessionObserverVisibility(state.client, visible).catch(() => undefined);
-    }
+    void sendSessionObserverVisibility(this.context.gateway.snapshot, visible).catch(
+      () => undefined,
+    );
   };
 
   protected restorePaneSidebarLayout(layout: SidebarLayout): SidebarLayout {
@@ -375,11 +371,16 @@ export abstract class ChatPaneSidePanels extends ChatPaneStateOwner {
     this.companionIntents.subagentsShowRequest = take;
     this.requestBackgroundPanel("subagents", "open");
     if (focus) {
-      void this.focusSubagentsPanel();
+      void this.focusSidePanel("subagents");
     }
   }
 
-  private async focusSubagentsPanel(): Promise<void> {
+  protected readonly openContextPanel = (): void => {
+    this.requestBackgroundPanel("context", "open");
+    void this.focusSidePanel("context");
+  };
+
+  private async focusSidePanel(slot: SidebarSlotId): Promise<void> {
     const state = this.state;
     if (!state) {
       return;
@@ -395,14 +396,23 @@ export abstract class ChatPaneSidePanels extends ChatPaneStateOwner {
       this.isConnected &&
       this.state === state &&
       state.sessionKey === sessionKey &&
-      this.isSlotShown(state.sidebarLayout, "subagents")
+      this.isSlotShown(state.sidebarLayout, slot)
     ) {
       region?.focusActiveSideTab({ preventScroll: true });
     }
   }
 
   /** The layout as this pane shows it, which a narrow pane decides for the background panels. */
-  protected presentSidebarLayout(layout: SidebarLayout): SidebarLayout {
+  protected presentSidebarLayout(savedLayout: SidebarLayout): SidebarLayout {
+    const layout =
+      !savedLayout.columns[0]?.panels.some((panel) => panel.slot === "companion") ||
+      canPresentGatewayMethod(
+        this.context.gateway.snapshot,
+        "sessions.companion.state",
+        "operator.read",
+      )
+        ? savedLayout
+        : closeSlot(savedLayout, "companion");
     const mobile = this.mobileHost(layout);
     if (mobile) {
       const next = ensureSidebarConversation(layout);
@@ -437,7 +447,7 @@ export abstract class ChatPaneSidePanels extends ChatPaneStateOwner {
   }
 
   protected requestBackgroundPanel(
-    slot: "subagents" | "processes",
+    slot: "subagents" | "processes" | "context",
     intent: "open" | "close" | "toggle",
   ): void {
     const state = this.state;
@@ -601,7 +611,17 @@ export abstract class ChatPaneSidePanels extends ChatPaneStateOwner {
 
   protected hydrateSessionCompanion(sessionKey: string): void {
     const state = this.state;
-    if (!state?.connected || !state.client || !sessionKey || parseCatalogSessionKey(sessionKey)) {
+    if (
+      !state?.connected ||
+      !state.client ||
+      !sessionKey ||
+      parseCatalogSessionKey(sessionKey) ||
+      !canCallGatewayMethod(
+        this.context.gateway.snapshot,
+        "sessions.companion.state",
+        "operator.read",
+      )
+    ) {
       return;
     }
     const agentId = resolveChatAgentId(state);

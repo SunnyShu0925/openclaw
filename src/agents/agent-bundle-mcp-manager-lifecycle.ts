@@ -130,8 +130,6 @@ export function createSessionMcpRuntimeManagerLifecycle(
     if (!hasServers || store.liveRuntimeSlots.has(slot)) {
       return slot;
     }
-    // The wait below is a relative timer, so its budget must not read the wall clock.
-    // performance.now() is fractional; rounding down can expire before the deadline.
     const cleanupDeadline = performance.now() + CAPACITY_CLEANUP_WAIT_MS;
     while (store.liveRuntimeSlots.size >= SESSION_MCP_MAX_LIVE_RUNTIMES) {
       const idle = [...store.runtimesBySessionId]
