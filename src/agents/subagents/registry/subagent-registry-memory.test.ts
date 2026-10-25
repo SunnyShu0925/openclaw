@@ -87,6 +87,29 @@ describe("completed subagent payload residency", () => {
     expect(getGatewayContextResolver(resident)).toBe(resolver);
   });
 
+  it.each([
+    // [场景, 输入 task, 期望长度, 期望尾串]
+    // 满载边界：恰好 160 BMP 单元不触发截断；161 单元截到 160。
+    ["an exactly-160-BMP-unit task", "a".repeat(160), 160, "a"],
+    ["a 161-BMP-unit task", "a".repeat(161), 160, "a"],
+    // surrogate 边界：emoji 的高代理恰好落在 160 边界上时，回退一位保留完整 pair。
+    ["an emoji whose high surrogate lands on the boundary", `${"a".repeat(159)}😀tail`, 159, "a"],
+    // surrogate 边界：emoji 的完整 pair 都在 160 边界内时，原样保留（不误切低代理）。
+    ["an emoji fully inside the boundary", `${"a".repeat(158)}😀tail`, 160, "😀"],
+    ["an empty task", "", 0, ""],
+    ["a short task", "hi", 2, "i"],
+  ])("keeps a surrogate-safe preview for %s", (_, task, expectedLength, expectedTail) => {
+    const resident = compactSubagentRunForMemory(completedRun({ task }));
+    const compacted = resident.task;
+    // No lone high surrogate: every high surrogate is followed by its low half.
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(compacted)).toBe(false);
+    // No lone low surrogate: every low surrogate is preceded by its high half.
+    expect(compacted.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "")).not.toMatch(/[\uDC00-\uDFFF]/);
+    expect(compacted.length).toBeLessThanOrEqual(160);
+    expect(compacted).toHaveLength(expectedLength);
+    expect(compacted.endsWith(expectedTail)).toBe(true);
+  });
+
   it("keeps settled collector payloads cold while retaining their spawning turn identity", () => {
     const entry = completedRun({
       collect: true,

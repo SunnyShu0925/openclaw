@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { revokeGoalContinuationReturn } from "../../../auto-reply/reply/goal-continuation-return.js";
 import type { captureOperatorToolGatewayContinuationContext } from "../../../gateway/server-plugin-in-process-dispatch.js";
 import { prepareGatewayContextBindingOwner } from "../../../plugins/runtime/gateway-context-binding-owner.js";
@@ -70,8 +71,9 @@ export function compactSubagentRunForMemory(entry: SubagentRunRecord): SubagentR
   }
   const compact = copySubagentRunRuntimeOwner(entry, {
     ...entry,
-    // A sliced preview can otherwise retain the entire original V8 string.
-    task: Buffer.from(entry.task.slice(0, 160), "utf16le").toString("utf16le"),
+    // A truncated preview is still a slice of the original V8 string; the Buffer
+    // round-trip detaches it so the full task can be released.
+    task: Buffer.from(truncateUtf16Safe(entry.task, 160), "utf16le").toString("utf16le"),
     ...(entry.completion ? { completion: { ...entry.completion } } : {}),
   });
   if (compact.completion) {
