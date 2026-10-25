@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { GatewayClient } from "../../packages/gateway-client/src/client.js";
+import { GatewayClient } from "../../packages/gateway-client/src/client.js";
 import type { GatewayProtocolSocket } from "../../packages/gateway-client/src/protocol-client.js";
 import { GatewayClientRequestError } from "../../packages/gateway-client/src/request-error.js";
 import type { RequestFrame } from "../../packages/gateway-protocol/src/schema/frames.js";
@@ -259,14 +259,15 @@ it.each([
 });
 
 it("keeps the startup admission budget when the wall clock rewinds", async () => {
-  const client = { request: vi.fn<GatewayClient["request"]>().mockResolvedValue({}) };
+  const client = new GatewayClient({ url: "ws://tui-startup.invalid" });
+  const requestSpy = vi.spyOn(client, "request").mockResolvedValue({});
   const requests = new GatewayChatRequests(client);
   await requests.write({ sessionKey: "agent:main:main" }, async (request) => {
     vi.setSystemTime(Date.now() - 90_000);
     await vi.advanceTimersByTimeAsync(500);
     return request("chat.send", {});
   });
-  expect(client.request).toHaveBeenCalledWith(
+  expect(requestSpy).toHaveBeenCalledWith(
     "chat.send",
     {},
     expect.objectContaining({ timeoutMs: GATEWAY_STARTUP_ADMISSION_WAIT_MS - 500 }),
@@ -274,20 +275,19 @@ it("keeps the startup admission budget when the wall clock rewinds", async () =>
 });
 
 it("retries chat.history when the wall clock jumps forward", async () => {
-  const client = {
-    request: vi
-      .fn<GatewayClient["request"]>()
-      .mockRejectedValueOnce(
-        new GatewayClientRequestError({
-          code: "UNAVAILABLE",
-          message: "Agent is preparing",
-          retryable: true,
-          retryAfterMs: 100,
-          details: { method: "chat.history" },
-        }),
-      )
-      .mockResolvedValue({ messages: [] }),
-  };
+  const client = new GatewayClient({ url: "ws://tui-startup.invalid" });
+  const requestSpy = vi
+    .spyOn(client, "request")
+    .mockRejectedValueOnce(
+      new GatewayClientRequestError({
+        code: "UNAVAILABLE",
+        message: "Agent is preparing",
+        retryable: true,
+        retryAfterMs: 100,
+        details: { method: "chat.history" },
+      }),
+    )
+    .mockResolvedValue({ messages: [] });
   const requests = new GatewayChatRequests(client);
   const history = requests
     .loadHistory({ sessionKey: "agent:main:main" })
@@ -295,5 +295,5 @@ it("retries chat.history when the wall clock jumps forward", async () => {
   vi.setSystemTime(Date.now() + 120_000);
   await vi.advanceTimersByTimeAsync(100);
   expect(await history).toEqual({ messages: [] });
-  expect(client.request).toHaveBeenCalledTimes(2);
+  expect(requestSpy).toHaveBeenCalledTimes(2);
 });
