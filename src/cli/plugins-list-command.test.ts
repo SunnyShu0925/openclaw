@@ -63,9 +63,12 @@ function mockHumanListModules(importedModules: string[] = [], width = 120): void
     importedModules.push("format");
     return await importOriginal<typeof import("./plugins-list-format.js")>();
   });
-  vi.doMock("./command-format.js", () => {
+  vi.doMock("./command-format.js", async (importOriginal) => {
     importedModules.push("command-format");
-    return { formatCliCommand: (value: string) => `formatted(${value})` };
+    return {
+      ...(await importOriginal<typeof import("./command-format.js")>()),
+      formatCliCommand: (value: string) => `formatted(${value})`,
+    };
   });
 }
 
