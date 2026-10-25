@@ -227,9 +227,8 @@ export function registerImageCapabilityCommands(capabilityCommand: Command): voi
           const prompt = normalizeOptionalString(promptInput);
           const outputs = await Promise.all(
             files.map(async (filePath) => {
-              const trimmed = filePath.trim();
-              const resolvedPath = /^https?:\/\//i.test(trimmed) ? trimmed : path.resolve(filePath);
-              const isRemoteUrl = /^https?:\/\//i.test(resolvedPath);
+              const isRemoteUrl = /^https?:\/\//i.test(filePath.trim());
+              const resolvedPath = isRemoteUrl ? filePath : path.resolve(filePath);
               const preparedImage = activeModel
                 ? await prepareImageDescriptionInput({
                     filePath: resolvedPath,

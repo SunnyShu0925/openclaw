@@ -1068,6 +1068,17 @@ describe("capability cli", () => {
     expect(output).not.toContain("model:");
   });
 
+  it("keeps the remote image URL exactly as given on the command line", async () => {
+    await runCapability("image", "describe", "--file", " https://example.com/a.png ", "--json");
+
+    expect(mocks.describeImageFile).toHaveBeenCalledWith(
+      expect.objectContaining({ filePath: " https://example.com/a.png " }),
+    );
+    expect(mocks.runtime.writeJson.mock.calls.at(-1)?.[0]).toMatchObject({
+      outputs: [{ path: " https://example.com/a.png " }],
+    });
+  });
+
   it.each([
     {
       action: "describe",
