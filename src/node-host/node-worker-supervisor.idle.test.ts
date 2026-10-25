@@ -490,8 +490,9 @@ describe("node worker idle retention", () => {
         expect(owner.adapter.kill).toHaveBeenCalledTimes(2);
         expect(mocks.prepare).toHaveBeenCalledTimes(1);
       } else {
-        // Move wall time to the boundary without firing the deadline callback.
-        vi.setSystemTime(10_000);
+        // Advance only the monotonic admission clock to the boundary so the
+        // deadline owns admission without firing unrelated retention timers.
+        vi.spyOn(performance, "now").mockReturnValue(10_000);
       }
       cleanup.resolve();
       if (timing === "before") {
@@ -703,4 +704,35 @@ describe("node worker idle retention", () => {
       }
     },
   );
+
+  it("prices the capacity admission deadline on the monotonic clock across a wall-clock rewind", async () => {
+    // Freeze the monotonic admission clock and only let the wall clock rewind,
+    // so the caller-visible deadline outcome is observed under the clock split.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let monotonicMs = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
+    await using f = fixture();
+    using cleanup = barrier();
+    const owner = await f.retained(input("old", "old-environment"));
+    owner.holdCleanup(cleanup.promise);
+    const replacement = settle(
+      f.supervisor.launch(input("replacement", "new-environment"), TEST_WORKER_ENDPOINT),
+    );
+    await owner.killed.promise;
+    f.expectCapacity(0);
+    // Rewind only the wall clock while the monotonic admission clock stays put.
+    vi.setSystemTime(-60_000);
+    // Post-fix: the 10s budget is priced on the monotonic clock, so the rewind
+    // does not inflate it and the launch fails at the admission deadline.
+    monotonicMs = 10_000;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await replacement).toEqual({
+      error: expect.objectContaining({
+        name: "NodeWorkerCapacityExhaustedError",
+        message: "node worker capacity remained full for 10000 ms",
+      }),
+    });
+    expect(f.launches.has("replacement")).toBe(false);
+    cleanup.resolve();
+  });
 });
