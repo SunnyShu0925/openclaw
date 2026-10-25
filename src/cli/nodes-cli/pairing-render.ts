@@ -20,10 +20,7 @@ export function renderPendingPairingRequestsTable(params: {
     Node: sanitizeTerminalText(r.displayName?.trim() || r.nodeId),
     IP: sanitizeTerminalText(r.remoteIp ?? ""),
     Scopes: sanitizeTerminalText(
-      (Array.isArray(r.requiredApproveScopes) && r.requiredApproveScopes.length > 0
-        ? r.requiredApproveScopes
-        : resolveNodePairApprovalScopes(r.commands)
-      ).join(", "),
+      resolveNodePairApprovalScopes(r.commands, r.requiredApproveScopes).join(", "),
     ),
     Requested:
       typeof r.ts === "number" ? formatTimeAgo(Math.max(0, now - r.ts)) : theme.muted("unknown"),

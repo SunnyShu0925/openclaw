@@ -48,7 +48,13 @@ describe("cli/nodes-cli/pairing-render", () => {
           requiredApproveScopes: ["operator.pairing", "operator.write"],
         },
         { requestId: "legacy", nodeId: "n2", commands: ["system.run"] },
-        { requestId: "empty", nodeId: "n3" },
+        {
+          requestId: "default",
+          nodeId: "n3",
+          requiredApproveScopes: ["operator.pairing"],
+          commands: ["system.run"],
+        },
+        { requestId: "empty", nodeId: "n4" },
       ],
     });
     const { table } = renderPendingPairingRequestsTable({
@@ -61,6 +67,7 @@ describe("cli/nodes-cli/pairing-render", () => {
     expect(table).toContain("operator.pairing, operator.write");
     expect(table).toContain("operator.pairing, operator.admin");
     expect(table).toMatch(/empty.*operator.pairing/);
+    expect(table).toMatch(/default.*operator.pairing, operator.admin/);
   });
 
   it("keeps untrusted scope text safe in a narrow terminal", () => {
