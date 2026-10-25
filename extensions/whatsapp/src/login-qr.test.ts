@@ -467,6 +467,29 @@ describe("login-qr", () => {
     });
   });
 
+  it("keeps the QR wait deadline monotonic when the wall clock is rewound", async () => {
+    const accountId = "monotonic-qr-wait-deadline";
+    waitForWaConnectionMock.mockImplementation(waitForever);
+
+    const start = await startQr(accountId);
+    expect(start.qrDataUrl).toBe(encodedQr("qr-data"));
+    const onQr = createWaSocketMock.mock.calls[0]?.[2]?.onQr;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+
+    const waiting = waitForWebLogin({ timeoutMs: 2000, accountId });
+    await flushTasks();
+
+    vi.setSystemTime(Date.now() - 60_000);
+    onQr?.("qr-data-2");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(waiting).resolves.toEqual({
+      connected: false,
+      message: "Still waiting for the QR scan. Let me know when you’ve scanned it.",
+    });
+  });
+
   it("turns unexpected login cleanup failures into a normal login error", async () => {
     waitForWaConnectionMock.mockRejectedValueOnce({
       output: { statusCode: 401 },
