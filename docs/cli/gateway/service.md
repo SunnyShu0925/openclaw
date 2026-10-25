@@ -28,6 +28,11 @@ not rewrite configuration. Restart preserves the installed service definition wh
 config needs repair; its health check still reports whether the Gateway came back.
 `gateway start` continues to validate configuration before starting the Gateway.
 
+Restart warns when a recorded managed environment value differs from its
+current durable configuration, naming only affected keys. Run
+`openclaw gateway install --force` to refresh that snapshot. Unrecorded values and
+systemd's runtime managed-environment loading keep their existing precedence.
+
 If a Gateway holds state ownership for more than five minutes without recording
 that its listener bound, `openclaw gateway stop` can recover the stalled startup,
 including one frozen before publishing its owner identity. Recovery verifies the
@@ -42,6 +47,10 @@ running. Recent log errors are matching evidence from the bounded log tail, may
 belong to an earlier run, and do not establish the current process's startup phase.
 Routine startup and shutdown messages are not reported as errors. Doctor and
 onboarding use the same error selection.
+
+On macOS, stop waits for the LaunchAgent to unload, its processes to exit, and the
+Gateway port to be released. These waits measure elapsed time, so system-clock
+corrections do not shorten or extend their deadlines.
 
 On Windows, Scheduled Task stop and restart first ask the verified Gateway to drain
 and exit. Older or unresponsive Gateways fall back to termination of the captured

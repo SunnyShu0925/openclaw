@@ -83,8 +83,6 @@ async function waitForLaunchAgentUnloaded(
   onWait?: (pids: readonly number[]) => void,
 ): Promise<void> {
   const pids = new Set(initialPids);
-  // Use the monotonic clock so an NTP step or manual wall-clock adjustment
-  // cannot prematurely expire or indefinitely extend the stop deadline.
   const deadline = performance.now() + LAUNCH_AGENT_STOP_TIMEOUT_MS;
   let warned = false;
   for (;;) {
@@ -116,8 +114,6 @@ async function waitForGatewayPortRelease(
   port: number,
   probeHosts: readonly string[],
 ): Promise<boolean> {
-  // Use the monotonic clock so an NTP step or manual wall-clock adjustment
-  // cannot prematurely expire or indefinitely extend the port-release deadline.
   const deadline = performance.now() + LAUNCH_AGENT_STOP_PORT_RELEASE_TIMEOUT_MS;
   while (performance.now() < deadline) {
     await sleep(Math.min(LAUNCH_AGENT_STOP_PORT_RELEASE_POLL_MS, deadline - performance.now()));
