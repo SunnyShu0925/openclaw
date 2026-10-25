@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { GatewayClient } from "../../packages/gateway-client/src/client.js";
 import type { GatewayProtocolSocket } from "../../packages/gateway-client/src/protocol-client.js";
+import { GatewayClientRequestError } from "../../packages/gateway-client/src/request-error.js";
 import type { RequestFrame } from "../../packages/gateway-protocol/src/schema/frames.js";
 import { GATEWAY_STARTUP_ADMISSION_WAIT_MS } from "../../packages/gateway-protocol/src/startup-unavailable.js";
+import { GatewayChatRequests } from "./gateway-chat-requests.js";
 import { GatewayChatClient } from "./gateway-chat.js";
 import { createCommandHandlers } from "./tui-command-handlers.js";
 import {
@@ -254,4 +256,59 @@ it.each([
   } else {
     expect(f.state.pendingSubmit).toBeNull();
   }
+});
+
+it("keeps the startup admission RPC budget on the monotonic clock", async () => {
+  let monotonicMs = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
+  let dateNowCalls = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => {
+    dateNowCalls += 1;
+    return dateNowCalls === 1 ? monotonicMs : monotonicMs - 90_000;
+  });
+  let capturedTimeoutMs: number | undefined;
+  const client = {
+    request: vi.fn(async (_method: string, _params: unknown, opts?: { timeoutMs?: number }) => {
+      capturedTimeoutMs = opts?.timeoutMs;
+      return {};
+    }),
+  };
+  const requests = new GatewayChatRequests(client as unknown as GatewayClient);
+  monotonicMs = 500;
+  await requests.write({ sessionKey: "agent:main:main" }, (request) => request("chat.send", {}));
+  expect(capturedTimeoutMs).toBe(GATEWAY_STARTUP_ADMISSION_WAIT_MS);
+});
+
+it("keeps chat.history startup retries on the monotonic clock", async () => {
+  let monotonicMs = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
+  let dateNowCalls = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => {
+    dateNowCalls += 1;
+    return dateNowCalls === 1 ? monotonicMs : monotonicMs + 120_000;
+  });
+  let attempt = 0;
+  const client = {
+    request: vi.fn(async (method: string) => {
+      if (method === "chat.history") {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new GatewayClientRequestError({
+            code: "UNAVAILABLE",
+            message: "Agent is preparing",
+            retryable: true,
+            retryAfterMs: 100,
+            details: { method: "chat.history" },
+          });
+        }
+      }
+      return {};
+    }),
+  };
+  const requests = new GatewayChatRequests(client as unknown as GatewayClient);
+  monotonicMs = 10_000;
+  const promise = requests.loadHistory({ sessionKey: "agent:main:main" });
+  await vi.advanceTimersByTimeAsync(100);
+  await promise;
+  expect(attempt).toBeGreaterThan(1);
 });
