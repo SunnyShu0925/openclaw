@@ -1,5 +1,34 @@
 # Team-shaped synthetic state
 
+## Plugin policy reads
+
+`plugin-policy-read-measure.mjs` measures warm Codex config resolution and registered
+plugin metadata reads with 40 synthetic entries. Build a bundle from each source
+revision, then use the corresponding Codex entry file; the harness extracts the
+actual resolver closure rather than maintaining a second implementation.
+
+```sh
+node scripts/perf/plugin-policy-read-measure.mjs --build /path/to/source /path/to/owner.mjs
+node --expose-gc scripts/perf/plugin-policy-read-measure.mjs \
+  /path/to/owner.mjs /path/to/source/extensions/codex/index.ts \
+  config timing /path/to/result.json
+```
+
+Use `bindings` instead of `config` for primitive, array, and cached method reads
+through the real instance-binding owner. That workload uses a synthetic admission
+callback and does not measure invocation leases or complete Gateway RPCs. The
+config workload checks exact payload identity; both workloads check their results.
+Bundles retain external package imports, so run beside the source dependencies.
+
+Use `allocation` separately to sample allocations including collected objects.
+Optional trailing arguments are `READY_FILE START_FILE OPERATIONS` (default
+200,000 operations). Each side publishes readiness after warmup; publish a common
+future epoch in milliseconds to the start file. Run concurrent pairs with swapped
+interleaved CPUs under the shared quiet-slot guard. Reports include source hashes,
+CPU, sampled allocation, per-kind GC totals/maxima, event-loop sample counts, and
+per-operation latency averaged over 100-operation batches. These costs isolate the
+policy readers; they do not predict whole-Gateway latency or production savings.
+
 ## System prompt report retention
 
 `node --expose-gc --import ./scripts/tsx.mjs scripts/perf/system-prompt-report-retention.ts`
