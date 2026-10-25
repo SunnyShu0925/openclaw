@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 272544,
-  "reason": "PR #182993: bounded formatting cadence and no per-delta geometry reads cut standard streaming script CPU 20.8% and burst CPU 16.5% over 20 interleaved base/A-A/head triplets. Coordinator accepted the measured CPU/bytes tradeoff. After merging #183042, same-host builds measure startup 272577 to 272544 B, Chat +702 B (54 B within build variance of the approved +648 B), and New Session +19 B, with unchanged requests and CSS. Ratchet to measured integrated head.",
+  "startupJsGzipBytes": 270488,
+  "reason": "Heavy tool details avoid rendering hidden diff/raw views: rejected-patch script CPU -39.07% and main-thread task CPU -47.04% over 20 counterbalanced pairs. Integrated same-toolchain build on f8a97fe: startup 270323 to 270488 B gzip (+165 B), five JS and one CSS request unchanged; Chat -132 B, New +114 B. Accept the small startup tradeoff and ratchet to the measured head.",
   "updatedAt": "2026-10-25"
 }
