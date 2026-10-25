@@ -270,6 +270,46 @@ describe("Workboard gateway lifecycle sync", () => {
     expect(request).toHaveBeenCalledOnce();
   });
 
+  it("does not inflate the debounce window when the wall clock moves backwards", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const run =
+        Promise.withResolvers<Awaited<ReturnType<NonNullable<ServiceCron["enqueueRun"]>>>>();
+      const entered = Promise.withResolvers<void>();
+      const request = vi.fn(() => {
+        entered.resolve();
+        vi.setSystemTime(Date.now() - 60_000);
+        return run.promise;
+      });
+      const { sync, stop } = await nudgeFixture(request);
+
+      const delays: number[] = [];
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        handler: TimerHandler,
+        timeout?: number,
+        ...args: unknown[]
+      ) => {
+        if (typeof timeout === "number") {
+          delays.push(timeout);
+        }
+        return originalSetTimeout(handler, timeout, ...args);
+      }) as typeof setTimeout);
+
+      const first = sync();
+      await entered.promise;
+      run.resolve({ ok: true, ran: true });
+      await first;
+      await stop();
+
+      setTimeoutSpy.mockRestore();
+      const debounceDelay = Math.max(...delays);
+      expect(debounceDelay).toBeLessThanOrEqual(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["failure", "disabled"] as const)(
     "handles %s automation without affecting lifecycle sync",
     async (outcome) => {
