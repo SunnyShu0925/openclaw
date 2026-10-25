@@ -258,6 +258,31 @@ describe("Claw project packages", () => {
     await expectInvalidProject(project, "project_license_invalid");
   });
 
+  it("rejects a package.json containing invalid UTF-8 bytes", async () => {
+    // 0xff is an invalid UTF-8 byte. When lossily decoded it becomes U+FFFD
+    // inside the "description" string, producing valid JSON and silently
+    // corrupting the value; the strict decoder must reject the file instead.
+    const text = `{"name":"demo-claw","version":"1.2.3","openclaw":{"claw":"CLAW.md"},"description":"demoPLACEHOLDERclaw"}\n`;
+    const bytes = Buffer.from(text, "utf8");
+    const idx = bytes.indexOf(Buffer.from("PLACEHOLDER"));
+    await writeFile(
+      join(project, "package.json"),
+      Buffer.concat([
+        bytes.subarray(0, idx),
+        Buffer.from([0xff]),
+        bytes.subarray(idx + "PLACEHOLDER".length),
+      ]),
+    );
+
+    await expectInvalidProject(project, "invalid_project_package");
+  });
+
+  it("accepts a package.json containing a literal U+FFFD replacement char", async () => {
+    await writePackage(project, { description: "demo\uFFFDclaw" });
+
+    await expect(validateClawProject(project)).resolves.toMatchObject({ ok: true });
+  });
+
   it("preserves the canonical metadata-selected OpenClaw profile path", async () => {
     await relocateProfile(project, "custom.yaml");
 

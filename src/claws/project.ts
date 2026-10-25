@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { root as fsSafeRoot } from "../infra/fs-safe.js";
+import { decodeUtf8Input } from "../infra/utf8-input.js";
 import { clawContainedRelativePath } from "./path-containment.js";
 import { readClawManifestFile } from "./reader.js";
 import { isCanonicalClawHubPackageName, portableClawPathKey } from "./schema-portability.js";
@@ -250,7 +251,7 @@ export async function validateClawProject(
       maxBytes: MAX_PACKAGE_JSON_BYTES,
       symlinks: "reject",
     });
-    packageValue = JSON.parse(read.buffer.toString("utf8"));
+    packageValue = JSON.parse(decodeUtf8Input(read.buffer, join(root, "package.json")));
   } catch (error) {
     return failure(
       "invalid_project_package",
