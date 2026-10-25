@@ -258,57 +258,42 @@ it.each([
   }
 });
 
-it("keeps the startup admission RPC budget on the monotonic clock", async () => {
-  let monotonicMs = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
-  let dateNowCalls = 0;
-  vi.spyOn(Date, "now").mockImplementation(() => {
-    dateNowCalls += 1;
-    return dateNowCalls === 1 ? monotonicMs : monotonicMs - 90_000;
+it("keeps the startup admission budget when the wall clock rewinds", async () => {
+  const client = { request: vi.fn<GatewayClient["request"]>().mockResolvedValue({}) };
+  const requests = new GatewayChatRequests(client);
+  await requests.write({ sessionKey: "agent:main:main" }, async (request) => {
+    vi.setSystemTime(Date.now() - 90_000);
+    await vi.advanceTimersByTimeAsync(500);
+    return request("chat.send", {});
   });
-  let capturedTimeoutMs: number | undefined;
-  const client = {
-    request: vi.fn(async (_method: string, _params: unknown, opts?: { timeoutMs?: number }) => {
-      capturedTimeoutMs = opts?.timeoutMs;
-      return {};
-    }),
-  };
-  const requests = new GatewayChatRequests(client as unknown as GatewayClient);
-  monotonicMs = 500;
-  await requests.write({ sessionKey: "agent:main:main" }, (request) => request("chat.send", {}));
-  expect(capturedTimeoutMs).toBe(GATEWAY_STARTUP_ADMISSION_WAIT_MS);
+  expect(client.request).toHaveBeenCalledWith(
+    "chat.send",
+    {},
+    expect.objectContaining({ timeoutMs: GATEWAY_STARTUP_ADMISSION_WAIT_MS - 500 }),
+  );
 });
 
-it("keeps chat.history startup retries on the monotonic clock", async () => {
-  let monotonicMs = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
-  let dateNowCalls = 0;
-  vi.spyOn(Date, "now").mockImplementation(() => {
-    dateNowCalls += 1;
-    return dateNowCalls === 1 ? monotonicMs : monotonicMs + 120_000;
-  });
-  let attempt = 0;
+it("retries chat.history when the wall clock jumps forward", async () => {
   const client = {
-    request: vi.fn(async (method: string) => {
-      if (method === "chat.history") {
-        attempt += 1;
-        if (attempt === 1) {
-          throw new GatewayClientRequestError({
-            code: "UNAVAILABLE",
-            message: "Agent is preparing",
-            retryable: true,
-            retryAfterMs: 100,
-            details: { method: "chat.history" },
-          });
-        }
-      }
-      return {};
-    }),
+    request: vi
+      .fn<GatewayClient["request"]>()
+      .mockRejectedValueOnce(
+        new GatewayClientRequestError({
+          code: "UNAVAILABLE",
+          message: "Agent is preparing",
+          retryable: true,
+          retryAfterMs: 100,
+          details: { method: "chat.history" },
+        }),
+      )
+      .mockResolvedValue({ messages: [] }),
   };
-  const requests = new GatewayChatRequests(client as unknown as GatewayClient);
-  monotonicMs = 10_000;
-  const promise = requests.loadHistory({ sessionKey: "agent:main:main" });
+  const requests = new GatewayChatRequests(client);
+  const history = requests
+    .loadHistory({ sessionKey: "agent:main:main" })
+    .catch((error: unknown) => error);
+  vi.setSystemTime(Date.now() + 120_000);
   await vi.advanceTimersByTimeAsync(100);
-  await promise;
-  expect(attempt).toBeGreaterThan(1);
+  expect(await history).toEqual({ messages: [] });
+  expect(client.request).toHaveBeenCalledTimes(2);
 });
