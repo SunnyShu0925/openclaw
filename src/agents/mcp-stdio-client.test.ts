@@ -156,4 +156,20 @@ describe("createMcpStdioClient", () => {
     });
     expectRetired(fixture);
   });
+
+  it("keeps the exit diagnostic whole when the 32KiB stderr tail cuts a multi-byte character", async () => {
+    const fixture = createFixture();
+    const { client, root, stderr } = fixture;
+    await vi.waitFor(() => expect(client.isAvailable()).toBe(true));
+    stderr.write(Buffer.from("你".repeat(20000), "utf8"));
+    const pending = client.request("tools/call", {}, { timeoutMs: 1000 });
+    root.resolve({ code: 1, signal: null });
+    const err = await pending.catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      message: expect.stringContaining("unavailable: proxy exited (1):"),
+    });
+    expect((err as Error).message).not.toContain("\ufffd");
+    expect((err as Error).message).toContain("你");
+    expectRetired(fixture);
+  });
 });
