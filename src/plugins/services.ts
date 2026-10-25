@@ -276,8 +276,10 @@ async function startPreparedPluginServices({
               () => {},
             );
           } catch (error) {
-            // oxlint-disable-next-line typescript/prefer-promise-reject-errors -- Preserve the exact rejection, including non-Error values thrown by plugin hooks.
-            entry.stopping = Promise.reject(error);
+            // Cache the exact rejection, including non-Error values thrown by plugin hooks.
+            const failure = createDeferredCore();
+            failure.reject(error);
+            entry.stopping = failure.promise;
           }
         }
         const cleanupPromise = entry.stopping;
@@ -563,16 +565,14 @@ async function startPreparedPluginServices({
         : {}),
       ...(gatewayEvents ? { gatewayEvents } : {}),
       ...(controlUiIngress ? { controlUiIngress: controlUiIngress.factory } : {}),
-      ...(startupTrace
-        ? {
-            startupTrace: {
-              measure: (name, run) => startupTrace.measure(scopeTraceName(name), run),
-              ...(startupTrace.detail && {
-                detail: (name, metrics) => startupTrace.detail?.(scopeTraceName(name), metrics),
-              }),
-            },
-          }
-        : {}),
+      ...(startupTrace && {
+        startupTrace: {
+          measure: (name, run) => startupTrace.measure(scopeTraceName(name), run),
+          ...(startupTrace.detail && {
+            detail: (name, metrics) => startupTrace.detail?.(scopeTraceName(name), metrics),
+          }),
+        },
+      }),
       ...(internalDiagnostics ? { internalDiagnostics } : {}),
     };
     const recordCleanupFailure = (error: unknown) => {
