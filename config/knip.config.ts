@@ -265,6 +265,16 @@ const repositoryScriptEntries = [
   "scripts/perf/session-polling-fixture.ts!",
   "scripts/perf/sqlite-reply-census-preload.mjs!",
   "scripts/perf/worker-retained-heap-preload.ts!",
+  // These retained proof commands are invoked by
+  // their source headers, scripts/perf/README.md, and native-allocation-profile.md.
+  "scripts/perf/archive-worker-retention-measure.ts!",
+  "scripts/perf/codex-catalog-preview-retention.ts!",
+  "scripts/perf/config-validate-measure.mjs!",
+  "scripts/perf/native-allocation-profile.mjs!",
+  "scripts/perf/session-initial-context-fixture.ts!",
+  "scripts/perf/session-initial-context-measure.ts!",
+  "scripts/perf/sql-probe-measure.ts!",
+  "scripts/perf/workspace-manifest-retention.ts!",
   // Maintainers invoke this isolated transcript-rewrite benchmark by path.
   "scripts/bench-session-manager-rewrite.ts",
   // The team-shaped fixture README invokes these measurement CLIs by path.
@@ -1241,6 +1251,7 @@ const config = {
       ],
       // Platform tools, installed CLIs, and shell builtins used by scripts and boundary tests.
       ignoreBinaries: [
+        "ffmpeg",
         "lsattr",
         "mint",
         // Muse E2E setup installs this CLI outside npm (scripts/e2e/lib/muse-runtime/setup.sh).
