@@ -282,6 +282,29 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     },
   );
 
+  it("keeps the remaining budget when the wall clock jumps before an approval", async () => {
+    // Regression for BUG-234-cron-stream-approval-deadline-wall-clock: the pause
+    // saves its remainder at approval entry, so a forward step after the pause
+    // still leaves a correct remainder. The corruption happens when the clock
+    // steps between arming the budget and the approval beginning: the wall-clock
+    // remainder collapses to its 1 ms floor and the run aborts right after resume.
+    const harness = createTimeoutHarness();
+
+    await vi.advanceTimersByTimeAsync(30);
+    vi.setSystemTime(10_000_000);
+    emitApproval("waiting-approval", "approve-1");
+    await vi.advanceTimersByTimeAsync(0);
+    emitApproval("approval-resolved", "approve-1");
+
+    // Remaining budget is 70 ms (100 − 30) on the monotonic clock.
+    await vi.advanceTimersByTimeAsync(69);
+    expect(harness.abortRun).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(harness.markTimedOutByRunBudget).toHaveBeenCalledOnce();
+    expect(harness.abortRun).toHaveBeenCalledWith(true);
+  });
+
   it("does not retain scheduling when deadline publication synchronously aborts the owner", async () => {
     const runAbortController = new AbortController();
     const harness = createTimeoutHarness({

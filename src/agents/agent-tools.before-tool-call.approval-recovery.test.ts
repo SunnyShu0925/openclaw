@@ -6,6 +6,7 @@ import {
   releaseAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
+import { createDiagnosticEmbeddedRunOwner } from "../logging/diagnostic-run-activity.js";
 import { recoverStuckDiagnosticSession } from "../logging/diagnostic-stuck-session-recovery.runtime.js";
 import { resetDiagnosticStateForTest } from "../logging/diagnostic.test-support.js";
 import type { ReplyOperation } from "../sessions/session-controller.contracts.js";
@@ -49,6 +50,7 @@ let admission: PreparedAgentRunAdmission;
 let authority: AgentRunDelegatedAuthority;
 let operation: ReplyOperation;
 let watchdogAttempt: SessionControllerWatchdogAttempt;
+let callerIdentity: ReturnType<typeof createAdmittedGatewayToolCallerIdentity>;
 
 beforeEach(async () => {
   vi.useFakeTimers();
@@ -68,13 +70,13 @@ beforeEach(async () => {
     releaseAgentRunDelegatedAuthority(authority);
     clearActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey);
   });
-  operation = await withGatewayToolCallerIdentity(
-    createAdmittedGatewayToolCallerIdentity({
-      admittedRunContext: admitted,
-      agentId: "main",
-      sessionKey: ref.sessionKey,
-    }),
-    () => setActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey),
+  callerIdentity = createAdmittedGatewayToolCallerIdentity({
+    admittedRunContext: admitted,
+    agentId: "main",
+    sessionKey: ref.sessionKey,
+  });
+  operation = await withGatewayToolCallerIdentity(callerIdentity, () =>
+    setActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey),
   );
   watchdogAttempt = operation.watchdog.attachAttempt({
     assertCurrent: () => operation.abortSignal.throwIfAborted(),
@@ -209,5 +211,45 @@ it("does not protect a run whose approval wait was cancelled", async () => {
     await recover();
     await operation.ownerSettlement;
     expect(abort).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("keeps a plugin approval protected when the wall clock jumps while pending", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    // The shipped runner registers the plugin approval on the diagnostic owner's
+    // watchdog attempt; this fixture only binds it when the handle carries one.
+    handle = {
+      ...handle,
+      diagnosticOwner: createDiagnosticEmbeddedRunOwner({
+        sessionId: ref.sessionId,
+        sessionKey: ref.sessionKey,
+        runId: ref.runId,
+        watchdogAttempt,
+      }),
+    };
+    await withGatewayToolCallerIdentity(callerIdentity, () =>
+      setActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey),
+    );
+
+    const { decision, outcome } = requestApproval(480_000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(operation.watchdog.decide()).toMatchObject({
+      action: "observe",
+      reason: "human_question",
+    });
+
+    // A forward NTP-style step must not release the wait: the approver is still
+    // answering, so elapsed time is what expires the approval budget.
+    vi.setSystemTime(Date.now() + 600_000);
+    expect(operation.watchdog.decide()).toMatchObject({
+      action: "observe",
+      reason: "human_question",
+    });
+    await expect(recover()).resolves.toMatchObject({ reason: "active_reply_work" });
+    expect(abort).not.toHaveBeenCalled();
+
+    decision.resolve({ id: "approval-1", decision: "allow-once" });
+    await expect(outcome).resolves.toMatchObject({ blocked: false });
+    expect(operation.watchdog.decide().reason).not.toBe("human_question");
   });
 });
