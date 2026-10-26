@@ -157,19 +157,26 @@ describe("createMcpStdioClient", () => {
     expectRetired(fixture);
   });
 
-  it("keeps the exit diagnostic whole when the 32KiB stderr tail cuts a multi-byte character", async () => {
+  it.each([
+    {
+      name: "keeps complete characters at the 32KiB tail boundary",
+      output: Buffer.from("你".repeat(20000)),
+      expected: /^unavailable: proxy exited \(1\): 你+$/,
+    },
+    {
+      name: "preserves malformed bytes when stderr was not truncated",
+      output: Buffer.from([0x80, 0x61]),
+      expected: /^unavailable: proxy exited \(1\): �a$/,
+    },
+  ])("$name", async ({ output, expected }) => {
     const fixture = createFixture();
-    const { client, root, stderr } = fixture;
-    await vi.waitFor(() => expect(client.isAvailable()).toBe(true));
-    stderr.write(Buffer.from("你".repeat(20000), "utf8"));
+    const { client, root, stderr, requested } = fixture;
     const pending = client.request("tools/call", {}, { timeoutMs: 1000 });
+    const rejected = expect(pending).rejects.toThrow(expected);
+    await requested;
+    stderr.write(output);
     root.resolve({ code: 1, signal: null });
-    const err = await pending.catch((e: unknown) => e);
-    expect(err).toMatchObject({
-      message: expect.stringContaining("unavailable: proxy exited (1):"),
-    });
-    expect((err as Error).message).not.toContain("\ufffd");
-    expect((err as Error).message).toContain("你");
+    await rejected;
     expectRetired(fixture);
   });
 });
