@@ -145,7 +145,7 @@ export function createMcpStdioClient(params: McpStdioClientParams): McpStdioClie
     // The byte cut above can land inside a multi-byte UTF-8 character; skip to
     // the next legal sequence start so the decoded tail has no leading U+FFFD.
     let start = 0;
-    while (start < stderr.length && (stderr[start] & 0xc0) === 0x80) {
+    while (start < stderr.length && (stderr[start]! & 0xc0) === 0x80) {
       start++;
     }
     stderr = stderr.subarray(start);
