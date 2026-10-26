@@ -53,6 +53,10 @@ observations, session summaries, and raw context that may still be useful
 later. These are indexed for `memory_search` and `memory_get`, but are not
 injected into the bootstrap prompt on every turn.
 
+Daily-memory maintenance requires valid UTF-8. If decoding fails, the operation
+stops before rewriting that file. Preserve the original and convert a copy to
+UTF-8 before retrying.
+
 Over time, useful material from daily notes is distilled into `MEMORY.md` by
 the default [dreaming](/concepts/dreaming) sweep. The generated workspace
 instructions still encourage the agent to record durable facts as it works,
@@ -155,8 +159,9 @@ The built-in `memory-core` plugin can index and search a PostgreSQL agent databa
 SQLite remains the default. PostgreSQL memory search is supported on the
 [qualified runtime](/gateway/postgresql#support-matrix). Text ranking is
 engine-local, so result ordering and scores can differ from SQLite. PostgreSQL
-calibrates unnormalized cover-density rank `r` as `r / (r + 0.1)` before the
-shared hybrid merge. This gives keywords a useful weight without penalizing
+uses the faster native `ts_rank` function and calibrates its unnormalized rank
+`r` as `r / (r + 0.0027)` before the shared hybrid merge. The calibration is fitted to
+the previous keyword score scale, giving keywords a useful weight without penalizing
 long chunks by their full length. It is not BM25: PostgreSQL's native rank lacks
 corpus-wide inverse document frequency (IDF), so common and mixed-frequency
 queries can still rank differently. Hybrid search retains the same vector/text

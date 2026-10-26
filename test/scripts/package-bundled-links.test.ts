@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { materializeMissingBundledDependencies } from "../../scripts/lib/package-bundled-links.mts";
+import { listDirectoryTreeStrict } from "../../src/infra/directory-walk.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -100,7 +101,13 @@ describe("bundled dependency links", () => {
         await fs.writeFile(path.join(f.store, name), content);
       }
       await f.stage();
-      expect((await fs.readdir(f.destination, { recursive: true })).toSorted()).toEqual(
+      expect(
+        (
+          await listDirectoryTreeStrict(f.destination).then((inventory) =>
+            inventory.map((entry) => entry.relativePath),
+          )
+        ).toSorted(),
+      ).toEqual(
         ["LICENSE", "README.md", "cli.js", "dist", "dist/kept.js", "main.js", "package.json"]
           .map((name) => name.split("/").join(path.sep))
           .toSorted(),
@@ -187,14 +194,15 @@ process.send('staged');`,
     }
   });
 
-  it.each(["dependencies", "optionalDependencies"])(
-    "rejects an incomplete %s closure without touching the link",
-    async (field) => {
-      const f = await fixture();
-      await f.writeManifest(f.store, { name: "fixture-bundle", [field]: { outside: "1.0.0" } });
-      await f.rejectStage("dependency-closure staging");
-    },
-  );
+  it("rejects an incomplete required dependency closure without touching the link", async () => {
+    const f = await fixture();
+    await f.writeManifest(f.store, {
+      name: "fixture-bundle",
+      version: "1.0.0",
+      dependencies: { outside: "1.0.0" },
+    });
+    await f.rejectStage("dependency-closure staging");
+  });
 
   it("rejects nested links without following them or mutating the source graph", async () => {
     const f = await fixture();
