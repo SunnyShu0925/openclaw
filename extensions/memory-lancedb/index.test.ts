@@ -1920,6 +1920,7 @@ describe("memory plugin e2e", () => {
   test("retries without rejected dimensions and truncates the fallback vector", async () => {
     let nowMs = 1_000;
     const dateNow = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    const performanceNow = vi.spyOn(performance, "now").mockReturnValue(0);
     const rejectedDimensions = Object.assign(
       new Error("422 Extra inputs are not permitted: body.dimensions"),
       {
@@ -1996,12 +1997,7 @@ describe("memory plugin e2e", () => {
       });
       const firstTimeout = (post.mock.calls[0]?.[1] as { timeout?: number } | undefined)?.timeout;
       const secondTimeout = (post.mock.calls[1]?.[1] as { timeout?: number } | undefined)?.timeout;
-      // The first budget is floored off the monotonic clock (real elapsed ms),
-      // so assert a range; the fallback always retries 500ms later (Date.now
-      // mock advances by 500) regardless of clock drift.
-      expect(firstTimeout).toBeGreaterThanOrEqual(14_999);
-      expect(firstTimeout).toBeLessThanOrEqual(15_000);
-      expect(secondTimeout).toBe(firstTimeout ? firstTimeout - 500 : 0);
+      expect([firstTimeout, secondTimeout]).toEqual([15_000, 14_500]);
       const truncatedVector = expectDefined(
         vectorSearch.mock.calls[0]?.[0],
         "truncated LanceDB search vector",
@@ -2010,6 +2006,7 @@ describe("memory plugin e2e", () => {
       expect(truncatedVector.slice(0, 2)).toEqual([0.6, 0.8]);
     } finally {
       dateNow.mockRestore();
+      performanceNow.mockRestore();
       resetMemoryModuleMocks();
     }
   });
