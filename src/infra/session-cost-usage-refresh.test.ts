@@ -629,3 +629,18 @@ test("keeps same-agent refreshes owned by independent scopes", async ({
   await second.drain();
   expect(completed).toEqual(["first", "second"]);
 });
+
+test("does not inflate the publication wait when the wall clock rewinds after the dirty seed", async ({
+  usage: { files, refresh, dirty },
+}) => {
+  refresh.mockResolvedValue("refreshed");
+  // Seed the dirty age while the wall clock reads the current time; then rewind
+  // the wall clock far past the quiet window. The refresh budget runs on the
+  // monotonic clock, so the publication must still fire on its original quiet
+  // budget instead of being stretched by the rewind.
+  dirty(files[0]);
+  const rewound = Date.now() - 120_000;
+  vi.spyOn(Date, "now").mockReturnValue(rewound);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(refresh).toHaveBeenCalledTimes(1);
+});

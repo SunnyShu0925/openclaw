@@ -357,7 +357,7 @@ export function requestCostUsageCacheRefresh(params: UsageCostRefreshRequest): v
     readingSessionFiles: new Map(),
     runningSessionFiles: new Set(),
     agentBusy: false,
-    idleAt: Date.now(),
+    idleAt: performance.now(),
   };
   mergeUsageCostRefreshRequest(state, params);
   usageCostRefreshes.set(scopeSignal, refreshes);
@@ -381,7 +381,7 @@ function mergeUsageCostRefreshRequest(
     state.fullRefreshRequested = true;
     return;
   }
-  const now = Date.now();
+  const now = performance.now();
   for (const sessionFile of params.sessionFiles) {
     if (params.coalesce) {
       state.dirtySessionFiles.add(sessionFile);
@@ -464,7 +464,7 @@ async function runQueuedUsageCostRefresh(
   const offActivity = observeAgentRunActivity(state.agentId, (busy) => {
     state.agentBusy = busy;
     if (!busy) {
-      state.idleAt = Date.now();
+      state.idleAt = performance.now();
     }
     state.resume?.();
   });
@@ -472,13 +472,13 @@ async function runQueuedUsageCostRefresh(
     do {
       await waitForUsageCostRefresh(
         signal,
-        Math.max(retryAt - Date.now(), usageCostRefreshDelay(state, Date.now())),
+        Math.max(retryAt - performance.now(), usageCostRefreshDelay(state, performance.now())),
         state,
       );
       if (signal?.aborted) {
         return;
       }
-      if (Date.now() < retryAt || usageCostRefreshDelay(state, Date.now()) > 0) {
+      if (performance.now() < retryAt || usageCostRefreshDelay(state, performance.now()) > 0) {
         continue;
       }
       let partialBatch = false;
@@ -509,7 +509,7 @@ async function runQueuedUsageCostRefresh(
             for (const file of priorityFiles.length
               ? priorityFiles
               : state.pendingSessionFiles.keys()) {
-              if (usageCostRefreshDelay(state, Date.now(), file) > 0) {
+              if (usageCostRefreshDelay(state, performance.now(), file) > 0) {
                 continue;
               }
               sessionFiles.push(file);
@@ -556,7 +556,7 @@ async function runQueuedUsageCostRefresh(
                 ...state.pendingSessionFiles,
               ]);
             }
-            retryAt = Date.now() + busyRetryDelayMs;
+            retryAt = performance.now() + busyRetryDelayMs;
             // Contention among many per-agent refreshes must degrade to polling, not a 20Hz spin.
             busyRetryDelayMs = Math.min(busyRetryDelayMs * 2, USAGE_COST_REFRESH_RETRY_MAX_MS);
             continue;
