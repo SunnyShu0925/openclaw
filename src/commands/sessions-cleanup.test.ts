@@ -293,6 +293,9 @@ describe("sessionsCleanupCommand", () => {
       expect(applied).toContain("sessions-café\\noperator-forged\\tend\\rrow");
 
       // Local dry-run path renders displayStorePath (resolveSqliteTargetFromSessionStorePath).
+      // Search only entries appended by this invocation: the apply lane above already
+      // appended a sanitized `Session store:` line to the same captured array, which
+      // vi.clearAllMocks() does not clear, so a whole-array find would read stale output.
       vi.clearAllMocks();
       mockPreviews(
         cleanupPreview({
@@ -303,8 +306,9 @@ describe("sessionsCleanupCommand", () => {
           unreferencedArtifacts: artifactStats(),
         }),
       );
+      const appliedLength = logs.length;
       await cleanup({ dryRun: true });
-      const preview = logs.find((line) => line.includes("Session store:"));
+      const preview = logs.slice(appliedLength).find((line) => line.includes("Session store:"));
       expect(preview).not.toMatch(/\p{Cc}/u);
     },
   );
