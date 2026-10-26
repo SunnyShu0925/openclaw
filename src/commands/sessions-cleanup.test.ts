@@ -310,6 +310,21 @@ describe("sessionsCleanupCommand", () => {
       await cleanup({ dryRun: true });
       const preview = logs.slice(appliedLength).find((line) => line.includes("Session store:"));
       expect(preview).not.toMatch(/\p{Cc}/u);
+
+      // Multi-store dry-run renders the Agent: header (previewResults.length > 1).
+      // A control-bearing agent id must be sanitized in that header too, not only the
+      // store path.
+      const forgedAgent = "worker\u001b[31m\u0007main";
+      vi.clearAllMocks();
+      mockPreviews(
+        cleanupPreview({ agentId: forgedAgent, storePath: "/resolved/a.sqlite" }),
+        cleanupPreview({ agentId: "safe", storePath: "/resolved/b.sqlite" }),
+      );
+      const agentLength = logs.length;
+      await cleanup({ dryRun: true });
+      const agentLine = logs.slice(agentLength).find((line) => line.startsWith("Agent:"));
+      expect(agentLine).not.toMatch(/\p{Cc}/u);
+      expect(agentLine).toContain("worker");
     },
   );
 
