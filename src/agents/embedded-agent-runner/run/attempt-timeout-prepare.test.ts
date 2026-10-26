@@ -312,4 +312,27 @@ describe("prepareEmbeddedAttemptTimeout", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(harness.abortRun).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    { name: "rollback", wallStep: -60_000 },
+    { name: "jump forward", wallStep: 60_000 },
+  ])(
+    "keeps the paused run budget across a $name while the run awaits approval",
+    async ({ wallStep }) => {
+      const harness = createTimeoutHarness();
+      await vi.advanceTimersByTimeAsync(30);
+      vi.setSystemTime(Date.now() + wallStep);
+      emitApproval("waiting-approval", "pending");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+
+      emitApproval("approval-resolved", "pending");
+      await vi.advanceTimersByTimeAsync(69);
+      expect(harness.abortRun).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(harness.markTimedOutByRunBudget).toHaveBeenCalledOnce();
+      expect(harness.abortRun).toHaveBeenCalledWith(true);
+    },
+  );
 });

@@ -16,6 +16,14 @@ type ExecutionDeadline =
   | { kind: "unlimited" }
   | { kind: "closed" };
 
+// The run-abort deadline is published to consumers (lane watchdog, async-task
+// waiter) as a wall-clock epoch and compared with Date.now(). Internally the
+// deadline is seeded and consumed on the monotonic clock so approval
+// pause/resume remaining budgets survive system-clock adjustments; the
+// conversion below reconciles the two at the publication boundary only.
+const monotonicNow = () => performance.now();
+const toWallClockDeadline = (deadlineAtMs: number) => deadlineAtMs - monotonicNow() + Date.now();
+
 type EmbeddedAttemptTimeoutParams = Pick<
   EmbeddedRunAttemptParams,
   "onAttemptDeadlineChanged" | "onAttemptTimeoutArmed" | "runId" | "sessionId" | "timeoutMs"
@@ -49,7 +57,7 @@ export function prepareEmbeddedAttemptTimeout(input: {
   };
   const timeout = {
     getRunAbortDeadlineAtMs: () =>
-      deadline.kind === "bounded" ? deadline.deadlineAtMs : undefined,
+      deadline.kind === "bounded" ? toWallClockDeadline(deadline.deadlineAtMs) : undefined,
     onRunAbortDeadlineChanged: deadlineChanged.subscribe,
     clearTimers,
   };
@@ -62,7 +70,7 @@ export function prepareEmbeddedAttemptTimeout(input: {
   const scheduleAbortTimer = (delayMs: number, compactionGraceUsed: boolean) => {
     const armed = {
       kind: "bounded" as const,
-      deadlineAtMs: Date.now() + Math.max(1, delayMs),
+      deadlineAtMs: monotonicNow() + Math.max(1, delayMs),
       compactionGraceUsed,
     };
     deadline = armed;
@@ -116,7 +124,10 @@ export function prepareEmbeddedAttemptTimeout(input: {
       },
       Math.max(1, delayMs),
     );
-    attempt.onAttemptDeadlineChanged?.({ kind: "bounded", deadlineAtMs: armed.deadlineAtMs });
+    attempt.onAttemptDeadlineChanged?.({
+      kind: "bounded",
+      deadlineAtMs: toWallClockDeadline(armed.deadlineAtMs),
+    });
     deadlineChanged.publish();
   };
 
@@ -126,7 +137,7 @@ export function prepareEmbeddedAttemptTimeout(input: {
       // the lane and async-task waiter must not retain its old wall-clock deadline.
       deadline = {
         kind: "paused",
-        remainingMs: Math.max(1, deadline.deadlineAtMs - Date.now()),
+        remainingMs: Math.max(1, deadline.deadlineAtMs - monotonicNow()),
         compactionGraceUsed: deadline.compactionGraceUsed,
       };
       clearTimeout(abortTimer);
