@@ -284,7 +284,7 @@ export function streamWithIdleTimeout(
         streamAbortController.abort(error);
         onIdleTimeout?.(error);
         reject(error);
-      }, delay).unref();
+      }, Math.floor(delay)).unref();
     };
     let requestDeadline:
       | { timer: NodeJS.Timeout; reject: (error: Error) => void; accepted: boolean }
@@ -404,7 +404,8 @@ export function streamWithIdleTimeout(
         let progressTimer: NodeJS.Timeout | undefined;
         let progressTimerDelay = 0;
         let progressTimerBudget = 0;
-        let lastProgressAt = Date.now();
+        let lastProgressAt = performance.now();
+        let watchdogLastProgressAt = Date.now();
         let rejectIdleTimeout: ((error: Error) => void) | undefined;
         const pendingAborts = new Set<(error: Error) => void>();
         const abortIteration = () => {
@@ -436,7 +437,7 @@ export function streamWithIdleTimeout(
             clearTimers();
             return;
           }
-          const now = Date.now();
+          const now = performance.now();
           let effectiveTimeout = timeoutMs;
           if (!streamFirstArmDone) {
             const activeToolMs = runId ? getLastToolActivityMs(runId) : 0;
@@ -458,10 +459,14 @@ export function streamWithIdleTimeout(
           }
           if (progress) {
             lastProgressAt = now;
+            watchdogLastProgressAt = Date.now();
           }
+          // The watchdog compares deadlines against its own Date.now() clock, so the
+          // deadline it receives must stay in the wall-clock domain even though the
+          // timer budgets above are monotonic.
           watchdogDeadlineAtMs = Math.min(
-            now + effectiveTimeout,
-            lastProgressAt + progressTimeoutMs,
+            Date.now() + effectiveTimeout,
+            watchdogLastProgressAt + progressTimeoutMs,
           );
           // Heartbeats preserve the progress deadline; only real progress resets it.
           if (

@@ -350,6 +350,50 @@ describe("streamWithIdleTimeout", () => {
       await iterator.return?.();
     },
   );
+
+  it("keeps the first-arm idle budget on the monotonic clock across wall-clock skew", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "Date"],
+    });
+    let wallClockMs = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => wallClockMs);
+
+    const timeoutMs = 50;
+    const onIdleTimeout = vi.fn();
+    let sourceRef: AssistantMessageEventStream | undefined;
+    const baseFn: StreamFn = vi.fn((_model, _context, options) => {
+      const stream = createAssistantMessageEventStream();
+      sourceRef = stream;
+      notifyLlmRequestActivity(options?.signal, false);
+      return stream;
+    });
+    const wrapped = streamWithIdleTimeout(baseFn, timeoutMs, onIdleTimeout, { runId: TEST_RUN });
+
+    notifyToolActivity(TEST_RUN);
+    wallClockMs += 30; // wall clock jumps forward 30ms; the monotonic clock does not move
+
+    const stream = wrapped(
+      {} as Parameters<typeof baseFn>[0],
+      {} as Parameters<typeof baseFn>[1],
+      {} as Parameters<typeof baseFn>[2],
+    ) as AssistantMessageEventStream;
+    const iterator = stream[Symbol.asyncIterator]();
+    const next = iterator.next();
+    const pending = next.catch((error: unknown) => error);
+
+    try {
+      // Before the monotonic deadline: the wall-clock jump must not shrink the first-arm budget.
+      await vi.advanceTimersByTimeAsync(timeoutMs - 25);
+      expect(onIdleTimeout).not.toHaveBeenCalled();
+      // After the monotonic deadline: a genuinely idle stream is still timed out.
+      await vi.advanceTimersByTimeAsync(60);
+      expect(onIdleTimeout).toHaveBeenCalledTimes(1);
+      await expect(pending).resolves.toMatchObject({ name: "LlmIdleTimeoutError" });
+    } finally {
+      sourceRef?.end(makeAgentAssistantMessage({ content: [], stopReason: "aborted" }));
+      await iterator.return?.();
+    }
+  });
 });
 
 function createNeverYieldingStream(signal?: AbortSignal): Awaited<ReturnType<StreamFn>> {
