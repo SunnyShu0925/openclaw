@@ -491,6 +491,62 @@ it("waits for a busy refresh before loading a direct session summary", async () 
   }
 });
 
+it("does not inflate the refresh wait when the wall clock rewinds mid-read", async () => {
+  // A dedicated agent keeps the read free of background refresh workers that
+  // other tests may leave running for the shared "main" agent.
+  const agentId = "rewind-agent";
+  const agentSessionsDir = path.join(root, "agents", agentId, "sessions");
+  await fs.mkdir(agentSessionsDir, { recursive: true });
+  const sessionFile = await writeTranscript(
+    "cost-clock-rewind",
+    assistant("2026-02-05T12:00:00.000Z", billed(10, 20, 30, 0.03)),
+    agentSessionsDir,
+  );
+  const range = {
+    startMs: Date.UTC(2026, 1, 5),
+    endMs: Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1,
+  };
+
+  // Prime the read path (pricing context, rollup database) with a fast read while the
+  // file is fresh, so the second read below reaches its deadline seed without waiting on
+  // any first-time I/O. That makes the seed land before the wall-clock rewind below.
+  await loadCostUsageSummaryFromCache({ config: defaultConfig, agentId, ...range });
+  // Now mark the transcript stale so the read refreshes it through the busy lock.
+  await fs.utimes(
+    sessionFile,
+    new Date("2025-12-05T12:00:00.000Z"),
+    new Date("2025-12-05T12:00:00.000Z"),
+  );
+
+  const lock = prepareSessionCostUsageRefreshLock(agentId);
+  await lock.acquire();
+
+  const realDateNow = Date.now;
+  let skew = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + skew);
+
+  const startedAt = performance.now();
+  const readP = loadCostUsageSummaryFromCache({ config: defaultConfig, agentId, ...range });
+  // Rewind the wall clock on a macrotask: the deadline seed runs in the microtask drain
+  // that immediately follows readP, so it observes skew=0, while the rewind lands during
+  // the post-seed aggregate read and inflates the second remaining-budget read.
+  setTimeout(() => {
+    skew = -90_000;
+  }, 0);
+  // Keep the lock held through the read: the queued refresh stays blocked on it, so the
+  // flush's wait can only resolve via its own deadline rather than a fast refresh.
+  await readP;
+  const elapsedMs = performance.now() - startedAt;
+  await lock.release();
+
+  // The refresh never completed (the lock held it), so the read returns the stale
+  // committed projection rather than the fresh rollup; the meaningful assertion is
+  // that the read did not stall behind the rewound wall clock.
+  // A monotonic deadline keeps the wait at the 10s refresh budget; a wall-clock deadline
+  // would inherit the 90s rewind and stall the read to ~100s. Give generous headroom.
+  expect(elapsedMs).toBeLessThan(30_000);
+});
+
 it("captures message counts, tool usage, and model usage", async () => {
   const sessionFile = await writeMessages(
     user("2026-02-01T10:00:00.000Z", "Hello"),
