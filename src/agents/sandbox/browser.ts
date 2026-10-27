@@ -84,12 +84,12 @@ async function waitForSandboxCdp(params: {
   authToken: string;
   timeoutMs: number;
 }): Promise<boolean> {
-  const deadline = Date.now() + Math.max(0, params.timeoutMs);
+  const deadline = performance.now() + Math.max(0, params.timeoutMs);
   const url = `http://127.0.0.1:${params.cdpPort}/json/version`;
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     try {
       // Keep a stalled request inside the outer browser startup deadline.
-      const requestTimeoutMs = Math.max(1, Math.min(1000, deadline - Date.now()));
+      const requestTimeoutMs = Math.max(1, Math.min(1000, deadline - performance.now()));
       const ctrl = new AbortController();
       const t = setTimeout(ctrl.abort.bind(ctrl), requestTimeoutMs);
       try {
@@ -107,7 +107,7 @@ async function waitForSandboxCdp(params: {
     } catch {
       // ignore
     }
-    const remainingMs = deadline - Date.now();
+    const remainingMs = deadline - performance.now();
     if (remainingMs <= 0) {
       break;
     }

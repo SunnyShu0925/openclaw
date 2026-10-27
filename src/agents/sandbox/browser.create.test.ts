@@ -578,7 +578,7 @@ describe("sandbox browser lifecycle", () => {
           // Keep the production deadline clock still while native HTTP establishes
           // the fixture's stalled request. Advance that same 250ms deadline only
           // after real request admission; never replace fetch or its abort signal.
-          vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+          vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
           startupResult = ensureTestSandboxBrowser({ cfg })
             .then(
               () => new Error("Sandbox browser startup completed before the stalled request"),
@@ -907,4 +907,76 @@ describe("sandbox browser lifecycle", () => {
     );
     expect(updateBrowserRegistry.mock.calls.at(-1)?.[1]).toBe(assertCurrent);
   });
+
+  it.each([-60_000, 60_000])(
+    "keeps sandbox browser attach inside the monotonic deadline across a %d ms wall-clock step",
+    async (deltaMs) => {
+      const timeoutMs = 500;
+      const realNow = Date.now;
+      let steppedAt: number | undefined;
+      let probeCount = 0;
+      const server = createServer((_req, res) => {
+        probeCount += 1;
+        steppedAt ??= performance.now();
+        // A forward step must not hide a browser that turns healthy inside the
+        // monotonic budget; a backward step must not extend the deadline.
+        res.writeHead(deltaMs > 0 && probeCount > 1 ? 200 : 500);
+        res.end();
+      });
+      await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const address = server.address();
+      expect(address).not.toBeNull();
+      if (!address || typeof address === "string") {
+        throw new Error("expected a TCP loopback server");
+      }
+      dockerMocks.readDockerPort.mockImplementation(async (_containerName: string, port: number) =>
+        port === 9222 ? address.port : port === 6080 ? 49101 : null,
+      );
+      // Step the wall clock only after the probe seeded its deadline, like an
+      // NTP correction during startup; performance.now() stays monotonic.
+      const dateNow = vi
+        .spyOn(Date, "now")
+        .mockImplementation(() => (steppedAt === undefined ? realNow() : realNow() + deltaMs));
+      bridgeMocks.startBrowserBridgeServer.mockImplementationOnce(async (params) => {
+        await params.onEnsureAttachTarget?.({});
+        throw new Error("attach target reached before bridge creation");
+      });
+      const cfg = buildConfig(false);
+      cfg.browser.autoStartTimeoutMs = timeoutMs;
+      try {
+        const outcome = await Promise.race([
+          ensureTestSandboxBrowser({ cfg }).then(
+            () => new Error("sandbox browser startup unexpectedly completed"),
+            (error: unknown) => error as Error,
+          ),
+          new Promise<Error>((resolve) => {
+            setTimeout(() => {
+              resolve(new Error("probe outlived the monotonic startup budget"));
+            }, timeoutMs * 2);
+          }),
+        ]);
+        const elapsed = performance.now() - expectDefined(steppedAt, "first CDP probe");
+        expect(elapsed).toBeLessThan(timeoutMs * 2);
+        if (deltaMs > 0) {
+          // Forward jump with a browser that turns healthy inside the budget: the
+          // probe must keep polling instead of aborting on the shifted wall clock.
+          expect(outcome.message).toBe("attach target reached before bridge creation");
+          expect(probeCount).toBeGreaterThan(1);
+          expect(elapsed).toBeLessThan(timeoutMs);
+        } else {
+          // Backward jump with a browser that never turns healthy: the deadline must
+          // still expire on the monotonic budget instead of stretching by the jump.
+          expect(outcome.message).toContain("hung container has been forcefully removed");
+          expect(elapsed).toBeGreaterThan(timeoutMs - 100);
+        }
+      } finally {
+        dateNow.mockRestore();
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        });
+      }
+    },
+  );
 });
