@@ -356,9 +356,17 @@ describe("original requester media handoff", () => {
       const exhausted = mode === "exhaust";
       vi.useFakeTimers({ toFake: exhausted ? ["Date"] : ["setTimeout", "clearTimeout", "Date"] });
       const startedAt = Date.now();
+      const realPerformanceNow = performance.now.bind(performance);
+      let performanceClockSkewMs = 0;
+      if (exhausted) {
+        vi.spyOn(performance, "now").mockImplementation(
+          () => realPerformanceNow() + performanceClockSkewMs,
+        );
+      }
       enqueue[exhausted ? "mockImplementation" : "mockImplementationOnce"](async () => {
         if (exhausted) {
           vi.setSystemTime(startedAt + 120_001);
+          performanceClockSkewMs += 120_001;
         }
         firstRefused.resolve();
         throw new Error(exhausted ? "queue remains unavailable" : "temporary queue write refusal");
