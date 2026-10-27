@@ -36,9 +36,12 @@ const rotationContext = {
 
 function clock(initialMs = 1_000_000) {
   let nowMs = initialMs;
+  let monotonicMs = initialMs;
   vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+  vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
   return (ms: number) => {
     nowMs += ms;
+    monotonicMs += ms;
   };
 }
 function expectNoRetry() {
@@ -259,6 +262,32 @@ it("bounds shared TPM recovery before model fallback by retries and elapsed wait
   await checkRetry({ ...retry, retryAfterMs: 10_000 });
   await checkRetry({ ...retry, retryAfterMs: 10_000 }, false);
   expect(sleep).toHaveBeenCalledTimes(4);
+});
+
+it("keeps the shared TPM retry window on the monotonic clock across a wall-clock jump", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  sleep.mockImplementation(async () => {});
+  const advance = vi.fn(async () => true);
+  controller = createRetryController({
+    fallbackConfigured: true,
+    runtime: { advanceAttemptAuthProfile: advance },
+  });
+  const retry = {
+    reason: "rate_limit" as const,
+    message:
+      "429 Rate limit reached for mock-primary in organization org-example on tokens per min (TPM). Please try again in 48ms.",
+    retryAfterMs: 48,
+    failoverEligible: true,
+  };
+  await checkRetry(retry);
+  // A wall-clock jump inside the 15s window must not distort the monotonic
+  // elapsed budget: it only moves Date.now(), never performance.now().
+  vi.setSystemTime(1_000 + 60_000);
+  await checkRetry({ ...retry, message: "429 Shared organization token rate limit wait budget." });
+  // Post-fix the elapsed window stays near zero, so the retry is still admitted.
+  expect(sleep).toHaveBeenCalledTimes(2);
 });
 
 it.each([

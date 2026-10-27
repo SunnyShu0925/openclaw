@@ -423,7 +423,7 @@ export function createEmbeddedRunFailoverRetryController(input: {
         });
         return false;
       }
-      const nowMs = Date.now();
+      const nowMs = performance.now();
       const retryWindowStartMs = transientRetryWindowStartMs ?? nowMs;
       if (retry.reason !== "output_limit") {
         transientRetryWindowStartMs = retryWindowStartMs;

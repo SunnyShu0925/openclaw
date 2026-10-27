@@ -360,7 +360,7 @@ it("bounds retry admission while shared floors extend and interactive peers rema
   const options = { apiKey: "synthetic-deadline-key" };
   const { providerStream, run, limit } = await createLimitedRuntime("deadline", options);
   providerStream.mockClear();
-  const retry = withProviderRateLimitRetryDeadline(Date.now() + 1200, () =>
+  const retry = withProviderRateLimitRetryDeadline(performance.now() + 1200, () =>
     run({ ...options, sessionId: "bounded-retry" }),
   );
   const failed = expect(retry).rejects.toMatchObject({ reason: "rate_limit", status: 429 });

@@ -80,7 +80,7 @@ function notify(waiter: Waiter) {
   stopWaiting(waiter);
   if (
     waiter.retryDeadline !== undefined &&
-    Math.max(Date.now(), waiter.gate.retryAt, waiter.gate.nextAt) >= waiter.retryDeadline
+    Math.max(performance.now(), waiter.gate.retryAt, waiter.gate.nextAt) >= waiter.retryDeadline
   ) {
     waiter.gate.queue.splice(waiter.gate.queue.indexOf(waiter), 1);
     finish(waiter, retryDeadlineError());
@@ -131,7 +131,7 @@ function schedule(gate: Gate) {
     setTimeout(
       () => {
         for (const waiter of gate.queue.slice()) {
-          if (waiter.retryDeadline !== undefined && Date.now() >= waiter.retryDeadline) {
+          if (waiter.retryDeadline !== undefined && performance.now() >= waiter.retryDeadline) {
             gate.queue.splice(gate.queue.indexOf(waiter), 1);
             finish(waiter, retryDeadlineError());
           }
