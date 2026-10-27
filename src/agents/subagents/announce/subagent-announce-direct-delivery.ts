@@ -37,7 +37,10 @@ import {
   RUNTIME_EVENT_USER_PROMPT,
   projectRuntimeContextFragments,
 } from "../../internal-runtime-context.js";
-import { resolveCommandReplyExpectation } from "../../reply-completion.js";
+import {
+  resolveCommandReplyExpectation,
+  resolveCompletionInputReplyExpectation,
+} from "../../reply-completion.js";
 import {
   deliverCompletionDirect,
   isDirectMessageDeliveryTarget,
@@ -244,11 +247,39 @@ async function sendSubagentAnnounceDirectlyBound(
       // requester turn here would replay the original fanout during handoff.
       return completionHandoffPendingResult();
     }
+    const resolveRecovery = async (
+      entry: typeof requesterEntry,
+      replaySafeTranscriptConflict = false,
+    ) => {
+      const recovery = resolveRequesterRecoveryDelivery(
+        entry,
+        params.directIdempotencyKey,
+        replaySafeTranscriptConflict,
+      );
+      if (
+        parentOnly &&
+        recovery?.kind === "delivery" &&
+        recovery.delivery.reason === "requester_turn_pending"
+      ) {
+        const { resolvePrivateRequesterSettleRecoveryOwner } =
+          await import("../registry/subagent-registry-restart-recovery.js");
+        // This private owner must finish its own interrupted input, not wait for itself.
+        if (
+          resolvePrivateRequesterSettleRecoveryOwner(
+            { ...requester, entry },
+            params.directIdempotencyKey,
+          ) === "owned"
+        ) {
+          return undefined;
+        }
+      }
+      return recovery;
+    };
     // A recovered requester already owns this admitted input. Reuse its final
     // receipt through the normal delivery checks; never execute the old wake again.
     const recovery =
       sourceToolId === "subagent_settle" || isSubagentCompletion
-        ? resolveRequesterRecoveryDelivery(requesterEntry, params.directIdempotencyKey)
+        ? await resolveRecovery(requesterEntry)
         : undefined;
     if (recovery?.kind === "delivery") {
       return recovery.delivery;
@@ -268,6 +299,7 @@ async function sendSubagentAnnounceDirectlyBound(
         cfg,
         requesterSessionKey: canonicalRequesterSessionKey,
         requesterSessionId,
+        requesterLifecycleRevision,
         requesterAgentId: params.requesterAgentId,
         directIdempotencyKey: params.directIdempotencyKey,
         deliveryTarget,
@@ -391,8 +423,7 @@ async function sendSubagentAnnounceDirectlyBound(
       : sessionOnlyOriginChannel
         ? sessionOnlyOrigin
         : undefined;
-    const inputReplyExpectation =
-      params.expectsCompletionMessage || params.requireVisibleReply ? "required" : "optional";
+    const inputReplyExpectation = resolveCompletionInputReplyExpectation(sourceToolId, params);
     // Settle execution and receipt classification share the owner's reply obligation.
     const replyExpectation =
       sourceToolId === "subagent_settle"
@@ -412,13 +443,6 @@ async function sendSubagentAnnounceDirectlyBound(
     // A private completion gets its own serialized turn. Steering into a public
     // turn would inherit that turn's delivery policy and expose child output.
     let directAgentParams: Record<string, unknown> = {
-      ...(requesterSessionBound
-        ? {
-            expectedExistingSessionId: params.completionRequesterSessionId,
-            expectedExistingSessionLifecycleRevision:
-              params.completionRequesterLifecycleRevision ?? null,
-          }
-        : {}),
       sessionKey: canonicalRequesterSessionKey,
       ...(requesterAgentId ? { agentId: requesterAgentId } : {}),
       message: turnMessage,
@@ -440,11 +464,21 @@ async function sendSubagentAnnounceDirectlyBound(
         : {}),
       idempotencyKey: params.directIdempotencyKey,
     };
-    if (requesterSessionBound && params.completionRequesterSessionId) {
+    // Public completions bind the selected requester, including a nested fallback.
+    // Private and settle completions keep their captured incarnation checked above.
+    const boundRequesterSessionId = requesterSessionBound
+      ? params.completionRequesterSessionId
+      : isSubagentCompletion
+        ? requesterSessionId
+        : undefined;
+    if (boundRequesterSessionId) {
       directAgentParams = bindInProcessSessionRun(directAgentParams, {
         sessionKey: canonicalRequesterSessionKey,
-        sessionId: params.completionRequesterSessionId,
-        lifecycleRevision: params.completionRequesterLifecycleRevision ?? null,
+        sessionId: boundRequesterSessionId,
+        lifecycleRevision:
+          (requesterSessionBound
+            ? params.completionRequesterLifecycleRevision
+            : requesterLifecycleRevision) ?? null,
         runId: params.directIdempotencyKey,
       });
     }
@@ -677,11 +711,7 @@ async function sendSubagentAnnounceDirectlyBound(
     ) {
       return delivery;
     }
-    const settledRecovery = resolveRequesterRecoveryDelivery(
-      currentEntry,
-      params.directIdempotencyKey,
-      replaySafeTranscriptConflict,
-    );
+    const settledRecovery = await resolveRecovery(currentEntry, replaySafeTranscriptConflict);
     if (!settledRecovery) {
       return delivery;
     }
