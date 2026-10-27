@@ -76,6 +76,20 @@ it("reports bot not in group when status is left", async () => {
   });
 });
 
+it.each([-60_000, 60_000] as const)(
+  "keeps the audit deadline on the monotonic clock across a %s ms wall-clock jump",
+  async (jumpMs) => {
+    respond = () => membership("member");
+    vi.useFakeTimers();
+    const audit = auditGroups(["-1001"], 50_000);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(Date.now() + jumpMs);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveLength(1);
+    expect(await audit).toMatchObject({ ok: true, checkedGroups: 1 });
+  },
+);
+
 it.each([
   { name: "stalled body", delay: 0, remaining: 50, groupIds: ["-1001"] },
   { name: "shared timeout budget", delay: 40, remaining: 10, groupIds: ["-1001", "-1002"] },
