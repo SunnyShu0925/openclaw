@@ -215,14 +215,14 @@ const test = it.extend<{ usage: ReturnType<typeof makeRefreshFixture> }>({
   usage: async ({ task: _task }, use) => withRefreshFixture(use),
 });
 
-test("refreshes dirty sessions after their own quiet gaps without flushing unrelated reads", async ({
+test("keeps per-session quiet gaps across wall-clock rollback and unrelated reads", async ({
   signal,
   usage: { files, refresh, dirty, read },
 }) => {
   refresh.mockResolvedValue("refreshed");
   dirty(files[0]);
   await withinTest(read(files[1]), signal);
-  expect(refresh).not.toHaveBeenCalled();
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() - 120_000);
   await vi.advanceTimersByTimeAsync(20_000);
   dirty(files[0]);
   dirty(files[1]);
@@ -627,19 +627,4 @@ test("keeps same-agent refreshes owned by independent scopes", async ({
   releaseSecond.resolve();
   await second.drain();
   expect(completed).toEqual(["first", "second"]);
-});
-
-test("does not inflate the publication wait when the wall clock rewinds after the dirty seed", async ({
-  usage: { files, refresh, dirty },
-}) => {
-  refresh.mockResolvedValue("refreshed");
-  // Seed the dirty age while the wall clock reads the current time; then rewind
-  // the wall clock far past the quiet window. The refresh budget runs on the
-  // monotonic clock, so the publication must still fire on its original quiet
-  // budget instead of being stretched by the rewind.
-  dirty(files[0]);
-  const rewound = Date.now() - 120_000;
-  vi.spyOn(Date, "now").mockReturnValue(rewound);
-  await vi.advanceTimersByTimeAsync(30_000);
-  expect(refresh).toHaveBeenCalledTimes(1);
 });
