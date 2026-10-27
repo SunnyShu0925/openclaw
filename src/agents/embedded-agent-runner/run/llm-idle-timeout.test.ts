@@ -309,12 +309,11 @@ describe("streamWithIdleTimeout", () => {
     await iterator.return?.();
   });
 
-  it.each(["structural", "notified"] as const)(
-    "restores the full idle budget after pre-stream tool activity (%s progress)",
+  it.each(["structural", "notified", "skew"] as const)(
+    "restores the full idle budget after pre-stream tool activity (%s)",
     async (progress) => {
-      let signal: AbortSignal | undefined;
       const chunks =
-        progress === "structural"
+        progress !== "notified"
           ? ([
               [10, "first"],
               [55, "second"],
@@ -322,23 +321,23 @@ describe("streamWithIdleTimeout", () => {
               [145, "fourth"],
             ] as const)
           : ([[80, "late"]] as const);
-      const baseFn: StreamFn = (_model, _context, options) => {
-        signal = options?.signal;
-        const source = createAssistantMessageEventStream();
-        for (const [delay, delta] of chunks) {
-          setTimeout(() => source.push(textDelta(delta)), delay);
-        }
-        return source;
-      };
       // The stale timestamp must be consumed once, not shorten later budgets.
+      vi.advanceTimersByTime(1);
       notifyToolActivity(TEST_RUN);
       vi.advanceTimersByTime(20);
-      const stream = await openStream(baseFn, undefined, { runId: TEST_RUN });
-      const iterator = stream[Symbol.asyncIterator]();
+      if (progress === "skew") {
+        vi.setSystemTime(Date.now() + 29);
+      }
+      const source = createAssistantMessageEventStream();
+      for (const [delay, delta] of chunks) {
+        setTimeout(() => source.push(textDelta(delta)), delay);
+      }
+      const watched = sourceFixture(source, { runId: TEST_RUN });
+      const iterator = (await watched.stream)[Symbol.asyncIterator]();
       if (progress === "notified") {
         const next = iterator.next();
-        setTimeout(() => notifyLlmRequestActivity(signal), 20);
-        setTimeout(() => notifyLlmRequestActivity(signal), 40);
+        setTimeout(() => notifyLlmRequestActivity(watched.signal()), 20);
+        setTimeout(() => notifyLlmRequestActivity(watched.signal()), 40);
         await expectDelta(next, 80, "late");
       } else {
         await expectDelta(iterator.next(), 10, "first");
@@ -350,50 +349,6 @@ describe("streamWithIdleTimeout", () => {
       await iterator.return?.();
     },
   );
-
-  it("keeps the first-arm idle budget on the monotonic clock across wall-clock skew", async () => {
-    vi.useFakeTimers({
-      toFake: ["setTimeout", "clearTimeout", "Date"],
-    });
-    let wallClockMs = 1_000;
-    vi.spyOn(Date, "now").mockImplementation(() => wallClockMs);
-
-    const timeoutMs = 50;
-    const onIdleTimeout = vi.fn();
-    let sourceRef: AssistantMessageEventStream | undefined;
-    const baseFn: StreamFn = vi.fn((_model, _context, options) => {
-      const stream = createAssistantMessageEventStream();
-      sourceRef = stream;
-      notifyLlmRequestActivity(options?.signal, false);
-      return stream;
-    });
-    const wrapped = streamWithIdleTimeout(baseFn, timeoutMs, onIdleTimeout, { runId: TEST_RUN });
-
-    notifyToolActivity(TEST_RUN);
-    wallClockMs += 30; // wall clock jumps forward 30ms; the monotonic clock does not move
-
-    const stream = wrapped(
-      {} as Parameters<typeof baseFn>[0],
-      {} as Parameters<typeof baseFn>[1],
-      {} as Parameters<typeof baseFn>[2],
-    ) as AssistantMessageEventStream;
-    const iterator = stream[Symbol.asyncIterator]();
-    const next = iterator.next();
-    const pending = next.catch((error: unknown) => error);
-
-    try {
-      // Before the monotonic deadline: the wall-clock jump must not shrink the first-arm budget.
-      await vi.advanceTimersByTimeAsync(timeoutMs - 25);
-      expect(onIdleTimeout).not.toHaveBeenCalled();
-      // After the monotonic deadline: a genuinely idle stream is still timed out.
-      await vi.advanceTimersByTimeAsync(60);
-      expect(onIdleTimeout).toHaveBeenCalledTimes(1);
-      await expect(pending).resolves.toMatchObject({ name: "LlmIdleTimeoutError" });
-    } finally {
-      sourceRef?.end(makeAgentAssistantMessage({ content: [], stopReason: "aborted" }));
-      await iterator.return?.();
-    }
-  });
 });
 
 function createNeverYieldingStream(signal?: AbortSignal): Awaited<ReturnType<StreamFn>> {

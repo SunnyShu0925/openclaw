@@ -284,7 +284,7 @@ export function streamWithIdleTimeout(
         streamAbortController.abort(error);
         onIdleTimeout?.(error);
         reject(error);
-      }, Math.floor(delay)).unref();
+      }, delay).unref();
     };
     let requestDeadline:
       | { timer: NodeJS.Timeout; reject: (error: Error) => void; accepted: boolean }
@@ -461,9 +461,7 @@ export function streamWithIdleTimeout(
             lastProgressAt = now;
             watchdogLastProgressAt = Date.now();
           }
-          // The watchdog compares deadlines against its own Date.now() clock, so the
-          // deadline it receives must stay in the wall-clock domain even though the
-          // timer budgets above are monotonic.
+          // Session-watchdog deadlines stay in the wall-clock domain.
           watchdogDeadlineAtMs = Math.min(
             Date.now() + effectiveTimeout,
             watchdogLastProgressAt + progressTimeoutMs,
