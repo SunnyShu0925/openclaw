@@ -283,7 +283,7 @@ describe("pw-session ensurePageState", () => {
   });
 
   it("detaches ownership before waiting for slow file saves", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     const { capture: begin, send } = observedPage();
     const firstSaveGate = Promise.withResolvers<void>();
     const beforeSave = vi.fn(async () => {});
@@ -302,6 +302,34 @@ describe("pw-session ensurePageState", () => {
     expect(beforeSave).toHaveBeenCalledOnce();
     expect(lateSave).toHaveBeenCalledOnce();
     capture.dispose();
+  });
+
+  it("keeps draining sibling downloads after a wall-clock jump", async () => {
+    // Fake the monotonic clock and timers so the sibling lands inside the quiet
+    // window deterministically; step the wall clock independently so only the
+    // Date-based pre-fix path sees the jump.
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    const { capture: begin, send } = observedPage();
+    const capture = begin();
+    const firstSaveGate = Promise.withResolvers<void>();
+    send("first.txt", saveContents("first", firstSaveGate.promise));
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
+
+    const drain = capture.drain();
+    const sibling = setTimeout(() => send("sibling.txt", saveContents("sibling")), 50);
+
+    try {
+      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(400);
+      firstSaveGate.resolve();
+      await expect(drain).resolves.toEqual([
+        expect.objectContaining({ suggestedFilename: "first.txt" }),
+        expect.objectContaining({ suggestedFilename: "sibling.txt" }),
+      ]);
+    } finally {
+      clearTimeout(sibling);
+      capture.dispose();
+    }
   });
 
   it("keeps started saves with their owner and assigns future downloads to the latest action", async () => {
