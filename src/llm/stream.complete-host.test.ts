@@ -292,6 +292,7 @@ it("shares TPM waits across runs of one model without delaying another model on 
   const primary = withProviderRateLimitRetryDeadline(performance.now() + 1200, () =>
     run({ ...options, sessionId: "another-primary-run" }),
   );
+  const primaryOutcome = Promise.allSettled([primary]);
   const fallbackModel = bindModelLlmRuntime({ ...model, id: "fallback-sibling" }, runtime);
   const fallback = completeSimple(fallbackModel, emptyContext, {
     ...options,
@@ -304,7 +305,7 @@ it("shares TPM waits across runs of one model without delaying another model on 
   expect(providerStream).toHaveBeenCalledOnce();
   vi.setSystemTime(Date.now() - 180_000);
   await vi.advanceTimersByTimeAsync(1);
-  await expect(primary).resolves.toEqual(message);
+  await expect(primaryOutcome).resolves.toEqual([{ status: "fulfilled", value: message }]);
   expect(providerStream).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(60_000);
 });

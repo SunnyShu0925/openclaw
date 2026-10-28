@@ -213,10 +213,7 @@ it.each([-90_000, 0, 90_000])(
     };
     await checkRetry(retry);
     advanceTime(0, wallStepMs);
-    const queuedRetry = {
-      ...retry,
-      message: "429 Shared organization token rate limit wait budget.",
-    };
+    const queuedRetry = { ...retry, message: "429 Shared organization token rate limit budget." };
     await checkRetry(queuedRetry);
     await checkRetry(queuedRetry, false);
     await expect(rotate()).resolves.toBe(false);
