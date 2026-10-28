@@ -27,7 +27,7 @@ describe("session index scheduling", () => {
     });
     await captureRuntimeConfigAsyncReader()();
     harness = await SessionStartupCatchupHarness.create([]);
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     harness.startTranscriptListener();
   });
 
@@ -269,5 +269,36 @@ describe("session index scheduling", () => {
     expect(index).toHaveBeenCalledTimes(5);
     await advanceSessionTime(3_600_000);
     expect(index).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps the pass deferred across a wall-clock step and publishes on the monotonic schedule", async () => {
+    const target = await append("clock-jump");
+    // Continuous transcript updates keep the pass deferred (each update re-arms
+    // from sessionLastActivity); the 5-min max-deferral bounds it.
+    for (let elapsed = 0; elapsed < 200_000; elapsed += 20_000) {
+      await vi.advanceTimersByTimeAsync(20_000);
+      await append("clock-jump");
+    }
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(harness.syncCalls).toEqual([]);
+
+    // The wall clock jumps forward +120s while the monotonic clock (which now
+    // seeds every deadline) has not advanced. The recomputed pass must not
+    // collapse to an immediate fire just because Date.now() moved.
+    const wallSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 120_000);
+
+    // A fresh transcript update arrives after the wall step. On the old
+    // Date.now implementation the 5-min max-deferral (seeded from the original
+    // pendingSince) looks already expired, so the pass fires immediately; the
+    // monotonic implementation retains its remaining quiet period.
+    await append("clock-jump");
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(harness.syncCalls).toEqual([]);
+
+    // The remaining quiet period elapses on the monotonic clock and the
+    // scheduled pass runs once, publishing every pending session.
+    await advanceSessionTime(1);
+    expect(harness.syncCalls).toEqual([delta(target)]);
+    wallSpy.mockRestore();
   });
 });

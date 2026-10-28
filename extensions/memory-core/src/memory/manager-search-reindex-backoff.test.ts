@@ -24,7 +24,11 @@ describe("memory search reindex backoff", () => {
   }
   function clock() {
     const time = { now: Date.now() };
+    // The production scheduler seeds its deadlines from performance.now()
+    // (monotonic); advance both clocks in lockstep so advancing the fixture
+    // also elapses the monotonic cooldown.
     vi.spyOn(Date, "now").mockImplementation(() => time.now);
+    vi.spyOn(performance, "now").mockImplementation(() => time.now);
     return time;
   }
   // Rebuilds reuse published vectors for unchanged chunks; failing rebuilds need new input.
