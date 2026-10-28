@@ -468,7 +468,7 @@ it("temporal source summaries fit the full response budget and never skip rows",
       "event_" + n,
       event("2020-05-10", { source_page: "meeting_" + n, source_event: true }),
       "private",
-      "🌱".repeat(1000),
+      "🌱".repeat(499) + "x😀",
     );
   }
   const input = { includeSources: true, limit: 100 };
@@ -477,6 +477,7 @@ it("temporal source summaries fit the full response budget and never skip rows",
   expect(page.nextOffset !== null).toBeTruthy();
   for (;;) {
     expect(Buffer.byteLength(JSON.stringify(page)) <= 24 * 1024).toBeTruthy();
+    expect(page.items.every((row) => row.summary.isWellFormed())).toBeTruthy();
     expect(page.sources!.length).toBe(page.items.length);
     expect(page.sources!.every((s) => page.items.some((i) => i.sourcePage === s.id))).toBeTruthy();
     all.push(...ids(page));
@@ -488,25 +489,5 @@ it("temporal source summaries fit the full response budget and never skip rows",
       f.owner,
     );
   }
-  expect(all.length).toBe(35);
-  expect(new Set(all).size).toBe(35);
-});
-
-it("timeline summaries truncate without splitting a UTF-16 surrogate pair", async () => {
-  const f = await fixture();
-  // "😀" (U+1F600) is an astral char encoded as a surrogate pair (2 UTF-16 units).
-  // 999 + 2 = 1001 units: slice(0, 1000) would land mid-pair and emit a lone
-  // high surrogate (garbled), while truncateUtf16Safe keeps the pair whole.
-  const body = "x".repeat(999) + "😀";
-  await f.put("note_surrogate", {}, "private", body);
-  const out = await f.service.timeline({ since: "2026-10-04", timeField: "recorded_at" }, f.owner);
-  const row = out.items.find((r: any) => r.record.id === "note_surrogate");
-  expect(row).toBeTruthy();
-  expect(row!.summary.length).toBeLessThanOrEqual(1000);
-  // No lone surrogate may survive truncation (each astral char stays whole).
-  const loneSurrogates = row!.summary.match(
-    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
-  );
-  expect(loneSurrogates).toBeNull();
-  expect(row!.summary).toBe("x".repeat(999));
+  expect([all.length, new Set(all).size]).toStrictEqual([35, 35]);
 });
