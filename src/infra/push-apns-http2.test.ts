@@ -229,6 +229,47 @@ describe("connectApnsHttp2Session", () => {
     expectTunnelDestroyed();
   });
 
+  it("keeps the CONNECT deadline on the monotonic clock across wall-clock rewind", async () => {
+    const registration = registerActiveManagedProxyUrl(new URL("http://proxy.example:8080"), {
+      loopbackMode: "gateway-only",
+    });
+    vi.useFakeTimers();
+    setTargetTlsEvent(undefined);
+
+    // Pin the monotonic clock; let the wall clock rewind after the deadline is seeded
+    // so a wall-clock-derived remaining budget would inflate by the rewind delta.
+    vi.spyOn(performance, "now").mockReturnValue(0);
+    let dateCalls = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => {
+      // First call seeds the deadline at wall-time 0; subsequent calls observe a
+      // 90s rewind so a wall-clock remaining budget inflates by that delta.
+      return dateCalls++ === 0 ? 0 : -90_000;
+    });
+
+    const capturedDelays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout.bind(globalThis);
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((cb: () => void, delay?: number) => {
+      capturedDelays.push(delay ?? 0);
+      return originalSetTimeout(cb, delay);
+    }) as unknown as typeof setTimeout);
+
+    const result = connect({ timeoutMs: 1000 });
+    const rejection = expect(result).rejects.toThrow(
+      "Proxy CONNECT failed via http://proxy.example:8080: Proxy CONNECT timed out after 1000ms",
+    );
+    // Let microtasks settle so the CONNECT timeout setTimeout is scheduled.
+    await vi.advanceTimersByTimeAsync(0);
+
+    // After the wall-clock rewind, the CONNECT timeout delay must stay on the monotonic
+    // budget (1000ms), not inflate to 91000ms as a wall-clock remaining would.
+    expect(capturedDelays[0]).toBe(1000);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await rejection;
+    stopActiveManagedProxyRegistration(registration);
+    expectTunnelDestroyed();
+  });
+
   it("rejects malformed proxy auth before opening the native tunnel", async () => {
     await expect(probe({ proxyUrl: "http://%E0%A4%A@proxy.example:8080" })).rejects.toThrow(
       "Proxy CONNECT failed via http://proxy.example:8080: URI malformed",

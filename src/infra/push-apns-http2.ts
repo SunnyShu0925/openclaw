@@ -104,7 +104,7 @@ async function openApnsTlsTunnel(params: {
   // CONNECT ignores URL paths. Strip path metadata before Proxyline sees it so
   // tokens embedded in a configured proxy URL cannot surface in errors.
   const proxyUrl = normalizeConnectProxyUrl(params.proxyUrl);
-  const deadline = Date.now() + params.timeoutMs;
+  const deadline = performance.now() + params.timeoutMs;
   const proxySocket = await openProxyConnectTunnel({
     proxyUrl,
     ...(params.proxyTls ? { proxyTls: params.proxyTls } : {}),
@@ -134,7 +134,7 @@ async function openApnsTlsTunnel(params: {
     });
     timeout = setTimeout(
       () => abortController.abort(new Error(`Proxy CONNECT timed out after ${params.timeoutMs}ms`)),
-      Math.max(1, deadline - Date.now()),
+      Math.max(1, deadline - performance.now()),
     ).unref();
     await Promise.race([
       once(targetTlsSocket, "secureConnect", { signal: abortController.signal }),
