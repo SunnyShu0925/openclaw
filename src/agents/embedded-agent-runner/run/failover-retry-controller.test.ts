@@ -312,7 +312,7 @@ it.each([
   ["replay unsafe", true, {}, {}, { failoverEligible: false }, true],
   ["native", true, {}, {}, {}, true, nativeRuntime],
 ] as const)(
-  "reserves bounded recovery time for fallback: %s",
+  "reserves bounded recovery time for fallback across a wall-clock step: %s",
   async (_name, fallback, params, settings, retryOptions, again, runtime?) => {
     const advanceTime = clock();
     controller = createRetryController({
@@ -323,7 +323,7 @@ it.each([
     controller.observeAttempt(settings);
     advanceTime(60_000);
     await checkRetry({ reason: "timeout", ...retryOptions });
-    advanceTime(61_000);
+    advanceTime(61_000, 90_000);
     await checkRetry({ reason: "timeout", ...retryOptions }, again);
     expect(sleep).toHaveBeenCalledTimes(again ? 2 : 1);
   },

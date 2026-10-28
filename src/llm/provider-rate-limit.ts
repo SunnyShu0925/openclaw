@@ -46,7 +46,7 @@ const retryDeadlineContext = new AsyncContext<{ pendingUntil?: number }>(
   Symbol.for("openclaw.providerRateLimit.retryDeadline"),
 );
 
-/** Limit the next admission wait, leaving useful responses and later tool turns alone. */
+/** Bound only the next admission with a monotonic deadline, not useful responses or later tools. */
 export function withProviderRateLimitRetryDeadline<T>(
   deadline: number | undefined,
   run: () => T,
