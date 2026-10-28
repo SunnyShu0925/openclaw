@@ -141,3 +141,55 @@ it.each([
     }
   }),
 );
+
+it("keeps the worker response budget on the monotonic clock across wall-clock steps", async () => {
+  const entered = createDeferred<void>();
+  const release = createDeferred<void>();
+  const runner = new TeamReportsRunner(new URL("./run-worker.test-support.ts", import.meta.url));
+  const store = new TeamReportsStore({
+    async execute() {
+      throw new Error("This completion-only fixture must not access storage");
+    },
+    async close() {},
+  });
+  const config = parseTeamReportsConfig({
+    github: { token: "fixture", orgs: ["sample"] },
+    people: [{ github: ["alex"] }],
+    summaries: { enabled: true },
+  });
+  const pending = runner.run({
+    config,
+    store,
+    periods: [],
+    resolved: {
+      github: { ...config.github, token: "fixture", ignoreCommentPatterns: [] },
+      people: config.people ?? [],
+    },
+    runtime: {
+      signal: new AbortController().signal,
+      logger: { info() {}, warn() {}, error() {} },
+    },
+    onRoster() {},
+    llm: {
+      async complete() {
+        entered.resolve();
+        await release.promise;
+        return completion("Synthetic result");
+      },
+    },
+  });
+  try {
+    await entered.promise;
+    // Only the wall clock steps; the remaining worker budget follows the pool's clock.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60 * 60_000);
+    release.resolve();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({});
+  } finally {
+    release.resolve();
+    vi.useRealTimers();
+    await runner.close();
+    await store.close();
+  }
+});
