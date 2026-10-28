@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+  createTestPluginServiceScheduler,
+} from "openclaw/plugin-sdk/plugin-test-api";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import { racePromiseWithAbortSignal } from "openclaw/plugin-sdk/time-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -75,6 +79,7 @@ async function setup(
     discord?: boolean;
     start?: boolean;
     nativeWorker?: boolean;
+    scheduler?: ReturnType<typeof createTestPluginServiceScheduler>;
   } = {},
 ) {
   const config = parseTeamReportsConfig({
@@ -160,7 +165,7 @@ async function setup(
   const runSettled = () => completionAt(published++).resolve();
   const nextRun = () => completionAt(consumed++).promise;
   const context = {
-    scheduler: createTestPluginServiceScheduler(),
+    scheduler: options.scheduler ?? createTestPluginServiceScheduler(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     serviceHealth: { reportFailure: vi.fn(runSettled), clearFailure: vi.fn(runSettled) },
   };
@@ -553,6 +558,44 @@ describe("Team Reports scheduler lifecycle", () => {
       (await store.listRuns()).some((run) => run.kind === "closed-day" && run.status === "ok"),
     ).toBe(true);
     expect((await scheduler.status()).nextDue.intraday).toBe(Date.parse("2026-08-20T08:00:00Z"));
+  });
+
+  it("keeps a deferred tick's retry on the elapsed clock across a wall-clock correction", async () => {
+    const startedAt = Date.parse("2026-08-20T03:54:00Z");
+    vi.setSystemTime(startedAt);
+    const clock = createGatewaySchedulerClock(startedAt);
+    const { scheduler, github, runReports, nextRun } = await setup({
+      scheduler: createTestPluginServiceScheduler(createTestGatewayScheduler(clock.clock)),
+    });
+    const advance = async (deltaMs: number) => {
+      vi.setSystemTime(Date.now() + deltaMs);
+      await clock.advanceBy(deltaMs);
+    };
+
+    const blocked = createDeferred<Awaited<ReturnType<GithubSource["collect"]>>>();
+    const collecting = createDeferred<void>();
+    github.collect.mockImplementationOnce(() => {
+      collecting.resolve();
+      return blocked.promise;
+    });
+    try {
+      await scheduler.generate();
+      await collecting.promise;
+      // The 04:00 intraday tick arrives while the manual run is still collecting, so it defers.
+      await advance(6 * 60_000);
+      expect(github.collect).toHaveBeenCalledOnce();
+      blocked.resolve(healthy);
+      await nextRun();
+
+      // The wall clock steps an hour back inside the retry window; time keeps elapsing.
+      const corrected = Date.now() - 3_600_000;
+      vi.setSystemTime(corrected);
+      clock.setTime(corrected);
+      await advance(60_000);
+      expect(runReports).toHaveBeenCalledTimes(2);
+    } finally {
+      blocked.resolve(healthy);
+    }
   });
 
   it("waits for an in-flight run during stop and preserves its successful report", async () => {
