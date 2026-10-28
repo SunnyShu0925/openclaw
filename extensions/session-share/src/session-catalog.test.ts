@@ -250,6 +250,18 @@ it("serves complete snapshots across slow pages, cursors, and searches", async (
   await f.expectSessions([]);
 });
 
+it.each([
+  ["München", "Mu\u0308nchen"],
+  ["Mu\u0308nchen", "München"],
+])(
+  "finds a canonically equivalent session name without rewriting it (%s query → %s stored)",
+  async (query, storedName) => {
+    const target = { ...nativeSession, threadId: "agent:main:canonical", name: storedName };
+    f.paginate([target]);
+    await f.expectSessions([target], { search: query });
+  },
+);
+
 it.each(["rows", "bytes"])("rejects oversized snapshot %s", async (budget) => {
   const total = budget === "rows" ? 10_100 : 1_500;
   const text = "x".repeat(6_000);

@@ -251,7 +251,7 @@ export async function runMemoryForget(opts: MemoryForgetCommandOptions) {
   }
 }
 
-function matchesPromotionSelector(
+export function matchesPromotionSelector(
   candidate: {
     key: string;
     path: string;
@@ -259,14 +259,14 @@ function matchesPromotionSelector(
   },
   selector: string,
 ): boolean {
-  const trimmed = selector.trim().toLowerCase();
+  const trimmed = selector.trim().toLowerCase().normalize("NFC");
   if (!trimmed) {
     return false;
   }
   return (
-    candidate.key.toLowerCase().includes(trimmed) ||
-    candidate.path.toLowerCase().includes(trimmed) ||
-    candidate.snippet.toLowerCase().includes(trimmed)
+    candidate.key.toLowerCase().normalize("NFC").includes(trimmed) ||
+    candidate.path.toLowerCase().normalize("NFC").includes(trimmed) ||
+    candidate.snippet.toLowerCase().normalize("NFC").includes(trimmed)
   );
 }
 async function runMemoryPromotion(

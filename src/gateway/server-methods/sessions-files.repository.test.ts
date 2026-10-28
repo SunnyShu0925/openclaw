@@ -609,3 +609,20 @@ it("keeps a timed-out remote save owned until its physical write drains before S
   expect(contentAtStop).toBe("saved\n");
   expect(manager.status(identity.environmentId)).toBe("stopped");
 });
+
+it.each([
+  ["München.md", "Mu\u0308nchen.md"],
+  ["Mu\u0308nchen.md", "München.md"],
+])(
+  "finds a canonically equivalent changed artifact without rewriting it (%s query → %s stored)",
+  async (query, storedName) => {
+    const base = await capture();
+    writeFile(storedName, "canonical equivalence\n");
+    git("add", ".");
+    git("commit", "-qm", "add canonical artifact");
+    await publishCheckpoint(base, await capture());
+    const list = await files.ok("list", { search: query });
+    const paths = list.browser.entries.map((entry: { path: string }) => entry.path);
+    expect(paths).toContain(storedName);
+  },
+);

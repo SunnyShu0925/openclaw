@@ -17,6 +17,27 @@ async function fixture() {
 
   return { root, vault: new SampleVault(root) };
 }
+const NFC_TITLE = "München pilot";
+const NFD_TITLE = "Mu\u0308nchen pilot";
+async function writeCanonicallyEquivalentRecord(root: string, title: string) {
+  await writeFile(
+    path.join(root, "claims/canonical-title.md"),
+    `---\nformat: knowledge-record-v1\nid: canonical-title\nrevision: 1\nkind: claim\ntitle: ${title}\nscope:\n  visibility: sample\nrecorded_at: 2026-09-22T12:00:00Z\nupdated_at: 2026-09-22T12:00:00Z\nlifecycle: active\nclaim_kind: decision\nassertion_origin: source\nattribution: canonical equivalence fixture\nentities:\n  - sample_person_alex\n  - sample_project_garden\ndependencies:\n  - sample_meeting_planning\nevidence:\n  - path: artifacts/planning-meeting.txt\n    sha256: 0bd49d2343f5353db59f06782830d200a65ffba912c03a247fff60521b179abf\n    start_line: 4\n    end_line: 4\n    quote: We decided to begin with a small pilot garden.\n---\n${title}\n`,
+  );
+}
+it.each([
+  [NFC_TITLE, NFD_TITLE],
+  [NFD_TITLE, NFC_TITLE],
+])(
+  "finds a canonically equivalent vault record title without rewriting it (%s query → %s stored)",
+  async (query, storedTitle) => {
+    const { root, vault } = await fixture();
+    await writeCanonicallyEquivalentRecord(root, storedTitle);
+    const records = (await vault.list({ query })).records;
+    expect(records.some((r) => r.id === "canonical-title")).toBeTruthy();
+    expect(records.find((r) => r.id === "canonical-title")?.title).toBe(storedTitle);
+  },
+);
 async function hashes(root: any) {
   const found: Record<string, string> = {};
   for (const entry of await listDirectoryTreeStrict(root)) {

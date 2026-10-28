@@ -13,7 +13,65 @@ import {
 import * as transcript from "openclaw/plugin-sdk/session-transcript-runtime";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, expect, it, vi } from "vitest";
-import { createSessionShareNodeCommands, SESSION_SHARE_READ_COMMAND } from "./node-commands.js";
+import {
+  createSessionShareNodeCommands,
+  SESSION_SHARE_LIST_COMMAND,
+  SESSION_SHARE_READ_COMMAND,
+} from "./node-commands.js";
+
+const NFC_TITLE = "München session";
+const NFD_TITLE = "Mu\u0308nchen session";
+it.each([
+  [NFC_TITLE, NFD_TITLE],
+  [NFD_TITLE, NFC_TITLE],
+])(
+  "list finds a canonically equivalent session name without rewriting it (%s query → %s stored)",
+  async (query, storedName) => {
+    await withOpenClawTestState(
+      { label: "session-share-node-list", scenario: "minimal" },
+      async () => {
+        const agentId = "main";
+        const sessionKey = "agent:main:canonical";
+        const storePath = resolveStorePath(undefined, { agentId });
+        await upsertSessionEntry({
+          agentId,
+          sessionKey,
+          storePath,
+          entry: { sessionId: "canonical-session", updatedAt: 1, category: "team" },
+        });
+        const config: OpenClawConfig = {
+          session: { store: storePath },
+          plugins: { entries: { "session-share": { config: { share: { groups: ["team"] } } } } },
+        };
+        setRuntimeConfigSnapshot(config);
+        const runtime = createPluginRuntimeMock({
+          config: { current: () => config },
+          agent: {
+            session: {
+              resolveStorePath,
+              listSessionEntries,
+              listSessionEntriesAsync,
+              withSessionEntriesAsync,
+              createSessionEntryListReader: async (params) => async () => ({
+                entries: await listSessionEntriesAsync(params),
+                assertCurrent() {},
+              }),
+            },
+          },
+        });
+        vi.spyOn(transcript, "readSessionTranscriptCatalogTitleAsync").mockResolvedValue(
+          storedName,
+        );
+        const command = createSessionShareNodeCommands(createTestPluginApi({ runtime })).find(
+          (entry) => entry.command === SESSION_SHARE_LIST_COMMAND,
+        )!;
+        const result = JSON.parse(await command.handle(JSON.stringify({ searchTerm: query })));
+        expect(result.sessions).toHaveLength(1);
+        expect(result.sessions[0]!.name).toBe(storedName);
+      },
+    );
+  },
+);
 
 afterEach(() => vi.restoreAllMocks());
 
