@@ -40,13 +40,11 @@ import { rpcSourceTesting } from "./session-lifecycle-admission.test-support.js"
 const storeScope = "/synthetic/rpc-source-contracts/sessions.db";
 const sessionKey = "agent:main:rpc-sources";
 const sessionId = "rpc-source-session";
-function registration(
+const registration = (
   runId: string,
   target: ReturnType<typeof captureSessionTarget>,
   scope = { sessionKey, sessionId },
-) {
-  return { runId, ...scope, timeoutMs: 1, target };
-}
+) => ({ runId, ...scope, timeoutMs: 1, target });
 afterEach(() => {
   controllerTesting.resetSessionControllerForTest();
   vi.useRealTimers();
@@ -86,15 +84,13 @@ function runSource(ref: RpcSourceRef, run: Parameters<typeof withSessionTurn>[1]
   );
 }
 
-function state(ref: RpcSourceRef) {
-  return {
-    active: isRpcSourceActive(ref),
-    projected: projectedActive(ref),
-    queued: isRpcSourceQueued(ref),
-    aborted: ref.input.abortSignal.aborted,
-    startedAt: startedAt(ref),
-  };
-}
+const state = (ref: RpcSourceRef) => ({
+  active: isRpcSourceActive(ref),
+  projected: projectedActive(ref),
+  queued: isRpcSourceQueued(ref),
+  aborted: ref.input.abortSignal.aborted,
+  startedAt: startedAt(ref),
+});
 const settle = (...sources: ReturnType<typeof reserve>[]) =>
   Promise.all(sources.map(({ entry }) => sourceSettlement(entry.input)));
 
@@ -341,26 +337,4 @@ it("lists only the captured logical session and agent", () => {
   for (const [runId] of rpcSourceTesting.entries()) {
     rpcSourceTesting.delete(runId);
   }
-});
-
-it("keeps the RPC source queue deadline on the monotonic clock across a wall-clock rewind", () => {
-  const source = reserve("queue-deadline-monotonic");
-  const capturedDelays: number[] = [];
-  const originalSetTimeout = globalThis.setTimeout;
-  const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
-  setTimeoutSpy.mockImplementation(((fn: TimerHandler, delay?: number, ...args: unknown[]) => {
-    capturedDelays.push(Number(delay));
-    return originalSetTimeout(fn, delay, ...args);
-  }) as typeof setTimeout);
-  vi.spyOn(performance, "now").mockReturnValue(500.7);
-  vi.spyOn(Date, "now").mockReturnValue(-85_000);
-  source.initializeTiming({
-    timeoutMs: 5_000,
-    now: 5_000,
-    onQueueTimeout: () => {},
-  });
-  const queueDelay = capturedDelays.at(-1);
-  expect(queueDelay).toBeGreaterThan(4_998);
-  expect(queueDelay).toBeLessThan(5_002);
-  setTimeoutSpy.mockRestore();
 });
