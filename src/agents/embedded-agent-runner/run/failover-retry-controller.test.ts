@@ -36,12 +36,12 @@ const rotationContext = {
 
 function clock(initialMs = 1_000_000) {
   let nowMs = initialMs;
-  let monotonicMs = initialMs;
-  vi.spyOn(Date, "now").mockImplementation(() => nowMs);
-  vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
-  return (ms: number) => {
+  let wallOffsetMs = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => nowMs + wallOffsetMs);
+  vi.spyOn(performance, "now").mockImplementation(() => nowMs - initialMs);
+  return (ms: number, wallStepMs = 0) => {
     nowMs += ms;
-    monotonicMs += ms;
+    wallOffsetMs += wallStepMs;
   };
 }
 function expectNoRetry() {
@@ -209,11 +209,7 @@ it("waits for the provider floor before exhausting recovery and rotating credent
     fallbackConfigured: true,
   });
   controller.observeAttempt({ providerRetryMaxRetries: 1 });
-  const retry = {
-    reason: "rate_limit" as const,
-    retryAfterMs: 2000,
-    failoverEligible: true,
-  };
+  const retry = { reason: "rate_limit" as const, retryAfterMs: 2000 };
   await checkRetry(retry);
   expect(sleep).toHaveBeenCalledExactlyOnceWith(2000, undefined);
   await checkRetry(retry, false);
@@ -228,67 +224,43 @@ it("waits for the provider floor before exhausting recovery and rotating credent
   expect(advance).toHaveBeenCalledTimes(1);
 });
 
-it("bounds shared TPM recovery before model fallback by retries and elapsed waiting", async () => {
-  const advanceTime = clock();
-  vi.spyOn(Math, "random").mockReturnValue(0.5);
-  sleep.mockImplementation(async (delayMs) => advanceTime(delayMs));
-  const advance = vi.fn(async () => true);
-  controller = createRetryController({
-    fallbackConfigured: true,
-    runtime: { advanceAttemptAuthProfile: advance },
-  });
-  const retry = {
-    reason: "rate_limit" as const,
-    message:
-      "429 Rate limit reached for mock-primary in organization org-example on tokens per min (TPM). Please try again in 48ms.",
-    retryAfterMs: 48,
-    failoverEligible: true,
-  };
-  await checkRetry(retry);
-  const queuedRetry = {
-    ...retry,
-    message: "429 Shared organization token rate limit wait budget.",
-  };
-  await checkRetry(queuedRetry);
-  await checkRetry(queuedRetry, false);
-  await expect(rotate()).resolves.toBe(false);
-  expect(advance).not.toHaveBeenCalled();
-  expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([1_000, 2_000]);
-  // A later attempt that cannot safely switch models retains ordinary recovery.
-  await checkRetry({ ...retry, failoverEligible: false });
-  expect(sleep).toHaveBeenLastCalledWith(4_000, undefined);
+it.each([-90_000, 0, 90_000])(
+  "bounds shared TPM recovery across a %sms wall-clock step by retries and elapsed waiting",
+  async (wallStepMs) => {
+    const advanceTime = clock();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    sleep.mockImplementation(async (delayMs) => advanceTime(delayMs));
+    const advance = vi.fn(async () => true);
+    controller = createRetryController({
+      fallbackConfigured: true,
+      runtime: { advanceAttemptAuthProfile: advance },
+    });
+    const retry = {
+      reason: "rate_limit" as const,
+      message: "429 Rate limit reached in organization org-example on tokens per min (TPM).",
+      retryAfterMs: 48,
+    };
+    await checkRetry(retry);
+    advanceTime(0, wallStepMs);
+    const queuedRetry = {
+      ...retry,
+      message: "429 Shared organization token rate limit wait budget.",
+    };
+    await checkRetry(queuedRetry);
+    await checkRetry(queuedRetry, false);
+    await expect(rotate()).resolves.toBe(false);
+    expect(advance).not.toHaveBeenCalled();
+    expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([1_000, 2_000]);
+    // A later attempt that cannot safely switch models retains ordinary recovery.
+    await checkRetry({ ...retry, failoverEligible: false });
+    expect(sleep).toHaveBeenLastCalledWith(4_000, undefined);
 
-  controller.observeAttempt({ hasSuccessfulModelResponse: true });
-  await checkRetry({ ...retry, retryAfterMs: 10_000 });
-  await checkRetry({ ...retry, retryAfterMs: 10_000 }, false);
-  expect(sleep).toHaveBeenCalledTimes(4);
-});
-
-it("keeps the shared TPM retry window on the monotonic clock across a wall-clock jump", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(1_000);
-  vi.spyOn(Math, "random").mockReturnValue(0.5);
-  sleep.mockImplementation(async () => {});
-  const advance = vi.fn(async () => true);
-  controller = createRetryController({
-    fallbackConfigured: true,
-    runtime: { advanceAttemptAuthProfile: advance },
-  });
-  const retry = {
-    reason: "rate_limit" as const,
-    message:
-      "429 Rate limit reached for mock-primary in organization org-example on tokens per min (TPM). Please try again in 48ms.",
-    retryAfterMs: 48,
-    failoverEligible: true,
-  };
-  await checkRetry(retry);
-  // A wall-clock jump inside the 15s window must not distort the monotonic
-  // elapsed budget: it only moves Date.now(), never performance.now().
-  vi.setSystemTime(1_000 + 60_000);
-  await checkRetry({ ...retry, message: "429 Shared organization token rate limit wait budget." });
-  // Post-fix the elapsed window stays near zero, so the retry is still admitted.
-  expect(sleep).toHaveBeenCalledTimes(2);
-});
+    controller.observeAttempt({ hasSuccessfulModelResponse: true });
+    await checkRetry({ ...retry, retryAfterMs: 10_000 });
+    await checkRetry({ ...retry, retryAfterMs: 10_000 }, false);
+    expect(sleep).toHaveBeenCalledTimes(4);
+  },
+);
 
 it.each([
   ["fallback", undefined, 30_000, "rate_limit", 9_897_000, false],
@@ -365,19 +337,13 @@ it("does not truncate a provider wait to fit the remaining outage window", async
 });
 
 it("bounds transient retries across reasons and honors Retry-After", async () => {
-  // Retry exhaustion includes sleep time.
   const advanceTime = clock();
-  sleep.mockImplementation(async (delayMs: number) => {
-    advanceTime(delayMs);
-  });
+  sleep.mockImplementation(async (delayMs) => advanceTime(delayMs));
   await checkRetry({ reason: "server_error", retryAfterMs: 60_000 });
   await checkRetry({ reason: "timeout", retryAfterMs: 30_000 });
   await checkRetry({ reason: "overloaded" }, false);
   expect(controller.transientRetryCount).toBe(2);
-  expect(sleep.mock.calls).toEqual([
-    [60_000, undefined],
-    [30_000, undefined],
-  ]);
+  expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([60_000, 30_000]);
 });
 
 it("allows eight transient retries across failure reasons when the ceiling has room", async () => {
