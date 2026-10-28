@@ -424,7 +424,9 @@ export function initializeRpcSourceTiming(
           })
         : (asDateTimestampMs(params.expiresAtMs) ?? 0),
     queueDeadlineAtMs: params.onQueueTimeout
-      ? (resolveExpiresAtMsFromDurationMs(params.timeoutMs, { nowMs: now }) ?? 0)
+      ? (resolveExpiresAtMsFromDurationMs(params.timeoutMs, {
+          nowMs: Math.floor(performance.now()),
+        }) ?? 0)
       : undefined,
     timeoutMs: params.timeoutMs,
     cancelQueueDeadline,
@@ -465,7 +467,7 @@ export function initializeRpcSourceTiming(
   if (params.onQueueTimeout && canStartRpcSource(ref)) {
     queueTimer = setTimeout(
       timing.expireQueue,
-      Math.max(0, (timing.queueDeadlineAtMs ?? 0) - Date.now()),
+      Math.max(0, (timing.queueDeadlineAtMs ?? 0) - performance.now()),
     );
     queueTimer.unref();
   }
@@ -480,7 +482,7 @@ export function markRpcSourceExecutionStarted(ref: RpcSourceRef): boolean {
   const now = Date.now();
   if (
     timing.queueDeadlineAtMs !== undefined &&
-    !isFutureDateTimestampMs(timing.queueDeadlineAtMs, { nowMs: now })
+    !isFutureDateTimestampMs(timing.queueDeadlineAtMs, { nowMs: performance.now() })
   ) {
     timing.expireQueue();
     return false;

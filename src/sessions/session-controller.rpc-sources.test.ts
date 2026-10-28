@@ -342,3 +342,25 @@ it("lists only the captured logical session and agent", () => {
     rpcSourceTesting.delete(runId);
   }
 });
+
+it("keeps the RPC source queue deadline on the monotonic clock across a wall-clock rewind", () => {
+  const source = reserve("queue-deadline-monotonic");
+  const capturedDelays: number[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+  const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+  setTimeoutSpy.mockImplementation(((fn: TimerHandler, delay?: number, ...args: unknown[]) => {
+    capturedDelays.push(Number(delay));
+    return originalSetTimeout(fn, delay, ...args);
+  }) as typeof setTimeout);
+  vi.spyOn(performance, "now").mockReturnValue(500.7);
+  vi.spyOn(Date, "now").mockReturnValue(-85_000);
+  source.initializeTiming({
+    timeoutMs: 5_000,
+    now: 5_000,
+    onQueueTimeout: () => {},
+  });
+  const queueDelay = capturedDelays.at(-1);
+  expect(queueDelay).toBeGreaterThan(4_998);
+  expect(queueDelay).toBeLessThan(5_002);
+  setTimeoutSpy.mockRestore();
+});
