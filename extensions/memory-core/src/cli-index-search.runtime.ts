@@ -251,7 +251,7 @@ export async function runMemoryForget(opts: MemoryForgetCommandOptions) {
   }
 }
 
-export function matchesPromotionSelector(
+function matchesPromotionSelector(
   candidate: {
     key: string;
     path: string;

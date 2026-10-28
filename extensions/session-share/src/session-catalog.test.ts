@@ -230,8 +230,9 @@ it("restarts after retiring queued refreshes before dispatch", async () => {
   await f.expectSessions();
 });
 
-it("serves complete snapshots across slow pages, cursors, and searches", async () => {
+it.each(["München", "Mu\u0308nchen"])("pages and finds %s", async (title) => {
   const sessions = rows(601);
+  sessions[100]!.name = title;
   f.paginate(sessions, 5_000);
   expect((await f.begin())[0]?.pending).toBe(true);
   await advance(35_005);
@@ -243,24 +244,13 @@ it("serves complete snapshots across slow pages, cursors, and searches", async (
     cursors: { "node:alpha": first.nextCursor! },
   });
   await f.expectSessions(sessions.slice(600), { cursors: { "node:alpha": encodeCursor(600) } });
-  await f.expectSessions([sessions[100]!], { search: "SHARED 100" });
+  const query = title === "München" ? "Mu\u0308nchen" : "München";
+  await f.expectSessions([sessions[100]!], { search: query.toUpperCase() });
   await f.expectSessions([sessions[100]!], { search: "MAIN:100" });
   f.invoke.mockResolvedValue({ sessions: [] });
   await advance(30_000);
   await f.expectSessions([]);
 });
-
-it.each([
-  ["München", "Mu\u0308nchen"],
-  ["Mu\u0308nchen", "München"],
-])(
-  "finds a canonically equivalent session name without rewriting it (%s query → %s stored)",
-  async (query, storedName) => {
-    const target = { ...nativeSession, threadId: "agent:main:canonical", name: storedName };
-    f.paginate([target]);
-    await f.expectSessions([target], { search: query });
-  },
-);
 
 it.each(["rows", "bytes"])("rejects oversized snapshot %s", async (budget) => {
   const total = budget === "rows" ? 10_100 : 1_500;

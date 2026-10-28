@@ -2,14 +2,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { setRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
-import {
-  applySessionEntryPatch,
-  listSessionEntries,
-  listSessionEntriesAsync,
-  resolveStorePath,
-  upsertSessionEntry,
-  withSessionEntriesAsync,
-} from "openclaw/plugin-sdk/session-store-runtime";
+import * as sessionStore from "openclaw/plugin-sdk/session-store-runtime";
 import * as transcript from "openclaw/plugin-sdk/session-transcript-runtime";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, expect, it, vi } from "vitest";
@@ -18,60 +11,6 @@ import {
   SESSION_SHARE_LIST_COMMAND,
   SESSION_SHARE_READ_COMMAND,
 } from "./node-commands.js";
-
-const NFC_TITLE = "München session";
-const NFD_TITLE = "Mu\u0308nchen session";
-it.each([
-  [NFC_TITLE, NFD_TITLE],
-  [NFD_TITLE, NFC_TITLE],
-])(
-  "list finds a canonically equivalent session name without rewriting it (%s query → %s stored)",
-  async (query, storedName) => {
-    await withOpenClawTestState(
-      { label: "session-share-node-list", scenario: "minimal" },
-      async () => {
-        const agentId = "main";
-        const sessionKey = "agent:main:canonical";
-        const storePath = resolveStorePath(undefined, { agentId });
-        await upsertSessionEntry({
-          agentId,
-          sessionKey,
-          storePath,
-          entry: { sessionId: "canonical-session", updatedAt: 1, category: "team" },
-        });
-        const config: OpenClawConfig = {
-          session: { store: storePath },
-          plugins: { entries: { "session-share": { config: { share: { groups: ["team"] } } } } },
-        };
-        setRuntimeConfigSnapshot(config);
-        const runtime = createPluginRuntimeMock({
-          config: { current: () => config },
-          agent: {
-            session: {
-              resolveStorePath,
-              listSessionEntries,
-              listSessionEntriesAsync,
-              withSessionEntriesAsync,
-              createSessionEntryListReader: async (params) => async () => ({
-                entries: await listSessionEntriesAsync(params),
-                assertCurrent() {},
-              }),
-            },
-          },
-        });
-        vi.spyOn(transcript, "readSessionTranscriptCatalogTitleAsync").mockResolvedValue(
-          storedName,
-        );
-        const command = createSessionShareNodeCommands(createTestPluginApi({ runtime })).find(
-          (entry) => entry.command === SESSION_SHARE_LIST_COMMAND,
-        )!;
-        const result = JSON.parse(await command.handle(JSON.stringify({ searchTerm: query })));
-        expect(result.sessions).toHaveLength(1);
-        expect(result.sessions[0]!.name).toBe(storedName);
-      },
-    );
-  },
-);
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -83,11 +22,12 @@ it.each([false, true])(
       async () => {
         const agentId = "main";
         const sessionKey = "agent:main:shared";
-        const storePath = resolveStorePath(undefined, { agentId });
+        const storePath = sessionStore.resolveStorePath(undefined, { agentId });
         const scope = { agentId, sessionKey, storePath };
-        await upsertSessionEntry({
+        const title = revoked ? "München" : "Mu\u0308nchen";
+        await sessionStore.upsertSessionEntry({
           ...scope,
-          entry: { sessionId: "shared-session", updatedAt: 1, category: "team" },
+          entry: { sessionId: "shared-session", updatedAt: 1, category: "team", label: title },
         });
         const config: OpenClawConfig = {
           session: { store: storePath },
@@ -98,32 +38,33 @@ it.each([false, true])(
           config: { current: () => config },
           agent: {
             session: {
-              resolveStorePath,
-              listSessionEntries,
-              listSessionEntriesAsync,
-              withSessionEntriesAsync,
+              ...sessionStore,
               createSessionEntryListReader: async (params) => async () => ({
-                entries: await listSessionEntriesAsync(params),
+                entries: await sessionStore.listSessionEntriesAsync(params),
                 // This fixture keeps the physical database fixed; row updates remain real.
                 assertCurrent() {},
               }),
             },
           },
         });
+        const commands = createSessionShareNodeCommands(createTestPluginApi({ runtime }));
+        const list = commands.find((entry) => entry.command === SESSION_SHARE_LIST_COMMAND)!;
+        const query = title.normalize(revoked ? "NFD" : "NFC");
+        expect(
+          JSON.parse(await list.handle(JSON.stringify({ searchTerm: query }))).sessions,
+        ).toMatchObject([{ name: title }]);
         const originalRead = transcript.readSessionTranscriptCatalogPage;
         vi.spyOn(transcript, "readSessionTranscriptCatalogPage").mockImplementation(
           async (...args) => {
             const page = await originalRead(...args);
-            await applySessionEntryPatch({
+            await sessionStore.applySessionEntryPatch({
               ...scope,
               patch: { category: revoked ? "private" : "team", label: "updated while reading" },
             });
             return page;
           },
         );
-        const command = createSessionShareNodeCommands(createTestPluginApi({ runtime })).find(
-          (entry) => entry.command === SESSION_SHARE_READ_COMMAND,
-        )!;
+        const command = commands.find((entry) => entry.command === SESSION_SHARE_READ_COMMAND)!;
         const result = command.handle(JSON.stringify({ threadId: sessionKey, limit: 10 }));
         if (revoked) {
           await expect(result).rejects.toThrow("Session is no longer shared");
