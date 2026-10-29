@@ -300,8 +300,10 @@ describe("agentCommand embedded maintenance", () => {
   });
 
   it("preserves unlimited command maintenance after a long foreground turn", async () => {
-    let now = Date.now();
+    const startedAt = Date.now();
+    let now = startedAt;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => now - startedAt);
     const sessionId = "maintenance-unlimited";
     const sessionKey = `agent:main:explicit:${sessionId}`;
     let flushTimeout: number | undefined;
@@ -334,6 +336,7 @@ describe("agentCommand embedded maintenance", () => {
     } finally {
       await waitForSessionMaintenance(sessionKey);
       clock.mockRestore();
+      monotonicClock.mockRestore();
     }
   });
 
@@ -819,7 +822,7 @@ describe("agentCommand embedded maintenance", () => {
       const sessionId = `${runner}-background-failure-${expiry}`;
       const sessionKey = `agent:main:explicit:${sessionId}`;
       if (expiry) {
-        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
       }
       try {
         state.runAgentAttemptMock.mockImplementationOnce(async (params) => {
