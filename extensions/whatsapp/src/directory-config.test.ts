@@ -103,6 +103,14 @@ it("filters and sorts groups through the active owner", async () => {
   expect(mocks.acquireOwner).not.toHaveBeenCalled();
 });
 
+it("matches canonically equivalent group subjects in the live directory", async () => {
+  const sock = socket({ [first]: { id: first, subject: "Café owners".normalize("NFD") } });
+  mocks.getController.mockReturnValue({ getCurrentSock: () => sock } as never);
+  await expect(listGroups(params({ query: "CAFÉ owners".normalize("NFC") }))).resolves.toEqual([
+    entry(first, "Café owners".normalize("NFD")),
+  ]);
+});
+
 it.each([false, true])(
   "refuses a standalone socket while gateway owner is pending=%s",
   async (pending) => {
