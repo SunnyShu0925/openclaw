@@ -193,6 +193,19 @@ it("writes an export bundle", async () => {
   expect(await zip.file("summary.md")?.async("string")).toContain("# Google Meet Artifacts");
 });
 
+it("preserves a trailing-space output directory through the CLI export action", async () => {
+  const trailingDir = path.join(tempDir, "custom output ");
+  await runRecordCommand("export", ["--output", trailingDir]);
+  expect(output()).toContain(`export: ${trailingDir}`);
+  expect(existsSync(path.join(trailingDir, "summary.md"))).toBe(true);
+  expect(existsSync(path.join(trailingDir, "manifest.json"))).toBe(true);
+  expect(existsSync(path.join(tempDir, "custom output", "summary.md"))).toBe(false);
+  expect(JSON.parse(readFileSync(path.join(trailingDir, "manifest.json"), "utf8"))).toMatchObject({
+    request: { conferenceRecord: "rec-1" },
+    tokenSource: "cached-access-token",
+  });
+});
+
 it("includes artifact warnings in export summaries and manifests", async () => {
   cli.stubMeetArtifactsApi({ failSmartNoteDocumentBody: true });
 
