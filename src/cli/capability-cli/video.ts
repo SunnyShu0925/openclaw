@@ -127,7 +127,7 @@ export function registerVideoCapabilityCommands(capability: Command): void {
               });
               const download = await fetchWithTimeoutGuarded(
                 downloadUrl,
-                { method: "GET", ...(signal ? { signal } : {}) },
+                { method: "GET", signal },
                 GENERATED_VIDEO_DOWNLOAD_TIMEOUT_MS,
                 fetch,
                 {
