@@ -28,10 +28,15 @@ export async function waitForGatewayHealthyListener(params: {
   const delayMs = params.delayMs ?? DEFAULT_RESTART_HEALTH_DELAY_MS;
   const previousLockIdentity = params.previousLockIdentity;
 
-  const probeContext = await resolveGatewayRestartProbeContext(params.env).catch(() => ({
+  const probeContext = await resolveGatewayRestartProbeContext(
+    params.env,
+    undefined,
+    params.signal,
+  ).catch(() => ({
     auth: undefined,
     config: {},
   }));
+  params.signal?.throwIfAborted();
   const configuredProbe = createConfiguredGatewayLocalProbe(probeContext.config);
 
   let attempt = 0;
@@ -47,6 +52,7 @@ export async function waitForGatewayHealthyListener(params: {
       const currentLockIdentity = await readActiveGatewayLockIdentity({ env: params.env }).catch(
         () => null,
       );
+      params.signal?.throwIfAborted();
       if (
         !previousOwnerReleased &&
         currentLockIdentity !== null &&

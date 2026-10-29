@@ -261,7 +261,7 @@ async function runExternalSupervisorRestart(opts: DaemonLifecycleOptions): Promi
     });
   } catch (err) {
     // An accepted interrupt owns the exit status; a cancelled wait is not a restart failure.
-    if (!commandInterrupted()) {
+    if (!commandInterrupted(err)) {
       throw err;
     }
     return false;

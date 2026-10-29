@@ -122,12 +122,13 @@ async function resolveServiceLoadedOrFail(
   );
 }
 
-/**
- * An accepted interrupt owns the exit status: the root signal owner records
- * 130/143, so an interrupted wait must not be reported as a service failure.
- */
-export function commandInterrupted(): boolean {
-  return getAsyncWorkSignal()?.aborted === true;
+/** Only observer cancellation belongs to the root; concurrent service failures still report. */
+export function commandInterrupted(error: unknown): boolean {
+  const signal = getAsyncWorkSignal();
+  return (
+    signal?.aborted === true &&
+    (error === signal.reason || (error instanceof Error && error.cause === signal.reason))
+  );
 }
 
 function warnServiceConfig(
@@ -285,7 +286,7 @@ export async function runServiceStart(params: {
       if (postCheckFailed || err instanceof ExitError) {
         throw err;
       }
-      if (commandInterrupted()) {
+      if (commandInterrupted(err)) {
         return;
       }
       fail(`${params.serviceNoun} start failed: ${String(err)}`, params.renderStartHints());
@@ -359,7 +360,7 @@ export async function runServiceStart(params: {
         if (postCheckFailed || err instanceof ExitError) {
           throw err;
         }
-        if (commandInterrupted()) {
+        if (commandInterrupted(err)) {
           return;
         }
         fail(`${params.serviceNoun} repair failed: ${String(err)}`, params.renderStartHints());
@@ -377,7 +378,7 @@ export async function runServiceStart(params: {
     if (postCheckFailed || err instanceof ExitError) {
       throw err;
     }
-    if (commandInterrupted()) {
+    if (commandInterrupted(err)) {
       return;
     }
     fail(`${params.serviceNoun} start failed: ${String(err)}`, params.renderStartHints());
@@ -540,7 +541,7 @@ export async function runServiceRestart(params: {
       if (err instanceof ExitError) {
         throw err;
       }
-      if (commandInterrupted()) {
+      if (commandInterrupted(err)) {
         return false;
       }
       fail(`${params.serviceNoun} restart failed: ${String(err)}`);
@@ -561,7 +562,7 @@ export async function runServiceRestart(params: {
       if (err instanceof ExitError) {
         throw err;
       }
-      if (commandInterrupted()) {
+      if (commandInterrupted(err)) {
         return false;
       }
       fail(`${params.serviceNoun} restart failed: ${String(err)}`);
@@ -613,7 +614,7 @@ export async function runServiceRestart(params: {
       if (err instanceof ExitError) {
         throw err;
       }
-      if (commandInterrupted()) {
+      if (commandInterrupted(err)) {
         return false;
       }
       const hints = renderRestartFailureHints(err);
@@ -729,7 +730,7 @@ export async function runServiceRestart(params: {
     if (postCheckFailed || err instanceof ExitError) {
       throw err;
     }
-    if (commandInterrupted()) {
+    if (commandInterrupted(err)) {
       return false;
     }
     const hints = renderRestartFailureHints(err);
