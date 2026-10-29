@@ -34,7 +34,7 @@ import {
   parseCronStringList,
   parseCronThinkingOption,
   getCronChannelOptions,
-  handleCronCliErrorUnlessInterrupted,
+  handleCronCliError,
   parseCronIntegerOption,
   parseCronStringOption,
   warnIfCronSchedulerDisabled,
@@ -709,7 +709,7 @@ export function registerCronEditCommand(cron: Command) {
           defaultRuntime.writeJson(res);
           await warnIfCronSchedulerDisabled(opts);
         } catch (err) {
-          handleCronCliErrorUnlessInterrupted(err);
+          handleCronCliError(err);
         }
       }),
   );

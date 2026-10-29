@@ -18,7 +18,6 @@ import {
   enrichCronJsonWithStatus,
   formatCronLookupMiss,
   handleCronCliError,
-  handleCronCliErrorUnlessInterrupted,
   parseCronIntegerOption,
   printCronJson,
   printCronShow,
@@ -160,8 +159,7 @@ export function registerCronSimpleCommands(cron: Command) {
           }
           printCronShow(job, defaultRuntime, { deliveryPreview });
         } catch (err) {
-          // The lookup carries the invocation signal, so an interrupted show is a cancelled read.
-          handleCronCliErrorUnlessInterrupted(err);
+          handleCronCliError(err);
         }
       }),
   );

@@ -109,8 +109,6 @@ export async function prepareUnreachableGatewayCliFixture(params: {
   return { root, stateDir, configPath };
 }
 
-type CliProcessChildOptions = Parameters<typeof runCliProcessChild>[0];
-
 export function runIsolatedGatewayCli(params: {
   args: string[];
   root: string;
@@ -118,9 +116,6 @@ export function runIsolatedGatewayCli(params: {
   configPath: string;
   env?: NodeJS.ProcessEnv;
   onStdout?: (stdout: string) => void;
-  /** Interrupt-custody tests signal the run; other callers keep the default stdin close. */
-  interact?: CliProcessChildOptions["interact"];
-  timeoutMs?: CliProcessChildOptions["timeoutMs"];
 }) {
   return runCliProcessChild({
     nodeArgs: [
@@ -153,7 +148,5 @@ export function runIsolatedGatewayCli(params: {
       ...params.env,
     },
     onStdout: params.onStdout,
-    interact: params.interact,
-    timeoutMs: params.timeoutMs,
   });
 }

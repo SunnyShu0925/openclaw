@@ -301,21 +301,14 @@ function formatCronStatusForDisplay(job: CronJob) {
   return { label, color };
 }
 
-/** Accepted commands record their own exit status; a cancelled read stays with the root owner. */
-export function handleCronCliErrorUnlessInterrupted(err: unknown) {
-  // Only the cancellation this invocation caused is quiet. Requests the interrupt did
-  // not cancel (cron add/update keep their lifetime) can still fail for real, and that
-  // diagnostic has to reach the operator like any other mutation failure.
-  if (getAsyncWorkSignal()?.aborted && isAbortError(err)) {
-    return;
-  }
-  handleCronCliError(err);
-}
-
 export function handleCronCliError(err: unknown) {
   // Completed outcomes must reach CLI cleanup, not become new cron errors.
   if (err instanceof ExitError) {
     throw err;
+  }
+  // Cancelled reads belong to root cleanup; uncancelled mutation failures remain visible.
+  if (getAsyncWorkSignal()?.aborted && isAbortError(err)) {
+    return;
   }
   rethrowExpectedCliError(err);
   const missingJob = readCronJobNotFoundError(err);

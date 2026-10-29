@@ -36,10 +36,9 @@ export function isUnknownCronGetMethodError(error: unknown): error is Error {
 export async function listCronJobsFromGateway(
   opts: GatewayRpcOpts,
   filters: Pick<CronListPageOptions, "includeDisabled" | "agentId" | "query">,
-  options: { allowLegacyUnversionedPagination?: boolean; signal?: AbortSignal } = {},
+  options: { allowLegacyUnversionedPagination?: boolean } = {},
 ): Promise<GatewayCronJobInventory> {
-  // An accepted inventory read stops with the command instead of outliving Ctrl-C.
-  const signal = options.signal ?? getAsyncWorkSignal();
+  const signal = getAsyncWorkSignal();
   let allowLegacyUnversionedPagination = options.allowLegacyUnversionedPagination === true;
   for (let restart = 0; restart <= CRON_LIST_MAX_SNAPSHOT_RESTARTS; restart += 1) {
     let offset = 0;
@@ -202,9 +201,9 @@ function isMissingCronGetError(error: unknown, id: string): error is Error {
 export async function findCronJobByIdOrName(
   opts: GatewayRpcOpts,
   idOrName: string,
-  options: { includeDeliveryPreview?: boolean; signal?: AbortSignal } = {},
+  options: { includeDeliveryPreview?: boolean } = {},
 ): Promise<{ job?: CronJob; deliveryPreview?: CronDeliveryPreview }> {
-  const signal = options.signal ?? getAsyncWorkSignal();
+  const signal = getAsyncWorkSignal();
   let allowLegacyUnversionedPagination = false;
   try {
     signal?.throwIfAborted();
