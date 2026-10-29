@@ -253,6 +253,32 @@ describe("templates cli", () => {
     expect(printed).toContain("token=***");
   });
 
+  it("sanitizes terminal control characters in MCP server commands in add previews", async () => {
+    const manifestPath = await writeManifest({
+      ...cliTestHelpers.minimalManifest,
+      mcpServers: {
+        // The server *name* is schema-constrained to [a-z][a-z0-9_-]{0,63}, but the
+        // stdio *command* is an arbitrary non-empty string, so ESC CSI / newline bytes
+        // embedded in a command survive manifest parsing and reach the human-readable
+        // terminal output as live control bytes unless sanitized.
+        server: {
+          command: `node\u001b[2Jevil\narg`,
+        },
+      },
+    });
+    const workspace = join(tempDirs.make("openclaw-templates-add-"), "workspace");
+
+    await runTemplatesAddCommand(manifestPath, { dryRun: true, workspace });
+
+    const printed = logLines().join("\n");
+    expect(printed).toContain("MCP server:");
+    expect(printed).toContain("node");
+    expect(printed).toContain("\\n");
+    // CSI clear-screen escape (ESC [ 2 J) must not survive as raw control bytes.
+    // eslint-disable-next-line no-control-regex -- asserting the control escape is stripped.
+    expect(printed).not.toMatch(/\u001b\[2J/);
+  });
+
   it("discloses capability escalations in the human dry-run", async () => {
     const path = await writeManifest({
       ...cliTestHelpers.minimalManifest,
