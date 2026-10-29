@@ -1,6 +1,7 @@
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { racePromiseWithAbortSignal, raceWithTimeout } from "../../packages/retry/src/index.js";
+import { monotonicDeadlineAfter, remainingMonotonicMs } from "../shared/monotonic-time.js";
 import type {
   ReplyRunAdmissionSource,
   ReplyRunWaiter,
@@ -94,7 +95,7 @@ async function waitForReplyRunAdmissionBarrier(
   const signal = opts?.signal;
   const deadline =
     typeof timeoutMs === "number"
-      ? Date.now() + resolveTimerTimeoutMs(timeoutMs, minimumTimeoutMs, minimumTimeoutMs)
+      ? monotonicDeadlineAfter(resolveTimerTimeoutMs(timeoutMs, minimumTimeoutMs, minimumTimeoutMs))
       : undefined;
   const sources = new Map<ReplyRunAdmissionSource["databaseIdentity"], ReplyRunAdmissionSource>();
   while (true) {
@@ -105,7 +106,9 @@ async function waitForReplyRunAdmissionBarrier(
     if (!barrier) {
       return { settled: true, ...(sources.size ? { sources: [...sources.values()] } : {}) };
     }
-    const remainingMs = deadline === undefined ? undefined : deadline - Date.now();
+    // Keep the deadline on the clock setTimeout arms on: every loop iteration re-reads the
+    // remaining budget, so a wall-clock step would inflate or collapse the admission window.
+    const remainingMs = deadline === undefined ? undefined : remainingMonotonicMs(deadline);
     if (remainingMs !== undefined && remainingMs <= 0) {
       return { settled: false };
     }

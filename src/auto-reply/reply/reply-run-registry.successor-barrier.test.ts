@@ -172,6 +172,36 @@ describe("reply run successor barriers", () => {
     },
   );
 
+  it.each([-60_000, 60_000])(
+    "keeps the successor admission deadline after a %s ms wall-clock step",
+    async (wallClockStepMs) => {
+      vi.useFakeTimers();
+      const operation = createTestReplyOperation();
+      const firstRelease = barrier(operation);
+      operation.complete();
+      let settled = false;
+      const wait = waitForReplyRunSuccessorAdmission(operation.key, 30_000).finally(() => {
+        settled = true;
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(1_000);
+        // A second fence re-enters the loop, which re-reads the remaining budget after the step.
+        barrier(operation);
+        firstRelease.resolve();
+        vi.setSystemTime(Date.now() + wallClockStepMs);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(28_000);
+        expect(settled).toBe(true);
+        await expect(wait).resolves.toEqual({ settled: false });
+      } finally {
+        firstRelease.resolve();
+        await vi.advanceTimersByTimeAsync(120_000);
+        await Promise.allSettled([wait]);
+      }
+    },
+  );
+
   it("waits for the captured physical owner when logical keys are ambiguous", async () => {
     const sessionKey = "global";
     const physicalOwner = (name: string) => {
