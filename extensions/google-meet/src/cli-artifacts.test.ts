@@ -279,24 +279,17 @@ it.each([false, true])(
   },
 );
 
-it.each([
-  { label: "repeated native", trailingSeparators: path.sep.repeat(2) },
-  ...(process.platform === "win32"
-    ? [
-        { label: "repeated alternate", trailingSeparators: "//" },
-        { label: "mixed", trailingSeparators: "\\/" },
-      ]
-    : []),
-])(
-  "writes the ZIP beside an output directory with $label trailing separators",
-  async ({ trailingSeparators }) => {
+it.each([path.sep.repeat(2), ...(process.platform === "win32" ? ["//", "\\/"] : [" "])])(
+  "preserves the literal output directory and writes its ZIP beside it (%j)",
+  async (trailingSeparators) => {
     const suppliedOutputDir = `${publicationDir}${trailingSeparators}`;
-    const zipPath = `${publicationDir}.zip`;
+    const directory = trailingSeparators === " " ? suppliedOutputDir : publicationDir;
+    const zipPath = `${directory}.zip`;
     const result = await writeBundle(suppliedOutputDir, true);
-    const manifest = JSON.parse(readFileSync(path.join(publicationDir, "manifest.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(path.join(directory, "manifest.json"), "utf8"));
     expect(result).toMatchObject({ outputDir: suppliedOutputDir, zipFile: zipPath });
     expect(manifest.zipFile).toBe(zipPath);
     expect(existsSync(zipPath)).toBe(true);
-    expect(existsSync(path.join(publicationDir, ".zip"))).toBe(false);
+    expect(existsSync(path.join(directory, ".zip"))).toBe(false);
   },
 );
