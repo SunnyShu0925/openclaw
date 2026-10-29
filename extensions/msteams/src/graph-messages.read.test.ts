@@ -261,6 +261,22 @@ describe("searchMessagesMSTeams", () => {
     expectReadPath(`${chatPath}/messages?$top=50`);
   });
 
+  it("matches canonically equivalent message text", async () => {
+    mockState.fetchGraphJson.mockResolvedValue({
+      value: [
+        searchMessage("msg-1", "Café planning notes".normalize("NFD"), undefined, "text"),
+        searchMessage("msg-2", "Unrelated update", undefined, "text"),
+      ],
+    });
+
+    const result = await graph.searchMessagesMSTeams({
+      ...target,
+      query: "CAFÉ planning".normalize("NFC"),
+    });
+
+    expect(result.messages.map((message) => message.id)).toEqual(["msg-1"]);
+  });
+
   it("keeps channel search scoped to the selected channel", async () => {
     mockState.fetchGraphJson.mockResolvedValue({
       value: [searchMessage("msg-2", "Sprint review")],
