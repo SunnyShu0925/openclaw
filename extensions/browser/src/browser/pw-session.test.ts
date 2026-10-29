@@ -282,7 +282,7 @@ describe("pw-session ensurePageState", () => {
     capture.dispose();
   });
 
-  it("detaches ownership before waiting for slow file saves", async () => {
+  it("keeps the sibling quiet window across clock steps and detaches before slow saves", async () => {
     vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     const { capture: begin, send } = observedPage();
     const firstSaveGate = Promise.withResolvers<void>();
@@ -290,46 +290,20 @@ describe("pw-session ensurePageState", () => {
     const capture = begin({ beforeSave });
     const firstSave = saveContents("first", firstSaveGate.promise);
     send("first.txt", firstSave);
+    vi.setSystemTime(Date.now() + 10_000);
 
     const drain = capture.drain();
-    await vi.advanceTimersByTimeAsync(250);
+    setTimeout(() => send("sibling.txt", saveContents("sibling")), 50);
+    await vi.advanceTimersByTimeAsync(300);
     const lateSave = saveContents("late");
     const lateDownload = send("late.txt", lateSave);
     firstSaveGate.resolve();
 
-    await expect(drain).resolves.toEqual(captured("first.txt"));
+    await expect(drain).resolves.toEqual([...captured("first.txt"), ...captured("sibling.txt")]);
     await expect(lateDownload.path?.()).resolves.toMatch(/-late\.txt$/);
-    expect(beforeSave).toHaveBeenCalledOnce();
+    expect(beforeSave).toHaveBeenCalledTimes(2);
     expect(lateSave).toHaveBeenCalledOnce();
     capture.dispose();
-  });
-
-  it("keeps draining sibling downloads after a wall-clock jump", async () => {
-    // Fake the monotonic clock and timers so the sibling lands inside the quiet
-    // window deterministically; step the wall clock independently so only the
-    // Date-based pre-fix path sees the jump.
-    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
-    const { capture: begin, send } = observedPage();
-    const capture = begin();
-    const firstSaveGate = Promise.withResolvers<void>();
-    send("first.txt", saveContents("first", firstSaveGate.promise));
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
-
-    const drain = capture.drain();
-    const sibling = setTimeout(() => send("sibling.txt", saveContents("sibling")), 50);
-
-    try {
-      await vi.advanceTimersByTimeAsync(50);
-      await vi.advanceTimersByTimeAsync(400);
-      firstSaveGate.resolve();
-      await expect(drain).resolves.toEqual([
-        expect.objectContaining({ suggestedFilename: "first.txt" }),
-        expect.objectContaining({ suggestedFilename: "sibling.txt" }),
-      ]);
-    } finally {
-      clearTimeout(sibling);
-      capture.dispose();
-    }
   });
 
   it("keeps started saves with their owner and assigns future downloads to the latest action", async () => {
@@ -597,7 +571,7 @@ describe("observed browser dialogs", () => {
   });
 
   it("uses the default arm-next-dialog timeout for non-finite timeoutMs", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     vi.setSystemTime(0);
     const { arm, observe, emitAll: emit, dialogs } = observedPage();
     const dialog = createDialog({ type: "alert", message: "Still armed" });
@@ -618,6 +592,7 @@ describe("observed browser dialogs", () => {
   });
 
   it("does not arm next-dialog responses when the expiry would overflow Date bounds", () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     vi.spyOn(Date, "now").mockReturnValue(MAX_DATE_TIMESTAMP_MS);
     const { arm, emitAll: emit, dialogs } = observedPage();
     const dialog = createDialog({ type: "alert", message: "Still pending" });
