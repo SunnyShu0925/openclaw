@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "../../../packages/terminal-core/src/ansi.js";
 import type { CronJob } from "../../cron/types.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
+import { createAbortError } from "../../infra/abort-signal.js";
 import type { RuntimeEnv } from "../../runtime.js";
+import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import {
   ExpectedCliError,
   formatCliFailureLines,
@@ -15,6 +17,7 @@ import {
   enrichCronJsonWithStatus,
   getCronChannelOptions,
   handleCronCliError,
+  handleCronCliErrorUnlessInterrupted,
   parseAt,
   parseCronCommandEnv,
   parseCronStringList,
@@ -372,5 +375,51 @@ describe("handleCronCliError", () => {
       cause: new Error("Runtime load failed"),
     });
     expect(renderJsonError(error, ["automations", "status"]).thrown).toBe(error);
+  });
+});
+
+describe("handleCronCliErrorUnlessInterrupted", () => {
+  const cancelledRead = () => createAbortError("gateway request aborted for cron.get");
+
+  // The CLI abort owner closes the invocation scope; commands see that signal.
+  async function duringInterrupt(run: () => void): Promise<void> {
+    const scope = new AsyncWorkScope();
+    await scope.track(() => {
+      scope.beginClose(new DOMException("CLI stopping (SIGINT)", "AbortError"));
+      run();
+    });
+  }
+
+  it("stays quiet for the read this invocation cancelled", async () => {
+    await duringInterrupt(() => {
+      expect(() => handleCronCliErrorUnlessInterrupted(cancelledRead())).not.toThrow();
+    });
+  });
+
+  it("keeps the canonical failure document for a mutation the interrupt never cancelled", async () => {
+    const argv = process.argv;
+    process.argv = [...argv.slice(0, 2), "cron", "edit", "job-1", "--json"];
+    vi.stubEnv("OPENCLAW_DEBUG", "");
+    try {
+      let thrown: unknown;
+      await duringInterrupt(() => {
+        try {
+          // cron update keeps its lifetime through SIGINT, so this rejection is real.
+          handleCronCliErrorUnlessInterrupted(
+            new GatewayClientRequestError({ message: "automation store is read-only" }),
+          );
+        } catch (error) {
+          thrown = error;
+        }
+      });
+      expect(thrown).toBeInstanceOf(ExpectedCliError);
+      expect(formatCliJsonFailure(thrown)).toEqual({
+        ok: false,
+        error: { type: "cli_error", message: "automation store is read-only" },
+      });
+    } finally {
+      process.argv = argv;
+      vi.unstubAllEnvs();
+    }
   });
 });

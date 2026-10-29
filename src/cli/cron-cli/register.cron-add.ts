@@ -23,7 +23,7 @@ import {
   assertCronTimeoutSupported,
   coerceCronDeliveryPreviews,
   enrichCronJsonWithStatus,
-  handleCronCliError,
+  handleCronCliErrorUnlessInterrupted,
   parseCronCommandArgv,
   parseCronCommandEnv,
   parseCronIntegerOption,
@@ -47,7 +47,7 @@ export function registerCronStatusCommand(cron: Command) {
           const res = await callGatewayFromCli("cron.status", opts, {});
           printCronJson(res);
         } catch (err) {
-          handleCronCliError(err);
+          handleCronCliErrorUnlessInterrupted(err);
         }
       }),
   );
@@ -83,7 +83,7 @@ export function registerCronListCommand(cron: Command) {
           const deliveryPreviews = coerceCronDeliveryPreviews(res);
           printCronList(res.jobs, defaultRuntime, { deliveryPreviews });
         } catch (err) {
-          handleCronCliError(err);
+          handleCronCliErrorUnlessInterrupted(err);
         }
       }),
   );
@@ -411,7 +411,7 @@ export function registerCronAddCommand(cron: Command) {
             printCronJson(res);
             await warnIfCronSchedulerDisabled(opts);
           } catch (err) {
-            handleCronCliError(err);
+            handleCronCliErrorUnlessInterrupted(err);
           }
         },
       ),

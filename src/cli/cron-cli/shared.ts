@@ -19,6 +19,7 @@ import type { assertSupportedJobSpec } from "../../cron/service/jobs-validation.
 import { resolveCronStaggerMs } from "../../cron/stagger.js";
 import type { CronDeliveryPreview, CronJob, CronSchedule } from "../../cron/types.js";
 import { danger } from "../../globals.js";
+import { isAbortError } from "../../infra/abort-signal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveTimezone } from "../../infra/format-time/format-datetime.js";
 import { formatExactDuration } from "../../infra/format-time/format-duration-exact.js";
@@ -26,6 +27,7 @@ import { formatDurationHuman } from "../../infra/format-time/format-duration.ts"
 import { parseOffsetlessIsoDateTimeInTimeZone } from "../../infra/format-time/parse-offsetless-zoned-datetime.js";
 import { formatTimestamp } from "../../logging/timestamps.js";
 import { defaultRuntime, ExitError, type RuntimeEnv } from "../../runtime.js";
+import { getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import { isOffsetlessIsoDateTime } from "../../shared/iso-time.js";
 import { formatCliCommand } from "../command-format.js";
 import {
@@ -297,6 +299,17 @@ function formatCronStatusForDisplay(job: CronJob) {
     label = "delivery unknown";
   }
   return { label, color };
+}
+
+/** Accepted commands record their own exit status; a cancelled read stays with the root owner. */
+export function handleCronCliErrorUnlessInterrupted(err: unknown) {
+  // Only the cancellation this invocation caused is quiet. Requests the interrupt did
+  // not cancel (cron add/update keep their lifetime) can still fail for real, and that
+  // diagnostic has to reach the operator like any other mutation failure.
+  if (getAsyncWorkSignal()?.aborted && isAbortError(err)) {
+    return;
+  }
+  handleCronCliError(err);
 }
 
 export function handleCronCliError(err: unknown) {

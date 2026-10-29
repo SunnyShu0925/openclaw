@@ -24,6 +24,7 @@ export const cliProcessTestFiles = [
   "src/cli/completion-cli.shadowed-options.process.test.ts",
   "src/cli/completion-cli.test.ts",
   "src/cli/completion-cli.visibility.test.ts",
+  "src/cli/cron-interrupt.process.test.ts",
   "src/cli/cron-output.process.test.ts",
   "src/cli/gateway-backed-exit-health.process.test.ts",
   "src/cli/gateway-backed-exit.process.test.ts",
