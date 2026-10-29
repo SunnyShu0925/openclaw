@@ -192,7 +192,7 @@ export async function runGatewayConversationList(params: {
       discoveryChannel !== undefined ? { channel: discoveryChannel } : {},
     ));
   const currentConfig = params.readCurrentConfig?.() ?? params.config;
-  const normalizedQuery = query?.toLowerCase() ?? "";
+  const normalizedQuery = query?.toLowerCase().normalize("NFC") ?? "";
   const searchQuery =
     normalizedQuery.startsWith("@") && normalizedQuery.length > 1
       ? normalizedQuery.slice(1)
@@ -202,7 +202,7 @@ export async function runGatewayConversationList(params: {
       !query ||
       discoveredConversationRefs.has(entry.conversationRef) ||
       [entry.conversationRef, entry.target, entry.label].some((value) =>
-        value?.toLowerCase().includes(searchQuery),
+        value?.toLowerCase().normalize("NFC").includes(searchQuery),
       ),
   );
   const eligibility = await resolveConversationRouteEligibilitiesForAgent({

@@ -168,6 +168,38 @@ describe("runGatewayConversationList", () => {
     ]);
   });
 
+  it("matches conversation label/target across NFC/NFD canonical forms", async () => {
+    // \u00e9 (NFC composed) and e\u0301 (NFD decomposed) render identically.
+    // A label/target persisted in NFC form must still match a query typed in
+    // NFD form (e.g. from a mobile IME) and vice versa.
+    const rows = [
+      {
+        conversationRef: "conv_" + "1".repeat(32),
+        channel: "reef",
+        accountId: "personal",
+        kind: "direct" as const,
+        peerId: "personal-peer",
+        target: "reef:user-caf\u00e9", // stored NFC (composed)
+        label: "Caf\u00e9 \u00e9quipe", // stored NFC (composed)
+        firstSeenAt: 100,
+        lastSeenAt: 100,
+      },
+    ];
+    vi.spyOn(conversationRegistry, "listConversations").mockImplementation(async () => rows);
+
+    // Query typed in NFD (decomposed) form — same visual characters, different bytes.
+    const result = await runGatewayConversationList({
+      config: { agents: { entries: { personal: {} } } },
+      agentId: "personal",
+      query: "cafe\u0301", // NFD
+      limit: 50,
+    });
+
+    expect(result.conversations).toMatchObject([
+      { target: "reef:user-caf\u00e9", label: "Caf\u00e9 \u00e9quipe" },
+    ]);
+  });
+
   it.each(["direct", "group"] as const)(
     "discovers a trusted %s address preserving its native identity",
     async (kind) => {
