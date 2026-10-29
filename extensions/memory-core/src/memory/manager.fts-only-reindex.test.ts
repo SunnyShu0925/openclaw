@@ -103,6 +103,7 @@ describe("memory manager FTS-only reindex", () => {
   });
 
   beforeEach(async () => {
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     createEmbeddingProviderMock.mockClear();
     providerConstructionError = null;
     providerConstructionGate = null;
@@ -189,7 +190,6 @@ describe("memory manager FTS-only reindex", () => {
   async function failedBootstrap() {
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     providerConstructionError = missingProviderAuth();
     const memoryManager = await createManager();
     await expect(memoryManager.search("Alpha topic")).resolves.toHaveLength(1);
@@ -266,7 +266,6 @@ describe("memory manager FTS-only reindex", () => {
   it("backs off when the first keyword-only publication also fails", async () => {
     const now = Date.now();
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
-    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     providerAvailable = true;
     providerEmbeddingError = new Error("embedding request failed during bootstrap");
     const memoryManager = await createManager();
@@ -296,7 +295,6 @@ describe("memory manager FTS-only reindex", () => {
       const idle = memoryManager as unknown as { awaitManagerIdle(): Promise<void> };
       const now = Date.now();
       const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-      vi.spyOn(performance, "now").mockImplementation(() => Date.now());
       providerEmbeddingError = providerQueryError = quotaError();
       await writeMemory("Alpha topic\n\nPending quota update.");
       // The observation fixture leaves dirty notification to the test.
@@ -337,7 +335,6 @@ describe("memory manager FTS-only reindex", () => {
   it("updates a keyword-only index during the original embedding cooldown", async () => {
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     providerAvailable = true;
     providerEmbeddingError = providerQueryError = quotaError();
     const memoryManager = await createManager();
@@ -392,7 +389,6 @@ describe("memory manager FTS-only reindex", () => {
     const credential = "sk-test-abcdefghijklmnopqrstuvwxyz123456";
     const now = Date.now();
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
-    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     providerAvailable = true;
     const firstManager = await createManager();
     await firstManager.sync({ force: true });

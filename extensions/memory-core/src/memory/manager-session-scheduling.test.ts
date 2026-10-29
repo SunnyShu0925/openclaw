@@ -67,32 +67,26 @@ describe("session index scheduling", () => {
     archiveFiles: [],
   });
 
-  it("waits for a fresh quiet period and includes every pending session in one pass", async () => {
-    const first = await append("first");
-    await vi.advanceTimersByTimeAsync(20_000);
-    const second = await append("second");
-    await append("first");
-    await vi.advanceTimersByTimeAsync(29_999);
-    expect(harness.syncCalls).toEqual([]);
-
-    await advanceSessionTime(1);
-    expect(harness.syncCalls).toEqual([delta(first, second)]);
-    await vi.advanceTimersByTimeAsync(300_000);
-    expect(harness.syncCalls).toHaveLength(1);
-  });
-
-  it("bounds continuous transcript deferral at five minutes", async () => {
-    const target = await append("continuous");
-    for (let elapsed = 0; elapsed < 280_000; elapsed += 20_000) {
-      await vi.advanceTimersByTimeAsync(20_000);
-      await append("continuous");
-    }
-    await vi.advanceTimersByTimeAsync(19_999);
-    expect(harness.syncCalls).toEqual([]);
-
-    await advanceSessionTime(1);
-    expect(harness.syncCalls).toEqual([delta(target)]);
-  });
+  it.each([1, 14])(
+    "coalesces %i activity intervals within quiet and maximum deadlines",
+    async (updates) => {
+      const first = await append("first");
+      let second = first;
+      for (let update = 0; update < updates; update++) {
+        await vi.advanceTimersByTimeAsync(20_000);
+        second = await append("second");
+        await append("first");
+      }
+      vi.setSystemTime(Date.now() + (updates === 14 ? 120_000 : 0));
+      await append("first");
+      await vi.advanceTimersByTimeAsync(updates === 14 ? 19_999 : 29_999);
+      expect(harness.syncCalls).toEqual([]);
+      await advanceSessionTime(1);
+      expect(harness.syncCalls).toEqual([delta(first, second)]);
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(harness.syncCalls).toHaveLength(1);
+    },
+  );
 
   it("starts overdue work as soon as a long running turn settles", async () => {
     activity.listener?.(true);
@@ -269,36 +263,5 @@ describe("session index scheduling", () => {
     expect(index).toHaveBeenCalledTimes(5);
     await advanceSessionTime(3_600_000);
     expect(index).toHaveBeenCalledTimes(5);
-  });
-
-  it("keeps the pass deferred across a wall-clock step and publishes on the monotonic schedule", async () => {
-    const target = await append("clock-jump");
-    // Continuous transcript updates keep the pass deferred (each update re-arms
-    // from sessionLastActivity); the 5-min max-deferral bounds it.
-    for (let elapsed = 0; elapsed < 200_000; elapsed += 20_000) {
-      await vi.advanceTimersByTimeAsync(20_000);
-      await append("clock-jump");
-    }
-    await vi.advanceTimersByTimeAsync(19_999);
-    expect(harness.syncCalls).toEqual([]);
-
-    // The wall clock jumps forward +120s while the monotonic clock (which now
-    // seeds every deadline) has not advanced. The recomputed pass must not
-    // collapse to an immediate fire just because Date.now() moved.
-    const wallSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 120_000);
-
-    // A fresh transcript update arrives after the wall step. On the old
-    // Date.now implementation the 5-min max-deferral (seeded from the original
-    // pendingSince) looks already expired, so the pass fires immediately; the
-    // monotonic implementation retains its remaining quiet period.
-    await append("clock-jump");
-    await vi.advanceTimersByTimeAsync(29_999);
-    expect(harness.syncCalls).toEqual([]);
-
-    // The remaining quiet period elapses on the monotonic clock and the
-    // scheduled pass runs once, publishing every pending session.
-    await advanceSessionTime(1);
-    expect(harness.syncCalls).toEqual([delta(target)]);
-    wallSpy.mockRestore();
   });
 });
