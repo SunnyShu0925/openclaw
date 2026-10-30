@@ -4,7 +4,9 @@ import * as base64 from "@openclaw/media-core/base64";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cancelTrackedResponse } from "../../test/helpers/provider-http.js";
 import { makeStallingStream } from "../infra/http-body.test-support.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { stubFetchResponse } from "../test-utils/camera-url-test-helpers.js";
+import { withFetchPreconnect } from "../test-utils/fetch-mock.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
 
 type PublishOutputFileAtomically =
@@ -27,9 +29,14 @@ vi.mock("node:fs/promises", async () => {
 
 const fetchGuardMocks = vi.hoisted(() => ({
   fetchWithSsrFGuard: vi.fn(
-    async (params: { url: string; timeoutMs?: number; requireHttps?: boolean }) => {
+    async (params: {
+      url: string;
+      timeoutMs?: number;
+      requireHttps?: boolean;
+      signal?: AbortSignal;
+    }) => {
       return {
-        response: await globalThis.fetch(params.url),
+        response: await globalThis.fetch(params.url, { signal: params.signal }),
         finalUrl: params.url,
         release: async () => {},
       };
@@ -73,6 +80,35 @@ const writeUrl = (filePath: string, name: string) =>
     payload: { url: cameraUrl(name) },
     expectedHost: cameraHost,
   });
+
+/** Serves a camera body that stalls after its first chunk until the request is aborted. */
+function stubInterruptibleUrlBody(chunks: Uint8Array[]) {
+  let pendingReads = 0;
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+      for (const chunk of chunks) {
+        streamController.enqueue(chunk);
+      }
+    },
+    pull() {
+      pendingReads += 1;
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    withFetchPreconnect(
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        init?.signal?.addEventListener("abort", () => controller?.error(init.signal?.reason), {
+          once: true,
+        });
+        return new Response(stream, { status: 200 });
+      }),
+    ),
+  );
+  return { stream, pendingReads: () => pendingReads };
+}
 
 async function expectOutput(dir: string, out: string, content: string | Buffer) {
   await expect(fs.readFile(out)).resolves.toEqual(
@@ -362,6 +398,37 @@ describe("nodes camera helpers", () => {
 
     await expect(writeUrl("/tmp/ignored", "clip.mp4")).rejects.toThrow(/redirect host/i);
     expect(tracked.wasCanceled()).toBe(true);
+  });
+
+  it("does not start a camera download after an accepted interruption", async () => {
+    const work = new AsyncWorkScope();
+    work.beginClose(new Error("camera download interrupted"));
+
+    await withCameraTempDir(async (dir) => {
+      const out = path.join(dir, "interrupted.bin");
+      await expect(work.track(() => writeUrl(out, "interrupted.bin"))).rejects.toThrow(
+        /camera download interrupted/,
+      );
+      expect(fetchGuardMocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
+      expect(await fs.readdir(dir)).toEqual([]);
+    });
+  });
+
+  it("stops an in-flight camera download when the invocation is interrupted", async () => {
+    const work = new AsyncWorkScope();
+    const body = stubInterruptibleUrlBody([Buffer.from("first camera chunk")]);
+
+    await withCameraTempDir(async (dir) => {
+      const out = path.join(dir, "interrupted-download.bin");
+      const download = work.track(() => writeUrl(out, "interrupted-download.bin"));
+      await vi.waitFor(() => expect(body.pendingReads()).toBeGreaterThan(0));
+
+      work.beginClose(new Error("camera download interrupted"));
+
+      await expect(download).rejects.toThrow(/camera download interrupted/);
+      expect(body.stream.locked).toBe(false);
+      expect(await fs.readdir(dir)).toEqual([]);
+    });
   });
 
   it.each([

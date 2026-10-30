@@ -9,6 +9,7 @@ import { toErrorObject } from "../infra/errors.js";
 import { cancelUnreadResponseBody } from "../infra/http-body.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { normalizeHostname } from "../infra/net/hostname.js";
+import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { asBoolean } from "../utils/boolean.js";
 import { CLI_NAME } from "./cli-name.js";
 import { resolveTempPathParts } from "./nodes-media-utils.js";
@@ -151,6 +152,8 @@ function validateCameraPayloadUrl(url: string, expectedNodeHost: string): string
 /** Download a node-hosted media URL to disk after HTTPS, host, redirect, and size checks. */
 async function writeUrlToFile(filePath: string, url: string, opts: { expectedHost: string }) {
   const expectedHost = validateCameraPayloadUrl(url, opts.expectedHost);
+  // The invocation's work scope owns interruption, so an accepted signal stops the transfer.
+  const signal = getAsyncWorkSignal();
 
   // The node host is allowed even when private because the RPC response supplied its remote IP.
   const policy = {
@@ -162,12 +165,14 @@ async function writeUrlToFile(filePath: string, url: string, opts: { expectedHos
   let release: () => Promise<void> = async () => {};
   let bytes = 0;
   try {
+    signal?.throwIfAborted();
     const guarded = await fetchWithSsrFGuard({
       url,
       auditContext: "writeUrlToFile",
       policy,
       requireHttps: true,
       timeoutMs: CAMERA_URL_DOWNLOAD_TIMEOUT_MS,
+      signal,
     });
     release = guarded.release;
     const res = guarded.response;
@@ -203,6 +208,7 @@ async function writeUrlToFile(filePath: string, url: string, opts: { expectedHos
       throw new Error(`failed to download ${url}: empty response body`);
     }
 
+    signal?.throwIfAborted();
     await publishOutputFileAtomically({
       filePath,
       writeTemp: async (tempPath) => {
@@ -210,6 +216,7 @@ async function writeUrlToFile(filePath: string, url: string, opts: { expectedHos
         const reader = body.getReader();
         try {
           while (true) {
+            signal?.throwIfAborted();
             const { done, value } = await reader.read();
             if (done) {
               break;
