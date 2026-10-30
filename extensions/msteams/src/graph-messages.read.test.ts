@@ -230,7 +230,7 @@ function expectReadPath(path: string) {
 
 describe("searchMessagesMSTeams", () => {
   it("filters chat messages locally and normalizes HTML content", async () => {
-    const content = "<p>Meeting <b>notes</b> from Monday</p>";
+    const content = "<p>Cafe\u0301 <b>notes</b> from Monday</p>";
     const from = { user: { id: "u1", displayName: "Alice" } };
     const createdAt = "2026-03-25T10:00:00Z";
     mockState.fetchGraphJson.mockResolvedValue({
@@ -245,7 +245,7 @@ describe("searchMessagesMSTeams", () => {
       ],
     });
 
-    const result = await graph.searchMessagesMSTeams({ ...target, query: "meeting notes" });
+    const result = await graph.searchMessagesMSTeams({ ...target, query: "CAFÉ notes" });
 
     expect(result).toEqual({
       messages: [
@@ -259,22 +259,6 @@ describe("searchMessagesMSTeams", () => {
       truncated: false,
     });
     expectReadPath(`${chatPath}/messages?$top=50`);
-  });
-
-  it("matches canonically equivalent message text", async () => {
-    mockState.fetchGraphJson.mockResolvedValue({
-      value: [
-        searchMessage("msg-1", "Café planning notes".normalize("NFD"), undefined, "text"),
-        searchMessage("msg-2", "Unrelated update", undefined, "text"),
-      ],
-    });
-
-    const result = await graph.searchMessagesMSTeams({
-      ...target,
-      query: "CAFÉ planning".normalize("NFC"),
-    });
-
-    expect(result.messages.map((message) => message.id)).toEqual(["msg-1"]);
   });
 
   it("keeps channel search scoped to the selected channel", async () => {
