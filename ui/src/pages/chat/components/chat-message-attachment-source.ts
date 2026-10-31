@@ -380,8 +380,8 @@ export function resolveAttachmentSource(
         assistantAvailability.mediaTicket,
         options,
         attachment.label,
-        undefined,
-        undefined,
+        undefined, // variant: neither a thumbnail nor a rendition width
+        undefined, // previewWidth
         inlinePdfPreview,
       )
     : isManagedOutgoingMediaSource(attachment.url)
