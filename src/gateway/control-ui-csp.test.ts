@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
+import type { ServerResponse } from "node:http";
 import { describe, expect, it } from "vitest";
-import { buildControlUiCspHeader, computeInlineScriptHashes } from "./control-ui-csp.js";
+import {
+  applyAssistantMediaInlinePreviewHeaders,
+  buildControlUiCspHeader,
+  computeInlineScriptHashes,
+} from "./control-ui-csp.js";
+import { createRemoteControlUiIngressTestContext } from "./remote-control-ui.test-support.js";
 
 describe("buildControlUiCspHeader", () => {
   it("restricts execution and resource loading to the baseline security policy", () => {
@@ -58,6 +64,67 @@ describe("buildControlUiCspHeader", () => {
     expect(csp).toContain("'sha256-abc123'");
     expect(csp).toContain("'wasm-unsafe-eval'");
     expect(csp).not.toMatch(/script-src[^;]*'unsafe-eval'(?!-)/);
+  });
+});
+
+describe("applyAssistantMediaInlinePreviewHeaders", () => {
+  function makeResponse() {
+    const headers: Record<string, string> = {};
+    const removed: string[] = [];
+    const res = {
+      setHeader(name: string, value: string) {
+        headers[name] = value;
+      },
+      removeHeader(name: string) {
+        removed.push(name);
+        delete headers[name];
+      },
+    } as unknown as ServerResponse;
+    return { res, headers, removed };
+  }
+
+  it("frames only for this same-origin document", () => {
+    const { res, headers, removed } = makeResponse();
+    applyAssistantMediaInlinePreviewHeaders(res);
+    expect(removed).toEqual(["X-Frame-Options"]);
+    expect(headers["Content-Security-Policy"]).toContain("frame-ancestors 'self'");
+  });
+
+  it("admits the Control UI origin alongside the configured outer ancestors", () => {
+    const { res, headers } = makeResponse();
+    // Nested reader: the Control UI document (publicOrigin) is the immediate
+    // parent, and its own configured ancestors sit above it.
+    applyAssistantMediaInlinePreviewHeaders(
+      res,
+      createRemoteControlUiIngressTestContext({
+        publicOrigin: "https://ui.example.test",
+        frameAncestors: ["https://host.example.test"],
+      }),
+    );
+    const frameAncestors = headers["Content-Security-Policy"]
+      ?.split("; ")
+      .find((directive) => directive.startsWith("frame-ancestors "));
+    expect(frameAncestors?.split(" ")).toEqual([
+      "frame-ancestors",
+      "https://ui.example.test",
+      "https://host.example.test",
+    ]);
+  });
+
+  it("rejects a stale ingress snapshot before relaxing framing", () => {
+    const { res, headers, removed } = makeResponse();
+    expect(() =>
+      applyAssistantMediaInlinePreviewHeaders(
+        res,
+        createRemoteControlUiIngressTestContext({
+          assertCurrent() {
+            throw new Error("stale ingress");
+          },
+        }),
+      ),
+    ).toThrow("stale ingress");
+    expect(removed).toEqual([]);
+    expect(headers["Content-Security-Policy"]).toBeUndefined();
   });
 });
 

@@ -75,6 +75,15 @@ function servesInlinePdf(rawMimeType: string): boolean {
   return (rawMimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "") === "application/pdf";
 }
 
+/** Byte-identical payloads keep the reader, so the viewer keeps page and zoom. */
+function sameBytes(left: ArrayBuffer, right: ArrayBuffer): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  const other = new Uint8Array(right);
+  return new Uint8Array(left).every((byte, index) => byte === other[index]);
+}
+
 /** Owns the bounded, browser-native PDF surface for same-origin attachments. */
 export function ChatPdfPreview(props: {
   src: string;
@@ -145,13 +154,7 @@ export function ChatPdfPreview(props: {
         }
       },
       {
-        equals: (before, next) => {
-          if (!before.ok || !next.ok || before.bytes.byteLength !== next.bytes.byteLength) {
-            return false;
-          }
-          const right = new Uint8Array(next.bytes);
-          return new Uint8Array(before.bytes).every((byte, index) => byte === right[index]);
-        },
+        equals: (before, next) => before.ok && next.ok && sameBytes(before.bytes, next.bytes),
       },
     );
   const renderFilePreview = () => {
@@ -218,40 +221,47 @@ export function ChatPdfPreview(props: {
     );
   };
   // Same-origin HTTP srcs carry a Content-Disposition filename, so load the real
-  // URL directly (not an anonymous Blob). The frame URL tracks props.src reactively
-  // so a renewed media ticket replaces the stale, expiring URL. The renewal is a
-  // visible frame reload even for unchanged bytes, which is the accepted cost of
-  // never leaving an expired ticket behind. The inline disposition makes the
-  // browser-native PDF viewer render the payload while keeping the filename. A
-  // bounded read validates reachability before the first frame and re-validates
-  // each renewal; a failed renewal retires the stale reader so a later valid
-  // ticket can recover it.
-  const inlinePreviewUrl = () => {
-    const src = props.src;
-    const sep = src.includes("?") ? "&" : "?";
-    return `${src}${sep}disposition=inline`;
-  };
+  // URL directly (not an anonymous Blob). The inline disposition makes the
+  // browser-native PDF viewer render the payload while keeping that filename.
+  const inlinePreviewUrl = (src: string) =>
+    `${src}${src.includes("?") ? "&" : "?"}disposition=inline`;
   const renderDirectPreview = () => {
-    // The bounded read tracks props.src, so a renewed ticket re-validates instead
-    // of pinning the expiring URL. A failed renewal settles to `ok: false` and
-    // retires the stale reader; a later valid ticket recovers it.
-    const result = createMemo<{ ok: true } | { ok: false; cause: unknown }>(async () => {
-      const src = props.src;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), PDF_PREVIEW_TIMEOUT_MS);
-      onCleanup(() => {
-        controller.abort();
-        clearTimeout(timeout);
-      });
-      try {
-        await readPreviewSource(src, undefined, controller.signal);
-        return { ok: true };
-      } catch (cause) {
-        return { ok: false, cause };
-      } finally {
-        clearTimeout(timeout);
-      }
-    });
+    // Renewal keeps the reader's page and zoom while the document is unchanged
+    // (docs/web/control-ui/chat.md). The bounded read tracks the live props.src so
+    // every renewed ticket re-validates, but the frame only moves to the renewed
+    // URL when the bytes actually differ: the previous URL has expired, yet the
+    // loaded document needs no request until the payload changes. A failed renewal
+    // retires the reader, and a later valid ticket recovers it.
+    let accepted: { bytes: ArrayBuffer; frameSrc: string } | undefined;
+    const result = createMemo<{ ok: true; frameSrc: string } | { ok: false; cause: unknown }>(
+      async () => {
+        const src = props.src;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), PDF_PREVIEW_TIMEOUT_MS);
+        onCleanup(() => {
+          controller.abort();
+          clearTimeout(timeout);
+        });
+        try {
+          const bytes = await readPreviewSource(src, undefined, controller.signal);
+          if (accepted && sameBytes(accepted.bytes, bytes)) {
+            return { ok: true, frameSrc: accepted.frameSrc };
+          }
+          accepted = { bytes, frameSrc: inlinePreviewUrl(src) };
+          return { ok: true, frameSrc: accepted.frameSrc };
+        } catch (cause) {
+          // Commit failure so a later ticket cannot revive the previously successful reader.
+          accepted = undefined;
+          return { ok: false, cause };
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+    );
+    const frameSrc = () => {
+      const value = result();
+      return value.ok ? value.frameSrc : undefined;
+    };
     const error = () => {
       const value = result();
       if (!value.ok) {
@@ -269,7 +279,7 @@ export function ChatPdfPreview(props: {
             <iframe
               class="sidebar-pdf-preview__frame"
               title={props.label}
-              src={inlinePreviewUrl()}
+              src={frameSrc()}
               referrerpolicy="no-referrer"
             />
           </Show>

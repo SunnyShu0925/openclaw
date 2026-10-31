@@ -174,8 +174,9 @@ export function applyControlUiSecurityHeaders(
  * Content-Disposition filename on a toolbar download. Keep that relaxation to
  * this single inline-preview path: the response is same-origin, gated on the
  * explicit disposition=inline request flag, and frame-ancestors admits only
- * 'self' (or the configured remote ingress ancestors). All other media
- * responses keep the baseline anti-framing policy.
+ * 'self' (or, for remote ingress, the Control UI origin plus its configured
+ * outer ancestors, since the reader is a frame inside that document). All other
+ * media responses keep the baseline anti-framing policy.
  */
 export function applyAssistantMediaInlinePreviewHeaders(
   res: ServerResponse,
@@ -189,7 +190,9 @@ export function applyAssistantMediaInlinePreviewHeaders(
   res.setHeader(
     "Content-Security-Policy",
     buildControlUiCspHeader({
-      frameAncestors: remote?.frameAncestors?.length ? remote.frameAncestors : ["'self'"],
+      // The reader is nested inside the Control UI document, so its own origin is
+      // an ancestor too: match buildPdfPreviewWorkerCspHeader's nesting policy.
+      frameAncestors: remote ? [remote.publicOrigin, ...remote.frameAncestors] : ["'self'"],
     }),
   );
   res.setHeader("X-Content-Type-Options", "nosniff");

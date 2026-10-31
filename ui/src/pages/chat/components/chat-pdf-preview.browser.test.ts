@@ -35,10 +35,6 @@ it.skipIf(!browserMode)("fills the sidebar content with a bounded native PDF rea
     await expect.poll(() => panel.querySelector("iframe")).not.toBeNull();
     const frame = panel.querySelector<HTMLIFrameElement>("iframe")!;
     const surface = panel.querySelector<HTMLElement>(".sidebar-pdf-preview__surface")!;
-    // Same-origin srcs must not resolve to an anonymous Blob URL: that is what
-    // erases the filename in the browser's native PDF toolbar. The exact URL is
-    // implementation detail and intentionally not pinned here.
-    expect(frame.getAttribute("src")).not.toMatch(/^blob:/);
     expect(getComputedStyle(frame).display).toBe("block");
     const content = panel.querySelector<HTMLElement>(".sidebar-content")!;
     const contentBox = content.getBoundingClientRect();

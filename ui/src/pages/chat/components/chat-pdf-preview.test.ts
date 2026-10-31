@@ -237,8 +237,8 @@ it("retires file PDF bytes and pending grants on replacement and closure", async
   expect(urls.createObjectURL).toHaveBeenCalledOnce();
 });
 
-it.each(["renewed", "failed", "identity", "oversized"] as const)(
-  "revalidates a same-origin PDF ticket reactively without pinning a stale URL: %s",
+it.each(["renewed", "changed", "failed", "identity", "oversized"] as const)(
+  "revalidates a same-origin PDF ticket reactively: %s",
   async (change) => {
     const fetchMock = vi.fn<typeof fetch>();
     const renewal = Promise.withResolvers<Response>();
@@ -313,13 +313,26 @@ it.each(["renewed", "failed", "identity", "oversized"] as const)(
       return;
     }
 
-    // A renewed ticket keeps the reader but moves its src to the fresh URL, so the
-    // browser fetches the renewed content (changed bytes included) without a remount.
-    renewal.resolve(new Response("%PDF-1.7 renewed content"));
-    await waitForSolid(() => {
-      expect(query("iframe")).toBe(frame);
-      expect(frameSource()).toBe(inline(renewedSource));
+    if (change === "changed") {
+      // Different bytes must reach the reader, so the frame moves to the renewed URL
+      // without remounting the component.
+      renewal.resolve(new Response("%PDF-1.7 renewed content"));
+      await waitForSolid(() => {
+        expect(query("iframe")).toBe(frame);
+        expect(frameSource()).toBe(inline(renewedSource));
+      });
+      return;
+    }
+
+    // Identical bytes keep the reader's page and zoom: the frame keeps the URL it
+    // already loaded and the renewed ticket only re-validates in the background.
+    renewal.resolve(new Response("%PDF-1.7 original"));
+    await panel.updateComplete;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 25);
     });
+    expect(query("iframe")).toBe(frame);
+    expect(frameSource()).toBe(inline(source));
   },
 );
 
