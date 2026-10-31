@@ -54,26 +54,14 @@ export function parseControlUiLinkPreviewUrl(value: unknown, base?: string): URL
   return url;
 }
 
-/** True when the sniffed prefix is only a prefix of a Unicode BOM still being delivered.
- *
- * UTF-8 BOM is EF BB BF; UTF-16LE is FF FE; UTF-16BE is FE FF. A BOM can arrive
- * split across transport chunks, so a lone EF (or EF BB) may still become a
- * UTF-8 BOM, and a lone FF or FE may still become a UTF-16 BOM. When only such a
- * partial prefix is available, sniffCharset falls through to the declared HTTP
- * charset, which would permanently pin the wrong decoder before the real BOM
- * arrives; callers must defer header selection until no complete BOM can still
- * be pending.
- */
+// A partial BOM must not let a contradictory HTTP charset pin the decoder.
 function isPartialBomPrefix(bytes: Uint8Array): boolean {
   if (bytes.byteLength === 1) {
     return bytes[0] === 0xef || bytes[0] === 0xff || bytes[0] === 0xfe;
   }
-  // EF BB is a prefix of the UTF-8 BOM (EF BB BF); a complete FF FE or FE FF is
-  // not partial because sniffCharset already returns its encoding.
   return bytes.byteLength === 2 && bytes[0] === 0xef && bytes[1] === 0xbb;
 }
 
-/** Concatenate buffered sniff-prefix parts into one bounded byte array. */
 function concatBytes(parts: Uint8Array[], length: number): Uint8Array {
   const out = new Uint8Array(length);
   let offset = 0;
@@ -94,15 +82,9 @@ interface PreviewExtractionState {
   parser: Parser;
 }
 
-// Build a fresh parser bound to its own extraction state. Called once per
-// response and again when a non-UTF-8 encoding is chosen, so buffered prefix
-// bytes can be re-decoded under the right encoding without inheriting state
-// polluted by an earlier UTF-8 guess.
+// Recreate extraction when a declared charset requires replaying the sniff prefix.
 function createPreviewExtraction(): PreviewExtractionState {
-  // The parser is built inline so its callbacks can pause() once a head
-  // boundary is reached. htmlparser2 only invokes callbacks during write()/
-  // end(), which happens after the state object below is fully assigned, so
-  // the self-reference through `state` is always initialized at call time.
+  // Parser callbacks run only after construction, once state is initialized.
   const state: PreviewExtractionState = {
     metadata: new Map<string, string>(),
     links: [],
@@ -159,20 +141,9 @@ async function readPageMetadata(response: Response, finalUrl: string, signal: Ab
         onTimeout: undefined,
         cancel: (error) => reader.cancel(error),
         read: async (refreshTimeout) => {
-          // Stream every byte to the parser as it arrives so a complete short
-          // head stops the read immediately (the pre-charset behavior). While
-          // the decoder is still undecided, accumulate a bounded cross-chunk
-          // prefix and re-probe it so a declaration split across transport
-          // chunks is honored before the decoder is pinned.
-          //
-          // A single persistent UTF-8 fallback is kept so an incomplete
-          // multibyte sequence that spans response chunks is retained across
-          // writes (a fresh TextDecoder per chunk would drop the pending bytes).
-          // When a non-UTF-8 encoding is selected, the parser and its
-          // extraction state are rebuilt and the whole buffered prefix is
-          // replayed under the chosen encoding, so bytes received before the
-          // declaration (a split BOM, or content that precedes <meta charset>)
-          // are decoded correctly instead of being fed through the UTF-8 guess.
+          // Parse immediately for early head completion, retaining a bounded prefix
+          // to replay if a charset declaration arrives after non-ASCII content.
+          // Keep fallback decoder state across chunks for split UTF-8 sequences.
           const sniffParts: Uint8Array[] = [];
           let sniffLen = 0;
           let decoder: TextDecoder | undefined;
@@ -197,24 +168,16 @@ async function readPageMetadata(response: Response, finalUrl: string, signal: Ab
               sniffLen += take;
               const prefix = concatBytes(sniffParts, sniffLen);
               const charset = sniffCharset(response.headers.get("content-type"), prefix);
-              // If the prefix could still be an incomplete Unicode BOM (see
-              // isPartialBomPrefix), do not pin a header-declared charset yet:
-              // the real BOM may arrive on a later chunk and must take
-              // precedence over a contradictory HTTP charset. Deferring keeps
-              // accumulating so the complete BOM is honored instead of being
-              // decoded as the declared (wrong) encoding.
+              // A split BOM takes precedence over a contradictory HTTP header.
               if (charset && !isPartialBomPrefix(prefix)) {
                 try {
                   decoder = new TextDecoder(charset);
                 } catch {
                   decoder = new TextDecoder("utf-8");
                 }
-                // Replay the entire buffered prefix under the chosen encoding
-                // from a fresh parser; discard the UTF-8 guess's state.
+                // Discard metadata decoded under the earlier UTF-8 guess.
                 state = createPreviewExtraction();
-                state.parser.write(
-                  decoder.decode(concatBytes(sniffParts, sniffLen), { stream: true }),
-                );
+                state.parser.write(decoder.decode(prefix, { stream: true }));
                 feed = bounded.subarray(take, bounded.byteLength);
               }
             }
