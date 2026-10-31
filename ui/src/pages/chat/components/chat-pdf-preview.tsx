@@ -23,6 +23,41 @@ registerEnglishCatalog(registerChatComposerEnglish);
 const PDF_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
 const PDF_PREVIEW_TIMEOUT_MS = 10_000;
 
+/**
+ * Bounded read shared by the HTTP-src and file previews: fetch the payload (or the
+ * granted file) and validate it fits the preview limit. HTTP srcs only need the
+ * validation so the frame can load the real URL and keep its Content-Disposition name.
+ */
+async function readPreviewSource(
+  src: string,
+  file: FilePreviewSource | undefined,
+  signal: AbortSignal,
+): Promise<ArrayBuffer> {
+  // File previews retain their identity, not an expiring download grant.
+  const original = file ? await file.download(signal) : null;
+  signal.throwIfAborted();
+  if (file && !original) {
+    throw new Error("PDF file unavailable");
+  }
+  const response =
+    original && "blob" in original
+      ? new Response(original.blob)
+      : await fetch(original?.url ?? src, {
+          credentials: "same-origin",
+          redirect: "error",
+          signal,
+        });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("PDF attachment unavailable");
+  }
+  const bytes = await readResponseBytesWithinLimit(response, PDF_PREVIEW_MAX_BYTES);
+  if (!bytes) {
+    throw new Error("PDF attachment exceeds preview limit");
+  }
+  return bytes;
+}
+
 export function isPdfAttachment(rawMimeType: string, filename: string): boolean {
   const mimeType = rawMimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   return (
@@ -78,15 +113,8 @@ export function ChatPdfPreview(props: {
       </Show>
     </div>
   );
-  const renderPreview = (input: ReturnType<typeof source>) => {
-    const sizeBytes = input[2];
-    if (!input[3]) {
-      return <AttachmentPreviewSkeleton />;
-    }
-    if (sizeBytes !== undefined && sizeBytes > PDF_PREVIEW_MAX_BYTES) {
-      return unavailable();
-    }
-    const result = createMemo<{ ok: true; bytes: ArrayBuffer } | { ok: false; cause: unknown }>(
+  const readBounded = () =>
+    createMemo<{ ok: true; bytes: ArrayBuffer } | { ok: false; cause: unknown }>(
       async () => {
         const src = props.src;
         const file = props.file;
@@ -98,28 +126,7 @@ export function ChatPdfPreview(props: {
           clearTimeout(timeout);
         });
         try {
-          // File previews retain their identity, not an expiring download grant.
-          const original = file ? await file.download(controller.signal) : null;
-          controller.signal.throwIfAborted();
-          if (file && !original) {
-            throw new Error("PDF file unavailable");
-          }
-          const response =
-            original && "blob" in original
-              ? new Response(original.blob)
-              : await fetch(original?.url ?? src, {
-                  credentials: "same-origin",
-                  redirect: "error",
-                  signal: controller.signal,
-                });
-          if (!response.ok) {
-            await response.body?.cancel().catch(() => undefined);
-            throw new Error("PDF attachment unavailable");
-          }
-          const bytes = await readResponseBytesWithinLimit(response, PDF_PREVIEW_MAX_BYTES);
-          if (!bytes) {
-            throw new Error("PDF attachment exceeds preview limit");
-          }
+          const bytes = await readPreviewSource(src, file, controller.signal);
           return { ok: true, bytes };
         } catch (cause) {
           // Commit failure so a later ticket cannot revive the previously successful reader.
@@ -138,6 +145,8 @@ export function ChatPdfPreview(props: {
         },
       },
     );
+  const renderFilePreview = () => {
+    const result = readBounded();
     const bytes = () => {
       const value = result();
       return value.ok ? value.bytes : undefined;
@@ -198,6 +207,67 @@ export function ChatPdfPreview(props: {
         </Show>
       </Loading>
     );
+  };
+  // Same-origin HTTP srcs carry a Content-Disposition filename, so load the real
+  // URL directly (not an anonymous Blob) and capture src at render time to keep
+  // the reader across a renewed ticket instead of reloading the viewer.
+  const renderDirectPreview = (src: string) => {
+    const result = createMemo<{ ok: true } | { ok: false; cause: unknown }>(async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), PDF_PREVIEW_TIMEOUT_MS);
+      onCleanup(() => {
+        controller.abort();
+        clearTimeout(timeout);
+      });
+      try {
+        const bytes = await readPreviewSource(src, undefined, controller.signal);
+        void bytes;
+        return { ok: true };
+      } catch (cause) {
+        return { ok: false, cause };
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+    const error = () => {
+      const value = result();
+      if (!value.ok) {
+        throw value.cause;
+      }
+      return null;
+    };
+    return (
+      <Loading fallback={<AttachmentPreviewSkeleton />}>
+        <Show
+          when={result().ok || !isPending(() => result())}
+          fallback={<AttachmentPreviewSkeleton />}
+        >
+          <Show when={result().ok}>
+            <iframe
+              class="sidebar-pdf-preview__frame"
+              title={props.label}
+              src={src}
+              referrerpolicy="no-referrer"
+            />
+          </Show>
+          <Errored fallback={(_error) => unavailable()}>{error()}</Errored>
+        </Show>
+      </Loading>
+    );
+  };
+  const renderPreview = (input: ReturnType<typeof source>) => {
+    const sizeBytes = input[2];
+    if (!input[3]) {
+      return <AttachmentPreviewSkeleton />;
+    }
+    if (sizeBytes !== undefined && sizeBytes > PDF_PREVIEW_MAX_BYTES) {
+      return unavailable();
+    }
+    // File previews have no HTTP response, so they keep the bounded Blob detour.
+    if (props.file) {
+      return renderFilePreview();
+    }
+    return renderDirectPreview(props.src);
   };
   return (
     <openclaw-chat-pdf-preview style={{ display: "contents" }}>
