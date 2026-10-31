@@ -19,7 +19,7 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
   return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 }
 function html(text: string, charset = "utf-8") {
-  return new Response(iconv.encode(text, charset), {
+  return new Response(new Uint8Array(iconv.encode(text, charset)), {
     headers: { "content-type": "text/html; charset=" + charset },
   });
 }
