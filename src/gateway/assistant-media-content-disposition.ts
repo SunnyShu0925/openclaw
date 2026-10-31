@@ -9,7 +9,16 @@ export function resolveAssistantMediaFilename(
   return basenameFromAnyPath(filenameHint ?? "") || fallback;
 }
 
-export function buildAssistantMediaContentDisposition(filename: string, mime?: string): string {
+export type AssistantMediaDispositionOptions = {
+  /** Force inline rendering regardless of the media kind (e.g. browser-native PDF preview). */
+  inline?: boolean;
+};
+
+export function buildAssistantMediaContentDisposition(
+  filename: string,
+  mime?: string,
+  opts?: AssistantMediaDispositionOptions,
+): string {
   // Keep the RFC 6266 fallback ASCII; filename* carries the exact UTF-8 name.
   const sanitizedInput = truncateFilenamePreservingExtension(
     toUSVString(filename.replace(/[\r\n]/g, "_")),
@@ -20,7 +29,7 @@ export function buildAssistantMediaContentDisposition(filename: string, mime?: s
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   );
   const kind = kindFromMime(mime);
-  const inline = kind === "image" || kind === "audio" || kind === "video";
+  const inline = opts?.inline === true || kind === "image" || kind === "audio" || kind === "video";
   return `${inline ? "inline" : "attachment"}; filename="${fallback}"; filename*=UTF-8''${extended}`;
 }
 

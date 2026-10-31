@@ -163,7 +163,9 @@ it("aborts an interrupted PDF load and reloads it after reconnect", async () => 
   expect(download).not.toHaveBeenCalled();
   expect(objectUrls.createObjectURL).not.toHaveBeenCalled();
   expect(objectUrls.revokeObjectURL).not.toHaveBeenCalled();
-  expect(panel.querySelector("iframe")?.getAttribute("src")).toBe(source);
+  expect(panel.querySelector("iframe")?.getAttribute("src")).toBe(
+    "/__openclaw__/assistant-media?mediaTicket=pdf-preview&disposition=inline",
+  );
   expect(panel.querySelector("iframe")).toHaveProperty("title", "brief.pdf");
   expect(fetchMock).toHaveBeenCalledWith(
     source,
@@ -235,48 +237,107 @@ it("retires file PDF bytes and pending grants on replacement and closure", async
   expect(urls.createObjectURL).toHaveBeenCalledOnce();
 });
 
-it.each(["renewed", "identity", "oversized"] as const)(
-  "loads a same-origin PDF src directly without re-mounting on ticket refresh: %s",
+it.each(["renewed", "failed", "identity", "oversized"] as const)(
+  "revalidates a same-origin PDF ticket reactively without pinning a stale URL: %s",
   async (change) => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockImplementation(() => Promise.resolve(new Response("%PDF-1.7 original")));
+    const fetchMock = vi.fn<typeof fetch>();
+    const renewal = Promise.withResolvers<Response>();
+    fetchMock
+      .mockResolvedValueOnce(new Response("%PDF-1.7 original"))
+      .mockReturnValueOnce(renewal.promise);
     vi.stubGlobal("fetch", fetchMock);
     const panel = await mountAttachment({ sourceIdentity: "attachment:brief" });
     const query = (selector: string) => panel.querySelector(selector);
     const frameSource = () => query("iframe")?.getAttribute("src");
-    await waitForSolid(() => expect(frameSource()).toBe(source));
+    const inline = (src: string) => `${src}&disposition=inline`;
+    const renewedSource = "/__openclaw__/assistant-media?mediaTicket=renewed";
+    await waitForSolid(() => expect(frameSource()).toBe(inline(source)));
     const frame = query("iframe")!;
 
     panel.content = {
       ...panel.content,
-      src: "/__openclaw__/assistant-media?mediaTicket=renewed",
+      src: renewedSource,
       sourceIdentity: change === "identity" ? "attachment:other" : "attachment:brief",
       sizeBytes: change === "oversized" ? PDF_PREVIEW_MAX_BYTES + 1 : undefined,
     };
     await panel.updateComplete;
-    await waitForSolid(() => {
-      if (change === "identity") {
-        // A different attachment re-mounts the reader with the fresh ticket.
-        expect(frame.isConnected).toBe(false);
-        expect(query("iframe")).not.toBe(frame);
-        expect(frameSource()).toBe("/__openclaw__/assistant-media?mediaTicket=renewed");
-      } else if (change === "oversized") {
+    if (change === "oversized") {
+      // Oversized media retires without a network read and offers the fallback download.
+      await waitForSolid(() => {
         expect(query("[role=alert]")).not.toBeNull();
         expect(query("iframe")).toBeNull();
-      } else {
-        // A renewed ticket keeps the original frame; the memo excludes the src.
-        expect(query("iframe")).toBe(frame);
-        expect(frameSource()).toBe(source);
-      }
-    });
-    // Only an identity change re-reads the source; renewal and oversizing never re-fetch.
-    expect(fetchMock).toHaveBeenCalledTimes(change === "identity" ? 2 : 1);
-    if (change === "oversized") {
-      expect(panel.querySelector("a[download]")?.getAttribute("href")).toBe(
-        "/__openclaw__/assistant-media?mediaTicket=renewed",
-      );
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(panel.querySelector("a[download]")?.getAttribute("href")).toBe(renewedSource);
+      return;
     }
+    // A renewed ticket re-validates the fresh src instead of pinning the expiring URL.
+    await waitForSolid(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    if (change === "identity") {
+      // A different attachment re-mounts the reader with the fresh ticket.
+      renewal.resolve(new Response("%PDF-1.7 renewed"));
+      await waitForSolid(() => {
+        expect(frame.isConnected).toBe(false);
+        expect(query("iframe")).not.toBe(frame);
+        expect(frameSource()).toBe(inline(renewedSource));
+      });
+      return;
+    }
+
+    if (change === "failed") {
+      // A failed renewal cancels transport, retires the stale reader, and offers the fallback.
+      const oversized = new Response("oversized".repeat(PDF_PREVIEW_MAX_BYTES), {
+        headers: { "Content-Length": String(PDF_PREVIEW_MAX_BYTES + 1) },
+      });
+      const cancel = vi.spyOn(oversized.body!, "cancel");
+      renewal.resolve(oversized);
+      await waitForSolid(() => {
+        expect(cancel).toHaveBeenCalledOnce();
+        expect(query("iframe")).toBeNull();
+        expect(query("[role=alert]")).not.toBeNull();
+        expect(panel.querySelector("a[download]")?.getAttribute("href")).toContain("renewed");
+      });
+      // A later valid ticket recovers the inline reader from the prior failure.
+      fetchMock.mockResolvedValueOnce(new Response("%PDF-1.7 recovered"));
+      panel.content = {
+        ...panel.content,
+        src: "/__openclaw__/assistant-media?mediaTicket=recovered",
+      };
+      await panel.updateComplete;
+      await waitForSolid(() => {
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(frameSource()).toBe(inline("/__openclaw__/assistant-media?mediaTicket=recovered"));
+        expect(query("[role=alert]")).toBeNull();
+      });
+      return;
+    }
+
+    // A renewed ticket keeps the reader but moves its src to the fresh URL, so the
+    // browser fetches the renewed content (changed bytes included) without a remount.
+    renewal.resolve(new Response("%PDF-1.7 renewed content"));
+    await waitForSolid(() => {
+      expect(query("iframe")).toBe(frame);
+      expect(frameSource()).toBe(inline(renewedSource));
+    });
+  },
+);
+
+it.each(["", "application/octet-stream"] as const)(
+  "keeps the bounded Blob reader for a PDF the Gateway cannot label inline: %s",
+  async (mimeType) => {
+    // Filename-only PDFs are still previewed, but the Gateway would answer them as a
+    // download, so the frame must not point at the ticket URL.
+    const urls = stubObjectUrls();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("%PDF-1.7\n"));
+    vi.stubGlobal("fetch", fetchMock);
+    const panel = await mountAttachment({ mimeType });
+    await waitForSolid(() => expect(panel.querySelector("iframe")).not.toBeNull());
+    const frameSrc = panel.querySelector("iframe")!.getAttribute("src")!;
+    expect(frameSrc).toMatch(/^blob:/);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(source);
+    expect(urls.createObjectURL).toHaveBeenCalledOnce();
   },
 );
 

@@ -66,6 +66,15 @@ export function isPdfAttachment(rawMimeType: string, filename: string): boolean 
   );
 }
 
+/**
+ * Only a response the Gateway can label `application/pdf` is inlined: that is the
+ * one case where the native viewer renders and keeps the Content-Disposition name.
+ * A PDF known by filename alone keeps the bounded Blob detour so it still renders.
+ */
+function servesInlinePdf(rawMimeType: string): boolean {
+  return (rawMimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "") === "application/pdf";
+}
+
 /** Owns the bounded, browser-native PDF surface for same-origin attachments. */
 export function ChatPdfPreview(props: {
   src: string;
@@ -209,10 +218,25 @@ export function ChatPdfPreview(props: {
     );
   };
   // Same-origin HTTP srcs carry a Content-Disposition filename, so load the real
-  // URL directly (not an anonymous Blob) and capture src at render time to keep
-  // the reader across a renewed ticket instead of reloading the viewer.
-  const renderDirectPreview = (src: string) => {
+  // URL directly (not an anonymous Blob). The frame URL tracks props.src reactively
+  // so a renewed media ticket replaces the stale, expiring URL. The renewal is a
+  // visible frame reload even for unchanged bytes, which is the accepted cost of
+  // never leaving an expired ticket behind. The inline disposition makes the
+  // browser-native PDF viewer render the payload while keeping the filename. A
+  // bounded read validates reachability before the first frame and re-validates
+  // each renewal; a failed renewal retires the stale reader so a later valid
+  // ticket can recover it.
+  const inlinePreviewUrl = () => {
+    const src = props.src;
+    const sep = src.includes("?") ? "&" : "?";
+    return `${src}${sep}disposition=inline`;
+  };
+  const renderDirectPreview = () => {
+    // The bounded read tracks props.src, so a renewed ticket re-validates instead
+    // of pinning the expiring URL. A failed renewal settles to `ok: false` and
+    // retires the stale reader; a later valid ticket recovers it.
     const result = createMemo<{ ok: true } | { ok: false; cause: unknown }>(async () => {
+      const src = props.src;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), PDF_PREVIEW_TIMEOUT_MS);
       onCleanup(() => {
@@ -220,8 +244,7 @@ export function ChatPdfPreview(props: {
         clearTimeout(timeout);
       });
       try {
-        const bytes = await readPreviewSource(src, undefined, controller.signal);
-        void bytes;
+        await readPreviewSource(src, undefined, controller.signal);
         return { ok: true };
       } catch (cause) {
         return { ok: false, cause };
@@ -246,7 +269,7 @@ export function ChatPdfPreview(props: {
             <iframe
               class="sidebar-pdf-preview__frame"
               title={props.label}
-              src={src}
+              src={inlinePreviewUrl()}
               referrerpolicy="no-referrer"
             />
           </Show>
@@ -263,11 +286,12 @@ export function ChatPdfPreview(props: {
     if (sizeBytes !== undefined && sizeBytes > PDF_PREVIEW_MAX_BYTES) {
       return unavailable();
     }
-    // File previews have no HTTP response, so they keep the bounded Blob detour.
-    if (props.file) {
+    // The Gateway only inlines responses it labels application/pdf. File previews
+    // and filename-only PDFs (empty/octet-stream MIME) keep the bounded Blob detour.
+    if (props.file || !servesInlinePdf(props.mimeType)) {
       return renderFilePreview();
     }
-    return renderDirectPreview(props.src);
+    return renderDirectPreview();
   };
   return (
     <openclaw-chat-pdf-preview style={{ display: "contents" }}>

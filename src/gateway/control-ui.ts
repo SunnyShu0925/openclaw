@@ -35,6 +35,7 @@ import {
   assertAssistantMediaPolicyCurrent,
   verifyAssistantMediaTicket,
 } from "./assistant-media-policy.js";
+import { applyAssistantMediaDisposition } from "./control-ui-assistant-media-disposition.js";
 import {
   normalizeAssistantMediaSource,
   openAssistantMedia,
@@ -156,7 +157,10 @@ export async function handleControlUiAssistantMediaRequest(
   if (!isReadHttpMethod(req.method) && !explicitAllow) {
     return false;
   }
-  applyControlUiSecurityHeaders(res, getRemoteControlUiIngressContext(req));
+  // Baseline anti-framing policy for every media response. The PDF byte response
+  // below relaxes it only once the content type proves the inline-preview path.
+  const ingress = getRemoteControlUiIngressContext(req);
+  applyControlUiSecurityHeaders(res, ingress);
   let source = normalizeAssistantMediaSource(url.searchParams.get("source") ?? "");
   if (!source) {
     respondControlUiNotFound(res);
@@ -172,7 +176,6 @@ export async function handleControlUiAssistantMediaRequest(
     relativeSource ? undefined : source,
     agentId,
   );
-  const ingress = getRemoteControlUiIngressContext(req);
   if (ticketCandidate?.reader.authMethod === "remote-ingress" && !ingress) {
     respondControlUiNotFound(res);
     return true;
@@ -408,10 +411,7 @@ export async function handleControlUiAssistantMediaRequest(
         applyHttpImageContentSecurityPolicy(res);
       }
       res.setHeader("Content-Type", contentType);
-      res.setHeader(
-        "Content-Disposition",
-        buildAssistantMediaContentDisposition(filename, contentType),
-      );
+      applyAssistantMediaDisposition(res, url, filename, contentType, ingress);
       res.setHeader("Cache-Control", "no-cache");
       writeByteHeaders(res, byteResponse);
       if (emptyResponse) {

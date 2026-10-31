@@ -164,3 +164,38 @@ export function applyControlUiSecurityHeaders(
     "camera=(self), microphone=*, geolocation=*, clipboard-write=*",
   );
 }
+
+/**
+ * Apply a narrowly frameable response policy for an inline PDF media preview.
+ *
+ * The default assistant-media response is download-only and forbids framing
+ * (X-Frame-Options: DENY, frame-ancestors 'none'). A browser-native PDF reader
+ * framed in the sidebar needs the real media URL so the browser can keep the
+ * Content-Disposition filename on a toolbar download. Keep that relaxation to
+ * this single inline-preview path: the response is same-origin, gated on the
+ * explicit disposition=inline request flag, and frame-ancestors admits only
+ * 'self' (or the configured remote ingress ancestors). All other media
+ * responses keep the baseline anti-framing policy.
+ */
+export function applyAssistantMediaInlinePreviewHeaders(
+  res: ServerResponse,
+  remote?: RemoteControlUiIngressContext,
+) {
+  remote?.signal.throwIfAborted();
+  remote?.assertCurrent();
+  // remote ingress already relaxes X-Frame-Options; otherwise drop it so the
+  // same-origin sidebar can frame this inline preview.
+  res.removeHeader("X-Frame-Options");
+  res.setHeader(
+    "Content-Security-Policy",
+    buildControlUiCspHeader({
+      frameAncestors: remote?.frameAncestors?.length ? remote.frameAncestors : ["'self'"],
+    }),
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(self), microphone=*, geolocation=*, clipboard-write=*",
+  );
+}
