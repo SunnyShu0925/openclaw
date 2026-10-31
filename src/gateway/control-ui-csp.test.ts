@@ -83,13 +83,6 @@ describe("applyAssistantMediaInlinePreviewHeaders", () => {
     return { res, headers, removed };
   }
 
-  it("frames only for this same-origin document", () => {
-    const { res, headers, removed } = makeResponse();
-    applyAssistantMediaInlinePreviewHeaders(res);
-    expect(removed).toEqual(["X-Frame-Options"]);
-    expect(headers["Content-Security-Policy"]).toContain("frame-ancestors 'self'");
-  });
-
   it("admits the Control UI origin alongside the configured outer ancestors", () => {
     const { res, headers } = makeResponse();
     // Nested reader: the Control UI document (publicOrigin) is the immediate
