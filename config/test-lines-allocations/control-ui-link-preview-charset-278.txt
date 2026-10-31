@@ -1,0 +1,4 @@
+# Control UI link preview charset decoding: regression tests for Shift_JIS
+# declaration sniffing across response chunks, unsupported-charset UTF-8
+# fallback, and the existing split-</head> chunk-count assertion.
+76

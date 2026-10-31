@@ -1,3 +1,4 @@
+import iconv from "iconv-lite";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 
@@ -110,6 +111,80 @@ it("uses redirected-page OG metadata, document base URLs, entity decoding and an
   }
 });
 
+it("decodes a non-UTF-8 page with its declared charset", async () => {
+  encode.mockResolvedValue({ data: PNG });
+  const body = iconv.encode(
+    '<html><head><meta property="og:title" content="阿部寛のホームページ"><meta property="og:image" content="/cover.png"></head></html>',
+    "shift_jis",
+  );
+  mockFetch((url) => {
+    if (url.endsWith("/page")) {
+      return new Response(new Uint8Array(body), {
+        headers: { "content-type": "text/html; charset=shift_jis" },
+      });
+    }
+    if (url.endsWith("/cover.png")) {
+      return new Response(PNG);
+    }
+    return missing();
+  });
+  expect(await load("/page")).toEqual({
+    title: "阿部寛のホームページ",
+    imageDataUrl: pngUrl,
+  });
+});
+
+it("sniffs a Shift_JIS charset declared across response chunks", async () => {
+  encode.mockResolvedValue({ data: PNG });
+  // Build the page in Shift_JIS so the declared charset is the only way to
+  // decode the title. content-type carries no charset, forcing document sniff.
+  const head = iconv.encode(
+    '<html><head><meta charset="shift_jis"><title>阿部寛のホームページ</title></head>',
+    "shift_jis",
+  );
+  const cut = Buffer.from('<meta charset="shif', "latin1").length;
+  const cancel = vi.fn();
+  const chunks = [head.subarray(0, cut), head.subarray(cut)];
+  const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+    const chunk = chunks.shift();
+    if (chunk) {
+      controller.enqueue(chunk);
+    } else {
+      controller.close();
+    }
+  });
+  mockFetch((url) =>
+    url.endsWith("/favicon.ico")
+      ? missing()
+      : new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), {
+          headers: { "content-type": "text/html" },
+        }),
+  );
+  // The first chunk ends mid-`<meta charset="shif`, so a per-chunk sniff would
+  // return undefined and decode the title as UTF-8 mojibake; accumulating the
+  // bounded prefix across chunks must select Shift_JIS.
+  expect(await load("/split-charset")).toEqual({ title: "阿部寛のホームページ" });
+  expect(pull).toHaveBeenCalled();
+  // The head closes before the remainder, so the reader is cancelled rather
+  // than draining the pending body.
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+it("falls back to UTF-8 when the declared charset label is unsupported", async () => {
+  encode.mockResolvedValue({ data: PNG });
+  mockFetch((url) => {
+    if (url.endsWith("/unsupported-charset")) {
+      return new Response("<head><title>Hello</title></head>", {
+        headers: { "content-type": "text/html; charset=x-unsupported-test" },
+      });
+    }
+    return missing();
+  });
+  // An unknown label would make `new TextDecoder(label)` throw and drop all
+  // metadata; the fix must catch and fall back to UTF-8.
+  expect(await load("/unsupported-charset")).toEqual({ title: "Hello" });
+});
+
 it.each([
   {
     name: "open-graph description",
@@ -197,10 +272,155 @@ it.each(["</head>", "<body>"])(
       '<meta property="og:title" content="Body">' + "x".repeat(128 * 1024),
     ]);
     expect(await load("/streamed-" + encodeURIComponent(boundary))).toEqual({ title: "A & B" });
+    // The parser streams every byte as it arrives, so the read stops the
+    // moment the real head boundary closes, without draining the body chunk
+    // (the boundary split arrives on chunk 3; the 128 KiB body is never read)
+    // and never honors inert markup inside comments/script/style.
     expect(pull).toHaveBeenCalledTimes(3);
     expect(cancel).toHaveBeenCalledOnce();
   },
 );
+
+it("returns metadata for a complete short head while the body stays pending", async () => {
+  const { pull, cancel } = streamChunks([
+    // A complete, self-contained head arrives in the first chunk; the body
+    // never arrives (the stream stalls). The reader must not wait for body
+    // bytes to finish charset selection or parsing.
+    "<html><head><title>Hello</title></head>",
+  ]);
+  expect(await load("/short-head-pending-body")).toEqual({ title: "Hello" });
+  expect(pull).toHaveBeenCalledTimes(1);
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+it("retains an incomplete UTF-8 sequence that spans response chunks", async () => {
+  // The é in "café" is U+00E9, encoded as the two UTF-8 bytes C3 A9. Encode the
+  // complete document once and split its byte array immediately after the C3
+  // lead byte, so C3 ends one chunk and A9 starts the next. A decoder recreated
+  // on every chunk would drop the pending C3 and emit a replacement character;
+  // a single persistent decoder keeps it across writes.
+  const doc = Buffer.from("<html><head><title>café</title></head><body>rest", "utf8");
+  const cut = Buffer.from("<html><head><title>caf", "utf8").length + 1; // right after C3
+  const cancel = vi.fn();
+  const chunks = [doc.subarray(0, cut), doc.subarray(cut)];
+  const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+    const chunk = chunks.shift();
+    if (chunk) {
+      controller.enqueue(chunk);
+    } else {
+      controller.close();
+    }
+  });
+  mockFetch((url) =>
+    url.endsWith("/favicon.ico")
+      ? missing()
+      : new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), {
+          headers: { "content-type": "text/html" },
+        }),
+  );
+  expect(await load("/split-utf8-multibyte")).toEqual({ title: "café" });
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+it("decodes a BOM split across response chunks under its UTF-16 encoding", async () => {
+  const body = iconv.encode(
+    '<html><head><meta property="og:title" content="阿部寛のホームページ"></head></html>',
+    "utf16le",
+  );
+  // Prepend a UTF-16LE BOM (FF FE) and deliver FF in the first chunk and the
+  // remainder (FE plus the document) in the second, so the encoding is only
+  // selectable once the second chunk arrives; the first byte must then be
+  // replayed under UTF-16LE rather than decoded alone.
+  const withBom = new Uint8Array(body.byteLength + 2);
+  withBom.set([0xff, 0xfe], 0);
+  withBom.set(body, 2);
+  const cancel = vi.fn();
+  const chunks = [withBom.subarray(0, 1), withBom.subarray(1)];
+  const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+    const chunk = chunks.shift();
+    if (chunk) {
+      controller.enqueue(chunk);
+    } else {
+      controller.close();
+    }
+  });
+  mockFetch((url) =>
+    url.endsWith("/favicon.ico")
+      ? missing()
+      : new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), {
+          headers: { "content-type": "text/html" },
+        }),
+  );
+  expect(await load("/split-bom-utf16le")).toEqual({ title: "阿部寛のホームページ" });
+  expect(pull).toHaveBeenCalled();
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+it("lets a split UTF-8 BOM override a contradictory HTTP charset", async () => {
+  // A UTF-8 BOM (EF BB BF) delivered as a lone EF first, then BB BF, must take
+  // precedence over a contradictory Content-Type charset. Without waiting for
+  // the possible BOM bytes, sniffCharset pins windows-1252 on the first chunk
+  // and the café title becomes cafÃ© (C3→Ã, A9→©); deferring header selection
+  // until the BOM is complete must decode it correctly.
+  const body = Buffer.from(
+    '<html><head><meta property="og:title" content="café"></head></html>',
+    "utf8",
+  );
+  const withBom = new Uint8Array(body.byteLength + 3);
+  withBom.set([0xef, 0xbb, 0xbf], 0);
+  withBom.set(body, 3);
+  const cancel = vi.fn();
+  const chunks = [withBom.subarray(0, 1), withBom.subarray(1)];
+  const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+    const chunk = chunks.shift();
+    if (chunk) {
+      controller.enqueue(chunk);
+    } else {
+      controller.close();
+    }
+  });
+  mockFetch((url) =>
+    url.endsWith("/favicon.ico")
+      ? missing()
+      : new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), {
+          headers: { "content-type": "text/html; charset=windows-1252" },
+        }),
+  );
+  expect(await load("/split-bom-overrides-charset")).toEqual({ title: "café" });
+  expect(pull).toHaveBeenCalled();
+  expect(cancel).toHaveBeenCalledOnce();
+});
+
+it("re-decodes content that precedes the charset declaration", async () => {
+  // Non-ASCII Shift_JIS text (the title) arrives before <meta charset>. It is
+  // buffered and fed as a UTF-8 guess until the declaration is seen, then the
+  // whole prefix must be replayed under Shift_JIS instead of being left as
+  // UTF-8 mojibake.
+  const body = iconv.encode(
+    '<html><head><title>阿部寛</title><meta charset="shift_jis"></head></html>',
+    "shift_jis",
+  );
+  const cancel = vi.fn();
+  const chunks = [body];
+  const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+    const chunk = chunks.shift();
+    if (chunk) {
+      controller.enqueue(chunk);
+    } else {
+      controller.close();
+    }
+  });
+  mockFetch((url) =>
+    url.endsWith("/favicon.ico")
+      ? missing()
+      : new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), {
+          headers: { "content-type": "text/html" },
+        }),
+  );
+  expect(await load("/meta-after-content")).toEqual({ title: "阿部寛" });
+  expect(pull).toHaveBeenCalledOnce();
+  expect(cancel).toHaveBeenCalledOnce();
+});
 
 it("limits an unterminated head to 64 KiB before late metadata", async () => {
   const prefix = "<head><title>Early</title><!--";
