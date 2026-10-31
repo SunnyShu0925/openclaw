@@ -29,6 +29,7 @@ import {
   type ChatMediaResource,
   type ImageRenderOptions,
 } from "./chat-message-media.ts";
+import { isPdfAttachment } from "./chat-pdf-preview.tsx";
 import { readResponseBytesWithinLimit } from "./chat-response-bytes.ts";
 import type { AttachmentSidebarState } from "./chat-sidebar-content-types.ts";
 
@@ -369,6 +370,9 @@ export function resolveAttachmentSource(
     };
   }
   const localSource = isLocalAssistantAttachmentSource(attachment.url);
+  // The assistant-media route answers `disposition=inline` for PDFs; every other
+  // media route keeps its attachment contract, so only this one asks for inline.
+  const inlinePdfPreview = isPdfAttachment(attachment.mimeType ?? "", attachment.label);
   const src = localSource
     ? buildAssistantAttachmentUrl(
         attachment.url,
@@ -376,6 +380,9 @@ export function resolveAttachmentSource(
         assistantAvailability.mediaTicket,
         options,
         attachment.label,
+        undefined,
+        undefined,
+        inlinePdfPreview,
       )
     : isManagedOutgoingMediaSource(attachment.url)
       ? applyResourceBasePath(managedAvailability.url, resourceBasePath)

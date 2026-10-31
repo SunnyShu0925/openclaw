@@ -10,7 +10,8 @@ import "./chat-detail-panel.tsx";
 import type { SidebarContent } from "./chat-sidebar-content-types.ts";
 
 const PDF_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
-const source = "/__openclaw__/assistant-media?mediaTicket=pdf-preview";
+// The producer marks the endpoints that answer `disposition=inline`.
+const source = "/__openclaw__/assistant-media?mediaTicket=pdf-preview&disposition=inline";
 
 async function mountAttachment(
   overrides: Partial<Extract<SidebarContent, { kind: "attachment" }>> = {},
@@ -163,9 +164,7 @@ it("aborts an interrupted PDF load and reloads it after reconnect", async () => 
   expect(download).not.toHaveBeenCalled();
   expect(objectUrls.createObjectURL).not.toHaveBeenCalled();
   expect(objectUrls.revokeObjectURL).not.toHaveBeenCalled();
-  expect(panel.querySelector("iframe")?.getAttribute("src")).toBe(
-    "/__openclaw__/assistant-media?mediaTicket=pdf-preview&disposition=inline",
-  );
+  expect(panel.querySelector("iframe")?.getAttribute("src")).toBe(source);
   expect(panel.querySelector("iframe")).toHaveProperty("title", "brief.pdf");
   expect(fetchMock).toHaveBeenCalledWith(
     source,
@@ -249,9 +248,8 @@ it.each(["renewed", "changed", "failed", "identity", "oversized"] as const)(
     const panel = await mountAttachment({ sourceIdentity: "attachment:brief" });
     const query = (selector: string) => panel.querySelector(selector);
     const frameSource = () => query("iframe")?.getAttribute("src");
-    const inline = (src: string) => `${src}&disposition=inline`;
-    const renewedSource = "/__openclaw__/assistant-media?mediaTicket=renewed";
-    await waitForSolid(() => expect(frameSource()).toBe(inline(source)));
+    const renewedSource = "/__openclaw__/assistant-media?mediaTicket=renewed&disposition=inline";
+    await waitForSolid(() => expect(frameSource()).toBe(source));
     const frame = query("iframe")!;
 
     panel.content = {
@@ -280,7 +278,7 @@ it.each(["renewed", "changed", "failed", "identity", "oversized"] as const)(
       await waitForSolid(() => {
         expect(frame.isConnected).toBe(false);
         expect(query("iframe")).not.toBe(frame);
-        expect(frameSource()).toBe(inline(renewedSource));
+        expect(frameSource()).toBe(renewedSource);
       });
       return;
     }
@@ -302,12 +300,14 @@ it.each(["renewed", "changed", "failed", "identity", "oversized"] as const)(
       fetchMock.mockResolvedValueOnce(new Response("%PDF-1.7 recovered"));
       panel.content = {
         ...panel.content,
-        src: "/__openclaw__/assistant-media?mediaTicket=recovered",
+        src: "/__openclaw__/assistant-media?mediaTicket=recovered&disposition=inline",
       };
       await panel.updateComplete;
       await waitForSolid(() => {
         expect(fetchMock).toHaveBeenCalledTimes(3);
-        expect(frameSource()).toBe(inline("/__openclaw__/assistant-media?mediaTicket=recovered"));
+        expect(frameSource()).toBe(
+          "/__openclaw__/assistant-media?mediaTicket=recovered&disposition=inline",
+        );
         expect(query("[role=alert]")).toBeNull();
       });
       return;
@@ -319,7 +319,7 @@ it.each(["renewed", "changed", "failed", "identity", "oversized"] as const)(
       renewal.resolve(new Response("%PDF-1.7 renewed content"));
       await waitForSolid(() => {
         expect(query("iframe")).toBe(frame);
-        expect(frameSource()).toBe(inline(renewedSource));
+        expect(frameSource()).toBe(renewedSource);
       });
       return;
     }
@@ -332,7 +332,7 @@ it.each(["renewed", "changed", "failed", "identity", "oversized"] as const)(
       setTimeout(resolve, 25);
     });
     expect(query("iframe")).toBe(frame);
-    expect(frameSource()).toBe(inline(source));
+    expect(frameSource()).toBe(source);
   },
 );
 
@@ -353,6 +353,22 @@ it.each(["", "application/octet-stream"] as const)(
     expect(urls.createObjectURL).toHaveBeenCalledOnce();
   },
 );
+
+it("keeps the bounded Blob reader for a media route that never answers inline", async () => {
+  // The outgoing media route serves PDFs as attachments and ignores the preview flag,
+  // so framing it directly would download instead of rendering.
+  const objectUrls = stubObjectUrls();
+  const outgoing = "/api/chat/media/outgoing/agent%3Amain%3Amain/managed-brief/full?mediaTicket=7";
+  const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response("%PDF-1.7 outgoing")));
+  vi.stubGlobal("fetch", fetchMock);
+  const panel = await mountAttachment({ src: outgoing, sourceIdentity: "media:outgoing" });
+  await waitForSolid(() => expect(panel.querySelector("iframe")).not.toBeNull());
+  expect(fetchMock.mock.calls[0]?.[0]).toBe(outgoing);
+  expect(panel.querySelector("iframe")?.getAttribute("src")).toBe(
+    `blob:${location.origin}/pdf-preview`,
+  );
+  expect(objectUrls.createObjectURL).toHaveBeenCalledOnce();
+});
 
 it("previews a local Blob without bypassing the file download owner", async () => {
   const urls = stubObjectUrls();

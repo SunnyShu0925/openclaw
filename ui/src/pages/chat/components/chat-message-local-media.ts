@@ -44,14 +44,23 @@ export function buildAssistantAttachmentUrl(
   filename?: string,
   variant?: "thumbnail",
   previewWidth: ChatImageRenditionWidth = 960,
+  inlinePdfPreview = false,
 ): string {
   if (!isLocalAssistantAttachmentSource(source)) {
     return source;
   }
   const url = buildAssistantMediaUrl(source, resourceBasePath, mediaTicket, context, filename);
-  return variant === "thumbnail" && isCanonicalInboundMediaSource(source)
-    ? `${url}&variant=thumbnail&width=${previewWidth}&v=4`
-    : url;
+  const preview =
+    variant === "thumbnail" && isCanonicalInboundMediaSource(source)
+      ? `${url}&variant=thumbnail&width=${previewWidth}&v=4`
+      : url;
+  // Only this endpoint answers `disposition=inline` with a frameable PDF response,
+  // so the caller that knows the document requests it here. It serves local file
+  // references; a source that is itself a server route (an artifact or preview URL)
+  // is not readable there, so it must not claim the capability. Other media routes
+  // keep their own attachment contract and stay on the bounded Blob reader.
+  const servesInline = inlinePdfPreview && !/^\/(?:api|__openclaw__)\//u.test(source.trim());
+  return servesInline ? `${preview}&disposition=inline` : preview;
 }
 
 export function applyResourceBasePath(

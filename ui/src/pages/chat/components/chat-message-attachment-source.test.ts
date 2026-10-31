@@ -6,6 +6,7 @@ import {
   resolveAttachmentSource,
   readAttachmentSource,
 } from "./chat-message-attachment-source.ts";
+import { buildAssistantAttachmentUrl } from "./chat-message-local-media.ts";
 import {
   releaseChatMediaResourceOwner,
   type AttachmentItem,
@@ -20,6 +21,52 @@ afterEach(() => {
   subscribers.splice(0).forEach(releaseChatMediaResourceOwner);
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it("asks for inline PDF preview only on the route that implements it", () => {
+  const inbound = "media://inbound/managed-brief";
+  const inlinePdf = buildAssistantAttachmentUrl(
+    inbound,
+    "",
+    "ticket-1",
+    undefined,
+    "brief.pdf",
+    undefined,
+    960,
+    true,
+  );
+  expect(inlinePdf).toContain("disposition=inline");
+  expect(inlinePdf).toContain("source=media%3A%2F%2Finbound%2Fmanaged-brief");
+  // A document that is not a PDF preview keeps the plain delivery URL.
+  const plain = buildAssistantAttachmentUrl(inbound, "", "ticket-1", undefined, "notes.txt");
+  expect(plain).not.toContain("disposition=inline");
+  // A source that is itself a server route is not readable by the media endpoint,
+  // so it keeps its Blob reader instead of claiming inline preview.
+  const artifact = buildAssistantAttachmentUrl(
+    "/api/artifacts/download/report.pdf",
+    "",
+    "ticket-1",
+    undefined,
+    "report.pdf",
+    undefined,
+    960,
+    true,
+  );
+  expect(artifact).not.toContain("disposition=inline");
+  // Other media routes answer attachments and must never inherit the preview flag.
+  const outgoing = "/api/chat/media/outgoing/agent%3Amain%3Amain/brief/full?mediaTicket=t";
+  expect(
+    buildAssistantAttachmentUrl(
+      outgoing,
+      "",
+      "ticket-1",
+      undefined,
+      "brief.pdf",
+      undefined,
+      960,
+      true,
+    ),
+  ).toBe(outgoing);
 });
 
 it("shares a managed artifact read across URL aliases without sharing other targets", async () => {

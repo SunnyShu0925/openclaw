@@ -67,12 +67,22 @@ export function isPdfAttachment(rawMimeType: string, filename: string): boolean 
 }
 
 /**
- * Only a response the Gateway can label `application/pdf` is inlined: that is the
- * one case where the native viewer renders and keeps the Content-Disposition name.
- * A PDF known by filename alone keeps the bounded Blob detour so it still renders.
+ * A direct reader needs two independent facts: the document is a PDF the Gateway can
+ * label `application/pdf`, and the URL's owner answers `disposition=inline` with a
+ * frameable response. The second is only knowable by the producer, which appends the
+ * flag for the endpoints that implement it; probing by MIME alone would navigate a
+ * route that still answers `attachment` and lose a preview that works today.
  */
-function servesInlinePdf(rawMimeType: string): boolean {
-  return (rawMimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "") === "application/pdf";
+function servesInlinePdf(src: string, rawMimeType: string): boolean {
+  const mimeType = rawMimeType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (mimeType !== "application/pdf") {
+    return false;
+  }
+  try {
+    return new URL(src, "http://localhost").searchParams.get("disposition") === "inline";
+  } catch {
+    return false;
+  }
 }
 
 /** Byte-identical payloads keep the reader, so the viewer keeps page and zoom. */
@@ -220,11 +230,6 @@ export function ChatPdfPreview(props: {
       </Loading>
     );
   };
-  // Same-origin HTTP srcs carry a Content-Disposition filename, so load the real
-  // URL directly (not an anonymous Blob). The inline disposition makes the
-  // browser-native PDF viewer render the payload while keeping that filename.
-  const inlinePreviewUrl = (src: string) =>
-    `${src}${src.includes("?") ? "&" : "?"}disposition=inline`;
   const renderDirectPreview = () => {
     // Renewal keeps the reader's page and zoom while the document is unchanged
     // (docs/web/control-ui/chat.md). The bounded read tracks the live props.src so
@@ -247,7 +252,7 @@ export function ChatPdfPreview(props: {
           if (accepted && sameBytes(accepted.bytes, bytes)) {
             return { ok: true, frameSrc: accepted.frameSrc };
           }
-          accepted = { bytes, frameSrc: inlinePreviewUrl(src) };
+          accepted = { bytes, frameSrc: src };
           return { ok: true, frameSrc: accepted.frameSrc };
         } catch (cause) {
           // Commit failure so a later ticket cannot revive the previously successful reader.
@@ -296,9 +301,9 @@ export function ChatPdfPreview(props: {
     if (sizeBytes !== undefined && sizeBytes > PDF_PREVIEW_MAX_BYTES) {
       return unavailable();
     }
-    // The Gateway only inlines responses it labels application/pdf. File previews
-    // and filename-only PDFs (empty/octet-stream MIME) keep the bounded Blob detour.
-    if (props.file || !servesInlinePdf(props.mimeType)) {
+    // File previews, filename-only PDFs (empty/octet-stream MIME), and media routes
+    // that do not implement inline preview keep the bounded Blob detour.
+    if (props.file || !servesInlinePdf(props.src, props.mimeType)) {
       return renderFilePreview();
     }
     return renderDirectPreview();
