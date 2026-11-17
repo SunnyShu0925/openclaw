@@ -1,0 +1,96 @@
+name: proof-190152
+
+on:
+  push:
+    branches: [proof/190152]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  macos-portguardian:
+    runs-on: macos-26
+    timeout-minutes: 180
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          sudo xcode-select --switch "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          swift --version
+
+      - name: Install Node 24
+        run: |
+          set -euo pipefail
+          BREW=/opt/homebrew/bin/brew
+          $BREW install node@24 || $BREW upgrade node@24
+          echo "$($BREW --prefix node@24)/bin" >> "$GITHUB_PATH"
+          "$($BREW --prefix node@24)/bin/node" --version
+
+      - name: Install Node dependencies
+        run: |
+          set -euo pipefail
+          BREW=/opt/homebrew/bin/brew
+          export PATH="$($BREW --prefix node@24)/bin:$PATH"
+          node --version
+          npm --version
+          npm install -g pnpm@12.15.0 --no-audit --no-fund
+          pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Prepare Apple Mermaid assets
+        run: |
+          set -euo pipefail
+          BREW=/opt/homebrew/bin/brew
+          export PATH="$($BREW --prefix node@24)/bin:$PATH"
+          node scripts/prepare-apple-mermaid.mjs
+
+      # OpenClawChatUI's ChatMediaVideoAttachment does not resolve `VideoPlayer` on these hosted
+      # runners, so the shared UI module fails to compile regardless of the PortGuardian change.
+      # Patch that single unrelated line in this throwaway proof job so the PortGuardian targets
+      # can be built and tested. Never committed to the PR branch.
+      - name: Patch unrelated ChatUI build break
+        run: |
+          set -euo pipefail
+          FILE=apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatMediaVideoAttachment.swift
+          python3 - "$FILE" <<'PY'
+          import sys
+          path = sys.argv[1]
+          src = open(path).read()
+          old = "                    VideoPlayer(player: player.player)"
+          new = "                    Color.black"
+          assert old in src, "expected VideoPlayer line not found"
+          open(path, "w").write(src.replace(old, new, 1))
+          PY
+          git diff --stat
+
+      - name: Build macOS app with tests
+        run: swift build --package-path apps/macos --build-system native --build-tests
+
+      - name: PortGuardian diagnostics tests
+        run: swift test --package-path apps/macos --filter PortGuardianDiagnosticsTests --disable-sandbox
+
+      - name: GatewayProcessManager tests
+        run: swift test --package-path apps/macos --filter GatewayProcessManagerTests --disable-sandbox
+
+      - name: Install pinned SwiftFormat / SwiftLint
+        run: |
+          set -euo pipefail
+          swift_tools_dir="$RUNNER_TEMP/openclaw-swift-tools"
+          ./scripts/install-swift-tools.sh "$swift_tools_dir"
+          echo "$swift_tools_dir" >> "$GITHUB_PATH"
+          "$swift_tools_dir/swiftformat" --version
+          "$swift_tools_dir/swiftlint" version
+
+      # Mirrors upstream ci.yml `Swift lint` step: ./scripts/lint-swift.sh macos and
+      # ./scripts/format-swift.sh macos. run-swiftlint.mts treats size limits as advisory under
+      # GitHub Actions, which is exactly how upstream runs it.
+      - name: macOS Swift lint (upstream wrapper)
+        run: ./scripts/lint-swift.sh macos
+
+      - name: macOS Swift format (upstream wrapper)
+        run: ./scripts/format-swift.sh macos
