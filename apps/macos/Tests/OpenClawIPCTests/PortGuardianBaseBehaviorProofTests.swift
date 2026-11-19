@@ -11,6 +11,7 @@ import Testing
 
 @testable import OpenClaw
 
+@Suite(.serialized)
 struct PortGuardianBaseBehaviorProofTests {
     @Test @MainActor func `base 1 a failing probe reads as free and not listening`() async throws {
         let bin = try PortGuardianEndToEndProofTests.makeStubDirectory()

@@ -7,9 +7,13 @@ import Testing
 
 @testable import OpenClaw
 
+// The PATH overrides below are process-wide, so these rows must not overlap:
+// one test's stub would otherwise answer another test's probe.
+@Suite(.serialized)
 struct PortGuardianEndToEndProofTests {
-    /// A real `lsof` (same path and flags as the shipped probe) run against a port
-    /// that is bound but not listening. This is the control row.
+    /// A real `lsof` (same flags as the shipped probe) run against a port that is
+    /// bound but not listening. This is the control row. The binary is addressed by
+    /// absolute path so a neighbouring test's stub cannot stand in for it.
     @Test @MainActor func `proof 1 real lsof on an unlistened port is free`() async throws {
         let bound = try Self.bindUnlistenedLoopbackSocket()
         defer { _ = Darwin.close(bound.fd) }
@@ -71,9 +75,11 @@ struct PortGuardianEndToEndProofTests {
 
 extension PortGuardianEndToEndProofTests {
     /// Runs the shipped probe command verbatim so the raw streams are visible.
+    /// Absolute path: the shipped probe resolves `lsof` through `PATH`, which other
+    /// rows in this file deliberately rewrite.
     static func runShippedLsof(on port: Int) async -> ShellExecutor.ShellResult {
         await ShellExecutor.runDetailed(
-            command: ["lsof", "-b", "-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fpcn"],
+            command: ["/usr/sbin/lsof", "-b", "-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fpcn"],
             cwd: nil,
             env: nil,
             timeout: 5)
