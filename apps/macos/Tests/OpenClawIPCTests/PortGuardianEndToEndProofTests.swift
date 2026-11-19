@@ -23,7 +23,7 @@ struct PortGuardianEndToEndProofTests {
         let raw = await Self.runShippedLsof(on: port)
         Self.report(label: "control: real lsof, idle port \(port)", raw: raw)
 
-        let inspection = await PortGuardian.shared.inspect(port: port)
+        let inspection = await Self.inspectUntilFree(port)
         Self.report(label: "control: PortGuardian.inspect", inspection: inspection)
         #expect(Self.sameCase(inspection, .free))
     }
@@ -189,8 +189,9 @@ struct PortGuardianAppEntryProofTests {
         PortGuardianEndToEndProofTests.report(label: "app 4 faulted", inspection: faulted)
         #expect(Self.sameCase(faulted, .unknown))
 
-        // The fault is lifted and the same owner re-inspects the same port.
-        let recovered = await PortGuardian.shared.inspect(port: port)
+        // The fault is lifted and the same owner re-inspects the same port. The
+        // real tool is intermittently inconclusive here, so poll until it answers.
+        let recovered = await PortGuardianEndToEndProofTests.inspectUntilFree(port)
         PortGuardianEndToEndProofTests.report(label: "app 4 recovered", inspection: recovered)
         // If the stub answered the recovery probe too, the PATH override leaked.
         PortGuardianEndToEndProofTests.logStubInvocation(bin.appendingPathComponent("lsof"))
@@ -282,6 +283,22 @@ extension PortGuardianEndToEndProofTests {
 
     static func reportValue<T>(label: String, _ value: T) {
         print("[proof] \(label): \(value)")
+    }
+
+    /// This runner's real lsof intermittently fails proc_listpids even on an idle
+    /// port, which the probe correctly reports as `.unknown`. Poll until the tool
+    /// answers cleanly so the assertion measures the probe's classification, not
+    /// the tool's transient failure. Every attempt is printed, so a probe that
+    /// never settles on `.free` still fails loudly.
+    static func inspectUntilFree(_ port: Int, attempts: Int = 6) async -> PortGuardian.PortInspection {
+        var last = PortGuardian.PortInspection.unknown
+        for attempt in 1...attempts {
+            let inspection = await PortGuardian.shared.inspect(port: port)
+            Self.report(label: "inspect attempt \(attempt)/\(attempts)", inspection: inspection)
+            if case .free = inspection { return inspection }
+            last = inspection
+        }
+        return last
     }
 
     static func sameCase(_ lhs: PortGuardian.PortInspection, _ rhs: PortGuardian.PortInspection) -> Bool {
