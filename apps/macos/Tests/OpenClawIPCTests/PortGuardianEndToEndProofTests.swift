@@ -11,17 +11,19 @@ import Testing
 // one test's stub would otherwise answer another test's probe.
 @Suite(.serialized)
 struct PortGuardianEndToEndProofTests {
-    /// A real `lsof` (same flags as the shipped probe) run against a port that is
-    /// bound but not listening. This is the control row. The binary is addressed by
-    /// absolute path so a neighbouring test's stub cannot stand in for it.
-    @Test @MainActor func `proof 1 real lsof on an unlistened port is free`() async throws {
-        let bound = try Self.bindUnlistenedLoopbackSocket()
-        defer { _ = Darwin.close(bound.fd) }
+    /// A real `lsof` (same flags as the shipped probe) run against a port with no
+    /// socket at all. This is the control row. A bound-but-unlistened socket would
+    /// make lsof enumerate processes to attribute it, and proc_listpids fails
+    /// intermittently on this runner, so an idle port keeps this row deterministic.
+    /// The binary is addressed by absolute path so a neighbouring stub cannot
+    /// stand in for it.
+    @Test @MainActor func `proof 1 real lsof on an idle port is free`() async throws {
+        let port = try Self.freePort()
 
-        let raw = await Self.runShippedLsof(on: Int(bound.port))
-        Self.report(label: "control: real lsof, unlistened port \(bound.port)", raw: raw)
+        let raw = await Self.runShippedLsof(on: port)
+        Self.report(label: "control: real lsof, idle port \(port)", raw: raw)
 
-        let inspection = await PortGuardian.shared.inspect(port: Int(bound.port))
+        let inspection = await PortGuardian.shared.inspect(port: port)
         Self.report(label: "control: PortGuardian.inspect", inspection: inspection)
         #expect(Self.sameCase(inspection, .free))
     }
@@ -156,8 +158,11 @@ struct PortGuardianAppEntryProofTests {
 
     /// Once the port is readable again the same owner settles on a real answer.
     @Test @MainActor func `app 4 a readable port recovers the probe after the fault clears`() async throws {
-        let bound = try PortGuardianEndToEndProofTests.bindUnlistenedLoopbackSocket()
-        defer { _ = Darwin.close(bound.fd) }
+        // A port with no socket at all. A bound-but-unlistened socket makes lsof
+        // enumerate processes to attribute it, and proc_listpids intermittently
+        // fails on this runner; a truly idle port needs no such enumeration, so
+        // the recovery assertion is deterministic.
+        let port = try Self.freePort()
         let bin = try PortGuardianEndToEndProofTests.makeStubDirectory()
         defer { try? FileManager.default.removeItem(at: bin) }
         // The stub only answers this row's port, so the child processes this suite
@@ -167,8 +172,9 @@ struct PortGuardianAppEntryProofTests {
             to: bin,
             script: """
             #!/bin/sh
+            echo "$*" >> "\(bin.path)/invocations.txt"
             case "$*" in
-              *"-iTCP:\(bound.port)"*)
+              *"-iTCP:\(port)"*)
                 echo "lsof: proc_listpids failed" >&2
                 exit 1
                 ;;
@@ -178,14 +184,16 @@ struct PortGuardianAppEntryProofTests {
 
         // Faulted: a broken lsof cannot answer for this port.
         let faulted = try await TestIsolation.withEnvValues(["PATH": "\(bin.path):/usr/bin:/bin"]) {
-            await PortGuardian.shared.inspect(port: Int(bound.port))
+            await PortGuardian.shared.inspect(port: port)
         }
         PortGuardianEndToEndProofTests.report(label: "app 4 faulted", inspection: faulted)
         #expect(Self.sameCase(faulted, .unknown))
 
         // The fault is lifted and the same owner re-inspects the same port.
-        let recovered = await PortGuardian.shared.inspect(port: Int(bound.port))
+        let recovered = await PortGuardian.shared.inspect(port: port)
         PortGuardianEndToEndProofTests.report(label: "app 4 recovered", inspection: recovered)
+        // If the stub answered the recovery probe too, the PATH override leaked.
+        PortGuardianEndToEndProofTests.logStubInvocation(bin.appendingPathComponent("lsof"))
         #expect(Self.sameCase(recovered, .free))
     }
 }
@@ -231,6 +239,19 @@ extension PortGuardianAppEntryProofTests {
 
 
 extension PortGuardianEndToEndProofTests {
+    /// Proves what the stub actually sees, so a recovery row cannot silently pass
+    /// by being answered by the stub.
+    static func logStubInvocation(_ stub: URL) {
+        let log = stub.deletingLastPathComponent().appendingPathComponent("invocations.txt")
+        guard let text = try? String(contentsOf: log, encoding: .utf8) else {
+            print("[proof] stub invocation log: absent")
+            return
+        }
+        let lines = text.split(separator: "\n")
+        print("[proof] stub was invoked \(lines.count) time(s)")
+        for line in lines { print("[proof]   stub saw: \(line)") }
+    }
+
     /// Runs the shipped probe command verbatim so the raw streams are visible.
     /// Absolute path: the shipped probe resolves `lsof` through `PATH`, which other
     /// rows in this file deliberately rewrite.
@@ -301,6 +322,13 @@ extension PortGuardianEndToEndProofTests {
             throw ProofFixtureError.openFailed
         }
         return (fd, UInt16(bigEndian: boundAddress.sin_port))
+    }
+
+    /// A port with no socket bound to it, so lsof needs no process enumeration.
+    static func freePort() throws -> Int {
+        let bound = try Self.bindUnlistenedLoopbackSocket()
+        _ = Darwin.close(bound.fd)
+        return Int(bound.port)
     }
 
     static func makeStubDirectory() throws -> URL {
