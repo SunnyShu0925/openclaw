@@ -77,6 +77,11 @@ jobs:
       - name: GatewayProcessManager tests
         run: swift test --package-path apps/macos --filter GatewayProcessManagerTests --disable-sandbox
 
+      # Proof-only suite: runs the shipped lsof probe against real sockets and real
+      # failing lsof implementations on this macOS host, printing the raw streams.
+      - name: End-to-end probe proof
+        run: swift test --package-path apps/macos --filter PortGuardianEndToEndProofTests --disable-sandbox --verbose
+
       - name: Install pinned SwiftFormat / SwiftLint
         run: |
           set -euo pipefail
