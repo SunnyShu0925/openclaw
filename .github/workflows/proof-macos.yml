@@ -87,6 +87,11 @@ jobs:
       - name: Base behavior contrast
         run: swift test --package-path apps/macos --filter PortGuardianBaseBehaviorProofTests --disable-sandbox --verbose
 
+      # Proof-only: drives the same owners the shipped app uses (probe, onboarding
+      # presentation, stored settings) on this macOS host.
+      - name: App-level entry proof
+        run: swift test --package-path apps/macos --filter PortGuardianAppEntryProofTests --disable-sandbox --verbose
+
       - name: Install pinned SwiftFormat / SwiftLint
         run: |
           set -euo pipefail
