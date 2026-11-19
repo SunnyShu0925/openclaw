@@ -19,7 +19,7 @@ struct PortGuardianEndToEndProofTests {
 
         let inspection = await PortGuardian.shared.inspect(port: Int(bound.port))
         Self.report(label: "control: PortGuardian.inspect", inspection: inspection)
-        #expect(identical(inspection, .free))
+        #expect(Self.sameCase(inspection, .free))
     }
 
     /// A real `lsof` that fails on its own (exit 1 plus a diagnostic, exactly what
@@ -46,7 +46,7 @@ struct PortGuardianEndToEndProofTests {
             await PortGuardian.shared.inspect(port: 49_301)
         }
         Self.report(label: "failure stub: PortGuardian.inspect", inspection: inspection)
-        #expect(identical(inspection, .unknown))
+        #expect(Self.sameCase(inspection, .unknown))
     }
 
     /// A real `lsof` that never answers must time out into `unknown`, not `free`.
@@ -62,7 +62,7 @@ struct PortGuardianEndToEndProofTests {
         let elapsed = ContinuousClock.now - started
         Self.report(label: "timeout stub: PortGuardian.inspect", inspection: inspection)
         Self.reportValue(label: "timeout stub: elapsed", elapsed)
-        #expect(identical(inspection, .unknown))
+        #expect(Self.sameCase(inspection, .unknown))
         #expect(elapsed < .seconds(10))
     }
 }
@@ -100,7 +100,7 @@ extension PortGuardianEndToEndProofTests {
         print("[proof] \(label): \(value)")
     }
 
-    static func identical(_ lhs: PortGuardian.PortInspection, _ rhs: PortGuardian.PortInspection) -> Bool {
+    static func sameCase(_ lhs: PortGuardian.PortInspection, _ rhs: PortGuardian.PortInspection) -> Bool {
         switch (lhs, rhs) {
         case (.free, .free), (.unknown, .unknown): true
         case (.owned, .owned): true

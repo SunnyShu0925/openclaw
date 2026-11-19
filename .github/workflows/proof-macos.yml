@@ -82,6 +82,11 @@ jobs:
       - name: End-to-end probe proof
         run: swift test --package-path apps/macos --filter PortGuardianEndToEndProofTests --disable-sandbox --verbose
 
+      # Proof-only: reproduces the pre-change probe so the red/green pair is visible
+      # in one run.
+      - name: Base behavior contrast
+        run: swift test --package-path apps/macos --filter PortGuardianBaseBehaviorProofTests --disable-sandbox --verbose
+
       - name: Install pinned SwiftFormat / SwiftLint
         run: |
           set -euo pipefail
