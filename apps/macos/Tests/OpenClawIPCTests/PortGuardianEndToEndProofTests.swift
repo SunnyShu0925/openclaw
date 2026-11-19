@@ -160,19 +160,30 @@ struct PortGuardianAppEntryProofTests {
         defer { _ = Darwin.close(bound.fd) }
         let bin = try PortGuardianEndToEndProofTests.makeStubDirectory()
         defer { try? FileManager.default.removeItem(at: bin) }
+        // The stub only answers this row's port, so the child processes this suite
+        // starts cannot hold the process-wide PATH after the override is unwound.
         try PortGuardianEndToEndProofTests.writeStub(
             named: "lsof",
             to: bin,
-            script: "#!/bin/sh\necho 'lsof: proc_listpids failed' >&2\nexit 1\n")
+            script: """
+            #!/bin/sh
+            case "$*" in
+              *"-iTCP:\(bound.port)"*)
+                echo "lsof: proc_listpids failed" >&2
+                exit 1
+                ;;
+            esac
+            exec /usr/sbin/lsof "$@"
+            """)
 
-        // Faulted: a broken lsof cannot answer.
+        // Faulted: a broken lsof cannot answer for this port.
         let faulted = try await TestIsolation.withEnvValues(["PATH": "\(bin.path):/usr/bin:/bin"]) {
             await PortGuardian.shared.inspect(port: Int(bound.port))
         }
         PortGuardianEndToEndProofTests.report(label: "app 4 faulted", inspection: faulted)
         #expect(Self.sameCase(faulted, .unknown))
 
-        // The fault clears: the same owner re-inspects the same port.
+        // The fault is lifted and the same owner re-inspects the same port.
         let recovered = await PortGuardian.shared.inspect(port: Int(bound.port))
         PortGuardianEndToEndProofTests.report(label: "app 4 recovered", inspection: recovered)
         #expect(Self.sameCase(recovered, .free))
