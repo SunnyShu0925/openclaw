@@ -232,6 +232,11 @@ export function startCronMaintenance(scheduler: GatewayScheduler, getCronStorePa
     }
   });
   unsubscribeSessionChanges = sessionChanges.subscribeFacts((change) => {
+    // A disabled pass parks keep-warm at Infinity and drops every candidate, so a later
+    // transcript receipt must not re-arm the sweep: it would reload and ping while opted out.
+    if (getRuntimeConfig().agents?.defaults?.promptCacheKeepWarm === false && !("all" in change)) {
+      return;
+    }
     // An opt-out parks keep-warm at Infinity; enabling after a disabled startup must
     // rearm the initial recovery without waiting for another transcript change.
     if ("all" in change && change.scope === "config" && scope) {
