@@ -125,6 +125,7 @@ it.each([false, true])(
     await vi.dynamicImportSettled();
     expect(mocks.keepWarmLoaded).not.toHaveBeenCalled();
     expect(mocks.keepWarm).not.toHaveBeenCalled();
+    // Dropped candidate: a transcript receipt alone must not keep the sweep armed.
     sessionChanges.emit({
       sessionKey: "agent:main:main",
       storePath: "/synthetic/agents/main.sqlite",
@@ -141,6 +142,8 @@ it.each([false, true])(
     vi.mocked(hostMemory.isConstrainedProcessLowOnMemory).mockReturnValue(false);
     setRuntimeConfigSnapshot({});
     await clock.advanceBy(4_999);
+    // Only the re-enable publishes keep-warm back on; the opt-out still owns this window.
+    expect(mocks.keepWarmLoaded).not.toHaveBeenCalled();
     expect(mocks.keepWarm).not.toHaveBeenCalled();
     await clock.advanceBy(1);
     await vi.dynamicImportSettled();
