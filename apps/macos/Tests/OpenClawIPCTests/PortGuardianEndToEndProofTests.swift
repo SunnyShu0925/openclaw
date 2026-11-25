@@ -80,10 +80,11 @@ struct PortGuardianEndToEndProofTests {
 /// owners the app uses. Not a GUI session, but not a fixture either.
 @Suite(.serialized)
 struct PortGuardianAppEntryProofTests {
-    /// With `lsof` broken, the app-hosted start publishes a failure and does not
-    /// spawn the child Gateway.
+    /// Drives the shipped app-hosted start (`startAppHostedGateway`, the function this
+    /// PR changes) on a real `GatewayProcessManager` with a real broken `lsof` in
+    /// `PATH`. Only the supervisor launcher is replaced, so it counts whether the app
+    /// actually tried to spawn a child Gateway on the port it could not inspect.
     @Test @MainActor func `app 1 broken lsof keeps the app hosted start from spawning`() async throws {
-        let port = try Self.freePort()
         let bin = try PortGuardianEndToEndProofTests.makeStubDirectory()
         defer { try? FileManager.default.removeItem(at: bin) }
         try PortGuardianEndToEndProofTests.writeStub(
@@ -91,14 +92,53 @@ struct PortGuardianAppEntryProofTests {
             to: bin,
             script: "#!/bin/sh\necho 'lsof: proc_listpids failed' >&2\nexit 1\n")
 
+        var launches = 0
+        let supervisor = GatewayChildSupervisor(launcher: { configuration in
+            launches += 1
+            print("[proof-app] app 1 LAUNCHED a child Gateway on port \(configuration.port)")
+            return .init(
+                waitUntilStarted: { 42_424 },
+                wait: { .terminated(nil) },
+                terminate: {})
+        })
+        let manager = GatewayProcessManager(childSupervisor: supervisor)
+        // A synthetic runtime keeps this row on the port decision instead of failing
+        // in the seeding step that a headless runner cannot satisfy.
+        let runtime = BundledRuntime(root: bin)
+
         try await TestIsolation.withEnvValues(["PATH": "\(bin.path):/usr/bin:/bin"]) {
+            let port = GatewayEnvironment.gatewayPort()
             let inspection = await PortGuardian.shared.inspect(port: port)
             PortGuardianEndToEndProofTests.report(label: "app 1 inspect with broken lsof", inspection: inspection)
             #expect(Self.sameCase(inspection, .unknown))
+            print("[proof-app] app 1 installation=\(manager.installation) "
+                + "hosting=\(manager.gatewayHosting)")
 
+            manager.desiredActive = true
+            let generation = manager.gatewayStartGeneration
+            await manager.startAppHostedGateway(startGeneration: generation, runtime: runtime)
+
+            print("[proof-app] app 1 shipped startup status: \(manager.status)")
+            print("[proof-app] app 1 supervisor launches: \(launches) "
+                + "(active=\(supervisor.isActive) pid=\(supervisor.processIdentifier.map(String.init) ?? "nil"))")
+
+            // The bug under test: the failed probe read as "free", so startup spawned.
+            #expect(launches == 0)
+            #expect(!supervisor.isActive)
+            #expect(supervisor.processIdentifier == nil)
+            // Guard against a vacuous pass: the row must have reached the port decision,
+            // not bailed out earlier on an installation guard.
+            #expect(manager.installation == .managed)
+            if case let .failed(reason) = manager.status {
+                print("[proof-app] app 1 failure reason: \(reason)")
+            }
+
+            // Every other route to a child on that port must be empty too.
             let children = try Self.childGateways(on: port)
             print("[proof-app] app 1 child gateways on port \(port): \(children.count)")
             #expect(children.isEmpty)
+
+            manager.desiredActive = false
         }
     }
 
@@ -127,23 +167,25 @@ struct PortGuardianAppEntryProofTests {
     /// An upgrade must keep the settings the next launch reads.
     @Test @MainActor func `app 3 stored settings survive an upgrade rewrite`() async throws {
         let suite = "ai.openclaw.mac.proof.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        // The previous build's on-disk domain, written by a separate UserDefaults
+        // instance so this row cannot pass by reading its own in-memory values back.
+        let previousBuild = try #require(UserDefaults(suiteName: suite))
+        previousBuild.set(true, forKey: onboardingSeenKey)
+        previousBuild.set(3, forKey: onboardingVersionKey)
+        previousBuild.set("local", forKey: connectionModeKey)
+        previousBuild.set("/opt/homebrew/bin/openclaw gateway --port 18789",
+                          forKey: GatewayLaunchAgentManager.resumeCommandKey)
+        previousBuild.set(false, forKey: pauseDefaultsKey)
+        previousBuild.synchronize()
+        defer { previousBuild.removePersistentDomain(forName: suite) }
 
-        // What v2026.11.5 writes on a configured install.
-        defaults.set(true, forKey: onboardingSeenKey)
-        defaults.set(3, forKey: onboardingVersionKey)
-        defaults.set("local", forKey: connectionModeKey)
-        defaults.set("/opt/homebrew/bin/openclaw gateway --port 18789", forKey: "gatewayNodeResumeCommand")
-        defaults.set(false, forKey: pauseDefaultsKey)
-        defaults.synchronize()
-
-        // What this build does on first launch after the update.
-        let seen = defaults.bool(forKey: onboardingSeenKey)
-        let version = defaults.integer(forKey: onboardingVersionKey)
-        let mode = defaults.string(forKey: connectionModeKey)
-        let resume = defaults.string(forKey: "gatewayNodeResumeCommand")
-        let paused = defaults.object(forKey: pauseDefaultsKey) as? Bool
+        // A fresh process reading the same domain is what the upgraded build sees.
+        let candidate = try #require(UserDefaults(suiteName: suite))
+        let seen = candidate.bool(forKey: onboardingSeenKey)
+        let version = candidate.integer(forKey: onboardingVersionKey)
+        let mode = candidate.string(forKey: connectionModeKey)
+        let resume = candidate.string(forKey: GatewayLaunchAgentManager.resumeCommandKey)
+        let paused = candidate.object(forKey: pauseDefaultsKey) as? Bool
         print("[proof-app] app 3 upgraded read: seen=\(seen) version=\(version) mode=\(mode ?? "nil") "
             + "resume=\(resume ?? "nil") paused=\(String(describing: paused))")
 
