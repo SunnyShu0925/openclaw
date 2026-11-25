@@ -2,7 +2,7 @@ name: proof-190152
 
 on:
   push:
-    branches: [proof/190152]
+    branches: [proof/macos-portguardian-inconclusive-190152]
   workflow_dispatch: {}
 
 permissions:
