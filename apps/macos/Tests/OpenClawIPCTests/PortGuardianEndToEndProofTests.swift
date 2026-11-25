@@ -23,7 +23,10 @@ struct PortGuardianEndToEndProofTests {
         let raw = await Self.runShippedLsof(on: port)
         Self.report(label: "control: real lsof, idle port \(port)", raw: raw)
 
-        let inspection = await Self.inspectUntilFree(port)
+        // This runner's real lsof fails proc_listpids in bursts, so the control row
+        // polls longer. Every attempt is printed; a probe that never settles on
+        // `.free` still fails loudly.
+        let inspection = await Self.inspectUntilFree(port, attempts: 30)
         Self.report(label: "control: PortGuardian.inspect", inspection: inspection)
         #expect(Self.sameCase(inspection, .free))
     }
@@ -105,6 +108,15 @@ struct PortGuardianAppEntryProofTests {
         // A synthetic runtime keeps this row on the port decision instead of failing
         // in the seeding step that a headless runner cannot satisfy.
         let runtime = BundledRuntime(root: bin)
+        // No stored runtime pin: a plain app-hosted start reaches the port inspection
+        // instead of failing the pin-change guard before it.
+        GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(true)
+        GatewayLaunchAgentManager.setTestingDaemonStatusPayload(
+            #"{"service":{"runtimeIntent":{"status":"known","stored":false,"revision":"absent"}}}"#)
+        defer {
+            GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(false)
+            GatewayLaunchAgentManager.setTestingDaemonStatusPayload(nil)
+        }
 
         try await TestIsolation.withEnvValues(["PATH": "\(bin.path):/usr/bin:/bin"]) {
             let port = GatewayEnvironment.gatewayPort()
@@ -339,6 +351,8 @@ extension PortGuardianEndToEndProofTests {
             Self.report(label: "inspect attempt \(attempt)/\(attempts)", inspection: inspection)
             if case .free = inspection { return inspection }
             last = inspection
+            // proc_listpids failures arrive in short bursts on this runner.
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return last
     }
